@@ -1,0 +1,64 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { requireRole } from '@/lib/auth'
+import { getRemoteBridgeStatus, startRemoteBridge, stopRemoteBridge, sendBridgeEvent } from '@/lib/remote-server-bridge'
+
+export const dynamic = 'force-dynamic'
+export const runtime = 'nodejs'
+
+/**
+ * GET /api/server-bridge — Get current remote bridge connection status
+ */
+export async function GET(request: NextRequest) {
+  const auth = requireRole(request, 'viewer')
+  if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+
+  const status = getRemoteBridgeStatus()
+  return NextResponse.json({ bridge: status })
+}
+
+/**
+ * POST /api/server-bridge — Control bridge lifecycle or send events
+ *
+ * Body: { action: 'start' | 'stop' | 'reconnect' | 'status_push' }
+ */
+export async function POST(request: NextRequest) {
+  const auth = requireRole(request, 'admin')
+  if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+
+  let body: any
+  try { body = await request.json() } catch {
+    return NextResponse.json({ error: 'Request body required' }, { status: 400 })
+  }
+
+  const { action } = body || {}
+
+  switch (action) {
+    case 'start':
+      startRemoteBridge()
+      return NextResponse.json({ ok: true, message: 'Bridge start requested', bridge: getRemoteBridgeStatus() })
+
+    case 'stop':
+      stopRemoteBridge()
+      return NextResponse.json({ ok: true, message: 'Bridge stopped', bridge: getRemoteBridgeStatus() })
+
+    case 'reconnect':
+      stopRemoteBridge()
+      // small delay so ws is fully closed before reconnecting
+      await new Promise(r => setTimeout(r, 500))
+      startRemoteBridge()
+      return NextResponse.json({ ok: true, message: 'Bridge reconnecting', bridge: getRemoteBridgeStatus() })
+
+    case 'status_push': {
+      const { getDatabase } = await import('@/lib/db')
+      const db = getDatabase()
+      const agents = db.prepare(
+        `SELECT id, name, role, status FROM agents WHERE hidden = 0 ORDER BY name`
+      ).all()
+      const sent = sendBridgeEvent('agent_status', { agents })
+      return NextResponse.json({ ok: sent, message: sent ? 'Status pushed' : 'Bridge not connected' })
+    }
+
+    default:
+      return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 })
+  }
+}

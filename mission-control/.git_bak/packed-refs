@@ -1,0 +1,11 @@
+# pack-refs with: peeled fully-peeled sorted 
+2077706ad95c4d24baac1abbe9b5681fa18ae474 refs/remotes/origin/feat/dashboard-ops-hub
+dc5e30366c5bc6dabdd493898ad1e8adc7bef9cc refs/remotes/origin/feat/post-install-setup
+11dfe54e468a9e43a77b4584998e5b1a4eb279f7 refs/remotes/origin/fix/issue-489-neutral-default-bridge
+14f34d1cb24263c92c4bbc6708181b51a4d4d3c0 refs/remotes/origin/main
+4f92c22f32597d03b2e741d596a70b1ee708d3bd refs/tags/v1.0.0
+016517322561840ea093706dd69fc4bb72061c83 refs/tags/v1.1.0
+31520fe85dbf18984f3828af7c63a594b80d06fb refs/tags/v1.2.0
+8cb3a11baa247c2406095eb5ebbad1f0f3622014 refs/tags/v1.3.0
+f5551a2c93aaed39a3e94c3bc83ad80931d5a33d refs/tags/v2.0.0
+8517d5e89694e4ab1b65f4b6c1e206ec1b632288 refs/tags/v2.0.1
