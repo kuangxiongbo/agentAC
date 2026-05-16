@@ -150,7 +150,7 @@ See `.env.example` for the full list. Key variables:
 
 ## Kubernetes Sidecar Deployment
 
-When running Mission Control alongside a gateway as containers in the same pod (sidecar pattern), agents are not discovered via the filesystem. Instead, use the gateway's agent registration API.
+When running E-AgentCenter alongside a gateway as containers in the same pod (sidecar pattern), agents are not discovered via the filesystem. Instead, use the gateway's agent registration API.
 
 ### Architecture
 
@@ -304,7 +304,7 @@ Ensure only one instance is running against the same `.data/` directory. SQLite 
 
 ### "Gateway error: origin not allowed"
 
-Your gateway is rejecting the Mission Control browser origin. Add the Control UI origin
+Your gateway is rejecting the E-AgentCenter browser origin. Add the Control UI origin
 to your gateway config allowlist, for example:
 
 ```json
@@ -317,12 +317,12 @@ to your gateway config allowlist, for example:
 }
 ```
 
-Then restart the gateway and reconnect from Mission Control.
+Then restart the gateway and reconnect from E-AgentCenter.
 
 ### "Gateway error: device identity required"
 
 Device identity signing uses WebCrypto and requires a secure browser context.
-Open Mission Control over HTTPS (or localhost), then reconnect.
+Open E-AgentCenter over HTTPS (or localhost), then reconnect.
 
 ### "Gateway shows offline on VPS deployment"
 
@@ -334,7 +334,7 @@ Quick option:
 NEXT_PUBLIC_GATEWAY_OPTIONAL=true
 ```
 
-This runs Mission Control in standalone mode (core features available, live gateway streams unavailable).
+This runs E-AgentCenter in standalone mode (core features available, live gateway streams unavailable).
 
 Production option: reverse-proxy gateway WebSocket over 443.
 
@@ -357,7 +357,7 @@ Then point UI to:
 NEXT_PUBLIC_GATEWAY_URL=wss://your-domain.com/gateway-ws
 ```
 
-Mission Control now retries common reverse-proxy websocket paths (`/gateway-ws`, `/gw`) automatically when root-path handshake fails, but setting `NEXT_PUBLIC_GATEWAY_URL` is still recommended for deterministic production behavior.
+E-AgentCenter now retries common reverse-proxy websocket paths (`/gateway-ws`, `/gw`) automatically when root-path handshake fails, but setting `NEXT_PUBLIC_GATEWAY_URL` is still recommended for deterministic production behavior.
 
 ## Next Steps
 

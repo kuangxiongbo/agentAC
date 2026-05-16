@@ -1,10 +1,10 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { LanguageSwitcherSelect } from '@/components/ui/language-switcher'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { useNavigateToPanel } from '@/lib/navigation'
 import { SecurityScanCard } from '@/components/onboarding/security-scan-card'
 import { AgentRuntimesSection } from '@/components/settings/agent-runtimes-section'
@@ -28,6 +28,48 @@ interface ApiKeyInfo {
   source: string
   last_rotated_at: number | null
   last_rotated_by: string | null
+}
+
+interface SchedulerTask {
+  id: string
+  name: string
+  enabled: boolean
+  lastRun: number | null
+  nextRun: number
+  running: boolean
+  lastResult?: { ok: boolean; message: string; timestamp: number }
+}
+
+interface ServerSyncDiagnostics {
+  upstream: {
+    server_url: string
+    client_name: string
+    token_configured: boolean
+    bridge_info?: {
+      ok: boolean
+      status?: number
+      error?: string
+      payload?: {
+        service?: { http_base_url?: string }
+        bridge?: { ws_url?: string; port?: number }
+        gateway?: { http_base_url?: string }
+      }
+    }
+  }
+  scheduler: {
+    tasks: SchedulerTask[]
+  }
+  local_counts: {
+    total: number
+    bridge: number
+    runtime: number
+    local: number
+  }
+  backlog: {
+    unsynced_messages: number
+    remote_tasks_pending_notify: number
+    remote_tasks_total: number
+  }
 }
 
 interface CoordinatorTargetAgent {
@@ -73,51 +115,26 @@ function parseCoordinatorTargetAgents(rawAgents: any[]): CoordinatorTargetAgent[
   })
 }
 
-const categoryLabels: Record<string, { label: string; icon: string; description: string }> = {
-  general: { label: 'General', icon: '⚙', description: 'Core Mission Control settings' },
-  security: { label: 'Security', icon: '🔑', description: 'API key management and security settings' },
-  retention: { label: 'Data Retention', icon: '🗄', description: 'How long data is kept before cleanup' },
-  chat: { label: 'Chat', icon: '💬', description: 'Coordinator routing and chat behavior settings' },
-  gateway: { label: 'Gateway', icon: '🔌', description: 'OpenClaw gateway connection settings' },
-  profiles: { label: 'Security Profiles', icon: 'shield', description: 'Hook profile controls security scanning strictness' },
-  custom: { label: 'Custom', icon: '🔧', description: 'User-defined settings' },
-}
-
 const categoryOrder = ['general', 'security', 'profiles', 'retention', 'chat', 'gateway', 'custom']
-
-// Dropdown options for subscription plan settings
-const subscriptionDropdowns: Record<string, { label: string; value: string }[]> = {
-  'subscription.plan_override': [
-    { label: 'Auto-detect', value: '' },
-    { label: 'Pro ($20/mo)', value: 'pro' },
-    { label: 'Max ($100/mo)', value: 'max' },
-    { label: 'Max 5x ($200/mo)', value: 'max_5x' },
-    { label: 'Team ($30/mo)', value: 'team' },
-    { label: 'Enterprise', value: 'enterprise' },
-  ],
-  'subscription.codex_plan': [
-    { label: 'None', value: '' },
-    { label: 'ChatGPT Free ($0/mo)', value: 'chatgpt' },
-    { label: 'Plus ($20/mo)', value: 'plus' },
-    { label: 'Pro ($200/mo)', value: 'pro' },
-    { label: 'Team ($30/mo)', value: 'team' },
-  ],
-}
 
 export function SettingsPanel() {
   const t = useTranslations('settings')
-  const { currentUser, setShowOnboarding } = useMissionControl()
+  const { currentUser, setShowOnboarding, centralMode } = useAgentCenterStore()
   const navigateToPanel = useNavigateToPanel()
   const [settings, setSettings] = useState<Setting[]>([])
   const [grouped, setGrouped] = useState<Record<string, Setting[]>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [syncing, setSyncing] = useState(false)
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null)
 
   // Track edited values (key -> new value)
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [activeCategory, setActiveCategory] = useState('general')
+  const [schedulerTasks, setSchedulerTasks] = useState<any[]>([])
+  const [syncDiagnostics, setSyncDiagnostics] = useState<any | null>(null)
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false)
 
   // API key management state
   const [apiKeyInfo, setApiKeyInfo] = useState<ApiKeyInfo | null>(null)
@@ -151,6 +168,34 @@ export function SettingsPanel() {
   const [mcBackupRunning, setMcBackupRunning] = useState(false)
   const [gwBackupRunning, setGwBackupRunning] = useState(false)
 
+  const categoryLabels = useMemo<Record<string, { label: string; icon: string; description: string }>>(() => ({
+    general: { label: t('categoryGeneralLabel'), icon: '⚙', description: '' },
+    security: { label: t('categorySecurityLabel'), icon: '🔑', description: '' },
+    retention: { label: t('categoryRetentionLabel'), icon: '🗄', description: '' },
+    chat: { label: t('categoryChatLabel'), icon: '💬', description: '' },
+    gateway: { label: t('categoryGatewayLabel'), icon: '🔌', description: '' },
+    profiles: { label: t('categoryProfilesLabel'), icon: 'shield', description: '' },
+    custom: { label: t('categoryCustomLabel'), icon: '🔧', description: '' },
+  }), [t])
+
+  const subscriptionDropdowns = useMemo<Record<string, { label: string; value: string }[]>>(() => ({
+    'subscription.plan_override': [
+      { label: t('subscriptionAutoDetect'), value: '' },
+      { label: t('subscriptionPlanPro20'), value: 'pro' },
+      { label: t('subscriptionPlanMax100'), value: 'max' },
+      { label: t('subscriptionPlanMax5x200'), value: 'max_5x' },
+      { label: t('subscriptionPlanTeam30'), value: 'team' },
+      { label: t('subscriptionPlanEnterprise'), value: 'enterprise' },
+    ],
+    'subscription.codex_plan': [
+      { label: t('subscriptionPlanNone'), value: '' },
+      { label: t('subscriptionPlanChatgptFree'), value: 'chatgpt' },
+      { label: t('subscriptionPlanPlus20'), value: 'plus' },
+      { label: t('subscriptionPlanPro200'), value: 'pro' },
+      { label: t('subscriptionPlanTeam30'), value: 'team' },
+    ],
+  }), [t])
+
   const showFeedback = (ok: boolean, text: string) => {
     setFeedback({ ok, text })
     setTimeout(() => setFeedback(null), 3000)
@@ -175,16 +220,16 @@ export function SettingsPanel() {
     })
 
     const viaLabel: Record<string, string> = {
-      configured: 'configured target',
-      default: 'default agent',
-      main_session: 'live :main session',
-      direct: 'coordinator record',
-      fallback: 'fallback',
+      configured: t('coordinatorViaConfigured'),
+      default: t('coordinatorViaDefault'),
+      main_session: t('coordinatorViaMainSession'),
+      direct: t('coordinatorViaDirect'),
+      fallback: t('coordinatorViaFallback'),
     }
 
     const targetLabel = `${resolved.deliveryName}${resolved.openclawAgentId ? ` (${resolved.openclawAgentId})` : ''}`
-    return `Resolves now to ${targetLabel} via ${viaLabel[resolved.resolvedBy] || resolved.resolvedBy}.`
-  }, [coordinatorTargetAgents, coordinatorSessions])
+    return t('coordinatorResolutionPreview', { target: targetLabel, via: viaLabel[resolved.resolvedBy] || resolved.resolvedBy })
+  }, [coordinatorTargetAgents, coordinatorSessions, t])
 
   const fetchSettings = useCallback(async () => {
     try {
@@ -194,12 +239,12 @@ export function SettingsPanel() {
         return
       }
       if (res.status === 403) {
-        setError('Admin access required')
+        setError(t('adminAccessRequired'))
         return
       }
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        setError(data.error || 'Failed to load settings')
+        setError(data.error || t('failedToLoadSettings'))
         return
       }
       const data = await res.json()
@@ -248,9 +293,23 @@ export function SettingsPanel() {
         // non-critical
       }
     } catch {
-      setError('Failed to load settings')
+      setError(t('failedToLoadSettings'))
     } finally {
       setLoading(false)
+    }
+  }, [t])
+
+  const fetchSyncDiagnostics = useCallback(async () => {
+    setDiagnosticsLoading(true)
+    try {
+      const res = await fetch('/api/server-sync/status')
+      if (res.ok) {
+        setSyncDiagnostics(await res.json())
+      }
+    } catch {
+      // non-critical
+    } finally {
+      setDiagnosticsLoading(false)
     }
   }, [])
 
@@ -269,45 +328,36 @@ export function SettingsPanel() {
     }
   }, [])
 
-  const handleRotateKey = async () => {
+  const handleRotateKey = useCallback(async () => {
     setRotating(true)
     try {
       const res = await fetch('/api/tokens/rotate', { method: 'POST' })
-      const data = await res.json()
-      if (res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string; key?: string }
+      if (res.ok && typeof data.key === 'string') {
         setNewApiKey(data.key)
         setRotateConfirm(false)
         setKeyCopied(false)
-        showFeedback(true, 'API key rotated successfully')
-        fetchApiKeyInfo()
+        await fetchApiKeyInfo()
       } else {
-        showFeedback(false, data.error || 'Failed to rotate key')
+        showFeedback(false, data.error || t('saveFailed'))
       }
     } catch {
-      showFeedback(false, 'Network error')
+      showFeedback(false, t('networkError'))
     } finally {
       setRotating(false)
     }
-  }
+  }, [fetchApiKeyInfo, t])
 
-  const handleCopyKey = async () => {
+  const handleCopyKey = useCallback(async () => {
     if (!newApiKey) return
     try {
       await navigator.clipboard.writeText(newApiKey)
       setKeyCopied(true)
-      setTimeout(() => setKeyCopied(false), 2000)
+      setTimeout(() => setKeyCopied(false), 2500)
     } catch {
-      // Fallback: select and copy
-      const el = document.createElement('textarea')
-      el.value = newApiKey
-      document.body.appendChild(el)
-      el.select()
-      document.execCommand('copy')
-      document.body.removeChild(el)
-      setKeyCopied(true)
-      setTimeout(() => setKeyCopied(false), 2000)
+      showFeedback(false, t('networkError'))
     }
-  }
+  }, [newApiKey, t])
 
   const fetchHermesStatus = useCallback(async () => {
     try {
@@ -318,7 +368,16 @@ export function SettingsPanel() {
     } catch { /* non-critical */ }
   }, [])
 
-  useEffect(() => { fetchSettings(); fetchApiKeyInfo(); fetchHermesStatus() }, [fetchSettings, fetchApiKeyInfo, fetchHermesStatus])
+  useEffect(() => {
+    fetchSettings()
+    fetchApiKeyInfo()
+    fetchHermesStatus()
+    fetchSyncDiagnostics()
+    const interval = setInterval(() => {
+      fetchSyncDiagnostics()
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [fetchSettings, fetchApiKeyInfo, fetchHermesStatus, fetchSyncDiagnostics])
 
   const handleEdit = (key: string, value: string) => {
     setEdits(prev => ({ ...prev, [key]: value }))
@@ -330,7 +389,6 @@ export function SettingsPanel() {
   })
 
   const handleSave = async () => {
-    // Filter only actual changes
     const changes: Record<string, string> = {}
     for (const [key, value] of Object.entries(edits)) {
       const setting = settings.find(s => s.key === key)
@@ -350,14 +408,14 @@ export function SettingsPanel() {
       })
       const data = await res.json()
       if (res.ok) {
-        showFeedback(true, `Saved ${data.count} setting${data.count === 1 ? '' : 's'}`)
+        showFeedback(true, t('savedSettingsCount', { count: data.count }))
         setEdits({})
         fetchSettings()
       } else {
-        showFeedback(false, data.error || 'Failed to save')
+        showFeedback(false, data.error || t('saveFailed'))
       }
     } catch {
-      showFeedback(false, 'Network error')
+      showFeedback(false, t('networkError'))
     } finally {
       setSaving(false)
     }
@@ -368,7 +426,7 @@ export function SettingsPanel() {
       const res = await fetch(`/api/settings?key=${encodeURIComponent(key)}`, { method: 'DELETE' })
       const data = await res.json()
       if (res.ok) {
-        showFeedback(true, `Reset "${key}" to default`)
+        showFeedback(true, t('resetToDefaultSuccess', { key }))
         setEdits(prev => {
           const next = { ...prev }
           delete next[key]
@@ -376,10 +434,10 @@ export function SettingsPanel() {
         })
         fetchSettings()
       } else {
-        showFeedback(false, data.error || 'Failed to reset')
+        showFeedback(false, data.error || t('resetFailed'))
       }
     } catch {
-      showFeedback(false, 'Network error')
+      showFeedback(false, t('networkError'))
     }
   }
 
@@ -388,7 +446,7 @@ export function SettingsPanel() {
   }
 
   if (loading) {
-    return <Loader variant="panel" label="Loading settings" />
+    return <Loader variant="panel" label={t('loadingSettings')} />
   }
 
   if (error) {
@@ -400,9 +458,13 @@ export function SettingsPanel() {
   }
 
   const categories = categoryOrder.filter(c => c === 'security' || c === 'profiles' || (grouped[c]?.length > 0))
+  const discovery = syncDiagnostics?.upstream.bridge_info
+  const discoveryHttpBase = discovery?.payload?.service?.http_base_url || ''
+  const discoveryWsUrl = discovery?.payload?.bridge?.ws_url || ''
+  const syncTask = syncDiagnostics?.scheduler?.tasks?.find((task: { id: string }) => task.id === 'server_gateway_sync')
 
   return (
-    <div className="p-4 md:p-6 max-w-4xl mx-auto space-y-6">
+    <div className="w-full min-w-0 max-w-4xl mx-auto space-y-6 p-4 md:p-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -431,230 +493,17 @@ export function SettingsPanel() {
         </div>
       </div>
 
-      {/* Workspace Info */}
-      {currentUser?.role === 'admin' && (
-        <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3 text-xs text-blue-300">
-          <strong className="text-blue-200">{t('workspaceManagementLabel')}</strong>{' '}
-          {t('workspaceManagementDesc1')}{' '}
-          <Button
-            onClick={() => navigateToPanel('super-admin')}
-            variant="link"
-            size="xs"
-            className="text-blue-400 hover:text-blue-300 p-0 h-auto"
-          >
-            {t('superAdmin')}
-          </Button>{' '}
-          {t('workspaceManagementDesc2')}
-        </div>
-      )}
-
-      {/* Station Setup */}
-      {currentUser?.role === 'admin' && (
-        <div className="space-y-3">
-          {/* Security Scan */}
-          <div className="flex items-center gap-3 p-3 bg-surface-1/50 border border-border/30 rounded-lg">
-            <div className="flex-1">
-              <p className="text-xs font-medium">{t('security')}</p>
-              <p className="text-2xs text-muted-foreground">{t('securityDescription')}</p>
-            </div>
-            <Button
-              variant="outline"
-              size="xs"
-              className="text-2xs"
-              onClick={() => setShowSecurityScan(v => !v)}
-            >
-              {showSecurityScan ? t('hideScan') : t('securityScan')}
-            </Button>
-          </div>
-          {showSecurityScan && (
-            <div className="p-4 bg-surface-1/30 border border-border/30 rounded-lg">
-              <SecurityScanCard />
-            </div>
-          )}
-
-          {/* Backup Actions */}
-          <div className="flex items-center gap-3 p-3 bg-surface-1/50 border border-border/30 rounded-lg">
-            <div className="flex-1">
-              <p className="text-xs font-medium">{t('backups')}</p>
-              <p className="text-2xs text-muted-foreground">{t('backupsDescription')}</p>
-            </div>
-            <Button
-              variant="outline"
-              size="xs"
-              className="text-2xs"
-              disabled={mcBackupRunning}
-              onClick={async () => {
-                setMcBackupRunning(true)
-                try {
-                  const res = await fetch('/api/backup', { method: 'POST' })
-                  const data = await res.json()
-                  if (res.ok) {
-                    showFeedback(true, `MC backup created (${(data.backup?.size / 1024).toFixed(0)} KB)`)
-                  } else {
-                    showFeedback(false, data.error || 'MC backup failed')
-                  }
-                } catch {
-                  showFeedback(false, 'Network error')
-                } finally {
-                  setMcBackupRunning(false)
-                }
-              }}
-            >
-              {mcBackupRunning ? t('backingUp') : t('backupMcDatabase')}
-            </Button>
-            <Button
-              variant="outline"
-              size="xs"
-              className="text-2xs"
-              disabled={gwBackupRunning}
-              onClick={async () => {
-                setGwBackupRunning(true)
-                try {
-                  const res = await fetch('/api/backup?target=gateway', { method: 'POST' })
-                  const data = await res.json()
-                  if (res.ok) {
-                    showFeedback(true, `Gateway backup created: ${data.output}`)
-                  } else {
-                    showFeedback(false, data.error || 'Gateway backup failed')
-                  }
-                } catch {
-                  showFeedback(false, 'Network error')
-                } finally {
-                  setGwBackupRunning(false)
-                }
-              }}
-            >
-              {gwBackupRunning ? t('backingUp') : t('backupGatewayState')}
-            </Button>
-          </div>
-
-          {/* Replay Onboarding */}
-          <div className="flex items-center gap-3 p-3 bg-surface-1/50 border border-border/30 rounded-lg">
-            <div className="flex-1">
-              <p className="text-xs font-medium">{t('onboarding')}</p>
-              <p className="text-2xs text-muted-foreground">{t('onboardingDescription')}</p>
-            </div>
-            <Button
-              variant="outline"
-              size="xs"
-              className="text-2xs"
-              disabled={replayingOnboarding}
-              onClick={async () => {
-                setReplayingOnboarding(true)
-                try {
-                  await fetch('/api/onboarding', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'reset' }),
-                  })
-                  clearOnboardingDismissedThisSession()
-                  clearOnboardingReplayFromStart()
-                  setShowOnboarding(true)
-                  showFeedback(true, 'Onboarding reset — wizard will appear on next page load')
-                } catch {
-                  showFeedback(false, 'Failed to reset onboarding')
-                } finally {
-                  setReplayingOnboarding(false)
-                }
-              }}
-            >
-              {replayingOnboarding ? t('resetting') : t('replayOnboarding')}
-            </Button>
-          </div>
-
-          {/* Agent Runtimes */}
-          <AgentRuntimesSection showFeedback={showFeedback} />
-
-          {/* Hermes Agent Integration */}
-          {hermesStatus?.installed && (
-            <div className="p-3 bg-surface-1/50 border border-border/30 rounded-lg space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <p className="text-xs font-medium">Hermes Agent</p>
-                    <span className={`text-2xs px-1.5 py-0.5 rounded ${
-                      hermesStatus.gatewayRunning
-                        ? 'bg-green-500/15 text-green-400'
-                        : 'bg-muted text-muted-foreground'
-                    }`}>
-                      {hermesStatus.gatewayRunning ? 'Gateway running' : 'Gateway offline'}
-                    </span>
-                    {hermesStatus.activeSessions > 0 && (
-                      <span className="text-2xs px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400">
-                        {hermesStatus.activeSessions} active
-                      </span>
-                    )}
-                    {(hermesStatus.cronJobCount ?? 0) > 0 && (
-                      <span className="text-2xs px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400">
-                        {hermesStatus.cronJobCount} cron
-                      </span>
-                    )}
-                    {(hermesStatus.memoryEntries ?? 0) > 0 && (
-                      <span className="text-2xs px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-400">
-                        {hermesStatus.memoryEntries} mem
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-2xs text-muted-foreground mt-0.5">
-                    {hermesStatus.hookInstalled
-                      ? 'MC hook installed — receiving telemetry from hermes-agent'
-                      : 'Install the MC hook for richer telemetry (agent status, session events)'}
-                  </p>
-                </div>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  className="text-2xs"
-                  disabled={hermesHookAction}
-                  onClick={async () => {
-                    setHermesHookAction(true)
-                    const action = hermesStatus.hookInstalled ? 'uninstall-hook' : 'install-hook'
-                    try {
-                      const res = await fetch('/api/hermes', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action }),
-                      })
-                      const data = await res.json()
-                      if (res.ok) {
-                        showFeedback(true, data.message || `Hook ${action === 'install-hook' ? 'installed' : 'uninstalled'}`)
-                        fetchHermesStatus()
-                      } else {
-                        showFeedback(false, data.error || 'Hook operation failed')
-                      }
-                    } catch {
-                      showFeedback(false, 'Network error')
-                    } finally {
-                      setHermesHookAction(false)
-                    }
-                  }}
-                >
-                  {hermesHookAction
-                    ? 'Working...'
-                    : hermesStatus.hookInstalled
-                      ? 'Uninstall Hook'
-                      : 'Install MC Hook'}
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Feedback */}
       {feedback && (
-        <div className={`rounded-lg p-3 text-xs font-medium ${
+        <div className={`rounded-lg p-3 text-xs font-medium animate-in fade-in slide-in-from-top-1 duration-200 ${
           feedback.ok ? 'bg-green-500/10 text-green-400' : 'bg-destructive/10 text-destructive'
         }`}>
           {feedback.text}
         </div>
       )}
 
-      {/* Language */}
-      <LanguageSection />
-
       {/* Category tabs */}
-      <div className="flex gap-1 border-b border-border pb-px">
+      <div className="flex w-full min-w-0 gap-1 border-b border-border pb-px overflow-x-auto no-scrollbar">
         {categories.map(cat => {
           const meta = categoryLabels[cat] || { label: cat, icon: '📋', description: '' }
           const changedCount = (grouped[cat] || []).filter(s => edits[s.key] !== undefined && edits[s.key] !== s.value).length
@@ -664,10 +513,10 @@ export function SettingsPanel() {
               onClick={() => setActiveCategory(cat)}
               variant="ghost"
               size="sm"
-              className={`rounded-t-md rounded-b-none relative ${
+              className={`rounded-t-md rounded-b-none relative whitespace-nowrap transition-all ${
                 activeCategory === cat
                   ? 'bg-card text-foreground border border-border border-b-card -mb-px'
-                  : ''
+                  : 'text-muted-foreground hover:text-foreground'
               }`}
             >
               {meta.label}
@@ -681,58 +530,284 @@ export function SettingsPanel() {
         })}
       </div>
 
-      {/* Security: API Key Management */}
+      {/* General Category Content */}
+      {activeCategory === 'general' && (
+        <div className="w-full min-w-0 space-y-6 animate-in fade-in slide-in-from-top-2 duration-300">
+          <LanguageSection />
+          <InterfaceModeSelector />
+          
+          <div className="space-y-3">
+            <h3 className="text-sm font-medium text-foreground px-1">{t('stationManagementTitle')}</h3>
+            
+            {/* Workspace Info */}
+            {currentUser?.role === 'admin' && (
+              <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3 text-xs text-blue-300">
+                <strong className="text-blue-200">{t('workspaceManagementLabel')}</strong>{' '}
+                {t('workspaceManagementDesc1')}{' '}
+                <Button
+                  onClick={() => navigateToPanel('super-admin')}
+                  variant="link"
+                  size="xs"
+                  className="text-blue-400 hover:text-blue-300 p-0 h-auto"
+                >
+                  {t('superAdmin')}
+                </Button>{' '}
+                {t('workspaceManagementDesc2')}
+              </div>
+            )}
+
+            {/* Replay Onboarding */}
+            <div className="flex items-center gap-3 p-3 bg-surface-1/50 border border-border/30 rounded-lg">
+              <div className="flex-1">
+                <p className="text-xs font-medium">{t('onboarding')}</p>
+                <p className="text-2xs text-muted-foreground">{t('onboardingDescription')}</p>
+              </div>
+              <Button
+                variant="outline"
+                size="xs"
+                className="text-2xs"
+                disabled={replayingOnboarding}
+                onClick={async () => {
+                  setReplayingOnboarding(true)
+                  try {
+                    await fetch('/api/onboarding', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ action: 'reset' }),
+                    })
+                    clearOnboardingDismissedThisSession()
+                    clearOnboardingReplayFromStart()
+                    setShowOnboarding(true)
+                    showFeedback(true, t('onboardingResetSuccess'))
+                  } catch {
+                    showFeedback(false, t('onboardingResetFailed'))
+                  } finally {
+                    setReplayingOnboarding(false)
+                  }
+                }}
+              >
+                {replayingOnboarding ? t('resetting') : t('replayOnboarding')}
+              </Button>
+            </div>
+
+            {/* Agent Runtimes */}
+            {!centralMode ? (
+              <AgentRuntimesSection showFeedback={showFeedback} />
+            ) : (
+              <div className="p-3 bg-surface-1/50 border border-border/30 rounded-lg">
+                <p className="text-xs font-medium">{t('agentRuntimesTitle')}</p>
+                <p className="text-2xs text-muted-foreground mt-0.5">
+                  {t('centralModeRuntimeHint')}
+                </p>
+              </div>
+            )}
+
+            {/* Hermes Agent Integration */}
+            {hermesStatus?.installed && (
+              <div className="p-3 bg-surface-1/50 border border-border/30 rounded-lg space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="text-xs font-medium">{t('hermesTitle')}</p>
+                      <span className={`text-2xs px-1.5 py-0.5 rounded ${
+                        hermesStatus.gatewayRunning
+                          ? 'bg-green-500/15 text-green-400'
+                          : 'bg-muted text-muted-foreground'
+                      }`}>
+                        {hermesStatus.gatewayRunning ? t('hermesGatewayRunning') : t('hermesGatewayOffline')}
+                      </span>
+                      {hermesStatus.activeSessions > 0 && (
+                        <span className="text-2xs px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400">
+                          {t('hermesActiveCount', { count: hermesStatus.activeSessions })}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-2xs text-muted-foreground mt-0.5">
+                      {hermesStatus.hookInstalled
+                        ? t('hermesHookInstalledHint')
+                        : t('hermesHookMissingHint')}
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="text-2xs"
+                    disabled={hermesHookAction}
+                    onClick={async () => {
+                      setHermesHookAction(true)
+                      const action = hermesStatus.hookInstalled ? 'uninstall-hook' : 'install-hook'
+                      try {
+                        const res = await fetch('/api/hermes', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ action }),
+                        })
+                        const data = await res.json()
+                        if (res.ok) {
+                          showFeedback(true, data.message || (action === 'install-hook' ? t('hookInstalled') : t('hookUninstalled')))
+                          fetchHermesStatus()
+                        } else {
+                          showFeedback(false, data.error || t('hookOperationFailed'))
+                        }
+                      } catch {
+                        showFeedback(false, t('networkError'))
+                      } finally {
+                        setHermesHookAction(false)
+                      }
+                    }}
+                  >
+                    {hermesHookAction
+                      ? t('working')
+                      : hermesStatus.hookInstalled
+                        ? t('uninstallHook')
+                        : t('installMcHook')}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Gateway Category Content */}
+      {activeCategory === 'gateway' && (
+        <div className="w-full min-w-0 space-y-6 animate-in fade-in slide-in-from-top-2 duration-300">
+          {/* Sync Diagnostics */}
+          <div className="rounded-lg border border-border/50 bg-card p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-medium text-foreground">{t('syncDiagnosticsTitle')}</h3>
+                <p className="text-2xs text-muted-foreground">{t('syncDiagnosticsDescription')}</p>
+              </div>
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={diagnosticsLoading}
+                onClick={fetchSyncDiagnostics}
+              >
+                {diagnosticsLoading ? t('syncDiagnosticsRefreshing') : t('syncDiagnosticsRefresh')}
+              </Button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div className="rounded-lg border border-border/40 bg-surface-1/40 p-3 space-y-2">
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">{t('configuredParentUrl')}</span>
+                  <span className="font-mono text-right break-all">{syncDiagnostics?.upstream.server_url || '-'}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">{t('discoveredHttpBase')}</span>
+                  <span className="font-mono text-right break-all">{discoveryHttpBase || '-'}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">{t('discoveredBridgeWs')}</span>
+                  <span className="font-mono text-right break-all">{discoveryWsUrl || '-'}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">{t('tokenConfigured')}</span>
+                  <span className={syncDiagnostics?.upstream.token_configured ? 'text-green-400 font-medium' : 'text-yellow-400 font-medium'}>
+                    {syncDiagnostics?.upstream.token_configured ? t('yes') : t('no')}
+                  </span>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/40 bg-surface-1/40 p-3 space-y-2">
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">{t('discoveryStatus')}</span>
+                  <span className={discovery?.ok ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
+                    {discovery ? (discovery.ok ? t('reachable') : t('failed')) : t('unknown')}
+                  </span>
+                </div>
+                {discovery?.error && <div className="text-destructive break-words">{discovery.error}</div>}
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">{t('agentsCount')}</span>
+                  <span>{syncDiagnostics?.local_counts.total ?? '-'}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">{t('unsyncedMessages')}</span>
+                  <span>{syncDiagnostics?.backlog.unsynced_messages ?? '-'}</span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">{t('pendingRemoteTaskNotify')}</span>
+                  <span>{syncDiagnostics?.backlog.remote_tasks_pending_notify ?? '-'}</span>
+                </div>
+              </div>
+            </div>
+
+            {syncTask && (
+              <div className="rounded-lg border border-border/40 bg-surface-1/40 p-3 text-xs space-y-1">
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">{t('periodicUpstreamSync')}</span>
+                  <span className={syncTask.enabled ? 'text-green-400 font-medium' : 'text-yellow-400 font-medium'}>
+                    {syncTask.enabled ? t('enabled') : t('disabled')}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">{t('lastResult')}</span>
+                  <span className={syncTask.lastResult?.ok ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
+                    {syncTask.lastResult?.message || t('neverRun')}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <DownstreamConnectionSection apiKeyInfo={apiKeyInfo} />
+          <UpstreamSyncSection
+            settings={settings}
+            edits={edits}
+            handleEdit={handleEdit}
+            showFeedback={showFeedback}
+          />
+        </div>
+      )}
+
+      {/* Security Category Content */}
       {activeCategory === 'security' && (
-        <div className="space-y-3">
+        <div className="w-full min-w-0 space-y-6 animate-in fade-in slide-in-from-top-2 duration-300">
           <div className="bg-card border border-border rounded-lg p-4">
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-foreground">API Key</span>
+                  <span className="text-sm font-medium text-foreground">{t('apiKeyTitle')}</span>
                   {apiKeyInfo?.source && (
-                    <span className="text-2xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                    <span className="text-2xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-mono">
                       {apiKeyInfo.source}
                     </span>
                   )}
                 </div>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Used for programmatic access and agent authentication via X-Api-Key header or Bearer token.
-                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('apiKeyDescription')}</p>
               </div>
             </div>
 
-            {/* Current key display */}
-            <div className="mt-3 flex items-center gap-2">
-              <code className="text-xs font-mono bg-background border border-border rounded px-2 py-1 text-muted-foreground">
-                {apiKeyLoading ? 'Loading...' : apiKeyInfo?.masked_key || 'No API key configured'}
+            <div className="mt-4 flex items-center gap-2">
+              <code className="text-xs font-mono bg-background border border-border rounded px-3 py-2 text-muted-foreground/80 flex-1">
+                {apiKeyLoading ? t('loadingApiKey') : apiKeyInfo?.masked_key || t('noApiKeyConfigured')}
               </code>
+              <Button
+                onClick={() => setRotateConfirm(true)}
+                variant="outline"
+                size="sm"
+                className="h-9"
+              >
+                {t('rotateKey')}
+              </Button>
             </div>
 
             {apiKeyInfo?.last_rotated_at && (
-              <div className="text-2xs text-muted-foreground/50 mt-2">
-                Last rotated by {apiKeyInfo.last_rotated_by} on{' '}
-                {new Date(apiKeyInfo.last_rotated_at * 1000).toLocaleDateString()}{' '}
-                at {new Date(apiKeyInfo.last_rotated_at * 1000).toLocaleTimeString()}
+              <div className="text-[10px] text-muted-foreground/50 mt-3 flex items-center gap-2">
+                <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
+                {t('lastRotatedByOn', {
+                  user: apiKeyInfo.last_rotated_by || '-',
+                  date: new Date(apiKeyInfo.last_rotated_at * 1000).toLocaleDateString(),
+                  time: new Date(apiKeyInfo.last_rotated_at * 1000).toLocaleTimeString(),
+                })}
               </div>
             )}
 
-            {/* Rotate confirmation */}
-            {!rotateConfirm ? (
-              <div className="mt-3">
-                <Button
-                  onClick={() => setRotateConfirm(true)}
-                  variant="outline"
-                  size="sm"
-                >
-                  Rotate Key
-                </Button>
-              </div>
-            ) : (
-              <div className="mt-3 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
-                <p className="text-xs text-amber-300 mb-2">
-                  Are you sure? Rotating the API key will immediately invalidate the current key.
-                  All agents and integrations using the old key will lose access.
-                </p>
+            {rotateConfirm && (
+              <div className="mt-4 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
+                <p className="text-xs text-amber-300 mb-3">{t('rotateWarning')}</p>
                 <div className="flex items-center gap-2">
                   <Button
                     onClick={handleRotateKey}
@@ -741,36 +816,33 @@ export function SettingsPanel() {
                     size="sm"
                     className="bg-amber-600 hover:bg-amber-700"
                   >
-                    {rotating ? 'Rotating...' : 'Confirm Rotate'}
+                    {rotating ? t('rotatingKey') : t('confirmRotate')}
                   </Button>
                   <Button
                     onClick={() => setRotateConfirm(false)}
                     variant="ghost"
                     size="sm"
                   >
-                    Cancel
+                    {t('cancel')}
                   </Button>
                 </div>
               </div>
             )}
 
-            {/* New key display (shown once after rotation) */}
             {newApiKey && (
-              <div className="mt-3 bg-green-500/10 border border-green-500/20 rounded-lg p-3">
-                <p className="text-xs text-green-300 mb-2 font-medium">
-                  New API key generated. Copy it now -- it will not be shown again.
-                </p>
+              <div className="mt-4 bg-green-500/10 border border-green-500/20 rounded-lg p-3">
+                <p className="text-xs text-green-300 mb-2 font-medium">{t('newApiKeyGenerated')}</p>
                 <div className="flex items-center gap-2">
-                  <code className="text-xs font-mono bg-background border border-border rounded px-2 py-1.5 text-foreground select-all flex-1 break-all">
+                  <code className="text-xs font-mono bg-background border border-border rounded px-3 py-2 text-foreground select-all flex-1 break-all">
                     {newApiKey}
                   </code>
                   <Button
                     onClick={handleCopyKey}
                     variant="outline"
                     size="sm"
-                    className="shrink-0"
+                    className="shrink-0 h-9"
                   >
-                    {keyCopied ? 'Copied!' : 'Copy'}
+                    {keyCopied ? t('copied') : t('copy')}
                   </Button>
                 </div>
                 <div className="mt-2">
@@ -780,28 +852,47 @@ export function SettingsPanel() {
                     size="xs"
                     className="text-muted-foreground"
                   >
-                    Dismiss
+                    {t('dismissLabel')}
                   </Button>
                 </div>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-card border border-border rounded-lg p-4">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-sm font-medium text-foreground">{t('securityScan')}</h3>
+                <p className="text-xs text-muted-foreground">{t('securityDescription')}</p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowSecurityScan(v => !v)}
+              >
+                {showSecurityScan ? t('hideScan') : t('securityScan')}
+              </Button>
+            </div>
+            {showSecurityScan && (
+              <div className="animate-in fade-in zoom-in-95 duration-200">
+                <SecurityScanCard />
               </div>
             )}
           </div>
         </div>
       )}
 
-      {/* Security Profiles: Hook Profile Selector */}
+      {/* Profiles Category Content */}
       {activeCategory === 'profiles' && (
-        <div className="space-y-3">
+        <div className="w-full min-w-0 space-y-6 animate-in fade-in slide-in-from-top-2 duration-300">
           <div className="bg-card border border-border rounded-lg p-4">
-            <h3 className="text-sm font-medium text-foreground mb-1">Hook Profile</h3>
-            <p className="text-xs text-muted-foreground mb-4">
-              Controls how aggressively security hooks scan tool calls and agent outputs.
-            </p>
+            <h3 className="text-sm font-medium text-foreground mb-1">{t('hookProfileTitle')}</h3>
+            <p className="text-xs text-muted-foreground mb-4">{t('hookProfileDescription')}</p>
             <div className="space-y-2">
               {([
-                { value: 'minimal', label: 'Minimal', desc: 'Basic safety checks only. Best for trusted environments with low risk tolerance overhead.' },
-                { value: 'standard', label: 'Standard', desc: 'Balanced scanning for secrets, injections, and suspicious patterns. Recommended for most deployments.' },
-                { value: 'strict', label: 'Strict', desc: 'Full depth scanning with aggressive blocking. May increase latency. Best for sensitive or compliance-driven environments.' },
+                { value: 'minimal', label: t('hookProfileMinimalLabel'), desc: t('hookProfileMinimalDescription') },
+                { value: 'standard', label: t('hookProfileStandardLabel'), desc: t('hookProfileStandardDescription') },
+                { value: 'strict', label: t('hookProfileStrictLabel'), desc: t('hookProfileStrictDescription') },
               ] as const).map(profile => (
                 <button
                   key={profile.value}
@@ -815,12 +906,12 @@ export function SettingsPanel() {
                         body: JSON.stringify({ key: 'hook_profile', value: profile.value }),
                       })
                       if (res.ok) {
-                        showFeedback(true, `Hook profile set to ${profile.label}`)
+                        showFeedback(true, t('hookProfileSet', { profile: profile.label }))
                       } else {
-                        showFeedback(false, 'Failed to save hook profile')
+                        showFeedback(false, t('hookProfileSaveFailed'))
                       }
                     } catch {
-                      showFeedback(false, 'Network error')
+                      showFeedback(false, t('networkError'))
                     } finally {
                       setHookProfileSaving(false)
                     }
@@ -850,23 +941,83 @@ export function SettingsPanel() {
         </div>
       )}
 
-      {/* Interface Mode (General tab) */}
-      {activeCategory === 'general' && (
-        <InterfaceModeSelector />
+      {/* Custom/Maintenance Category Content */}
+      {activeCategory === 'custom' && (
+        <div className="w-full min-w-0 space-y-6 animate-in fade-in slide-in-from-top-2 duration-300">
+          {/* Backup Actions */}
+          <div className="bg-card border border-border rounded-lg p-4 space-y-4">
+            <div>
+              <h3 className="text-sm font-medium text-foreground">{t('backups')}</h3>
+              <p className="text-xs text-muted-foreground">{t('backupsDescription')}</p>
+            </div>
+            <div className="flex flex-wrap gap-2 pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={mcBackupRunning}
+                onClick={async () => {
+                  setMcBackupRunning(true)
+                  try {
+                    const res = await fetch('/api/backup', { method: 'POST' })
+                    const data = await res.json()
+                    if (res.ok) {
+                      showFeedback(true, t('mcBackupCreated', { size: (data.backup?.size / 1024).toFixed(0) }))
+                    } else {
+                      showFeedback(false, data.error || t('mcBackupFailed'))
+                    }
+                  } catch {
+                    showFeedback(false, t('networkError'))
+                  } finally {
+                    setMcBackupRunning(false)
+                  }
+                }}
+              >
+                {mcBackupRunning ? t('backingUp') : t('backupMcDatabase')}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={gwBackupRunning}
+                onClick={async () => {
+                  setGwBackupRunning(true)
+                  try {
+                    const res = await fetch('/api/backup?target=gateway', { method: 'POST' })
+                    const data = await res.json()
+                    if (res.ok) {
+                      showFeedback(true, t('gatewayBackupCreated', { output: data.output }))
+                    } else {
+                      showFeedback(false, data.error || t('gatewayBackupFailed'))
+                    }
+                  } catch {
+                    showFeedback(false, t('networkError'))
+                  } finally {
+                    setGwBackupRunning(false)
+                  }
+                }}
+              >
+                {gwBackupRunning ? t('backingUp') : t('backupGatewayState')}
+              </Button>
+            </div>
+          </div>
+
+          <AccountOAuthSection />
+        </div>
       )}
 
-      {/* Settings list for active category */}
-      <div className="space-y-3">
-        {activeCategory !== 'security' && (grouped[activeCategory] || []).map(setting => {
+      {/* Standard Settings Rows for current category — w-full 与各 Tab 自定义区一致，避免仅 max-w 时随内容收缩 */}
+      <div className="w-full min-w-0 space-y-3 animate-in fade-in duration-300">
+        {(grouped[activeCategory] || [])
+          .filter(s => activeCategory !== 'security' || s.key !== 'security.api_key') // Filter out already handled special keys
+          .map(setting => {
           const currentValue = edits[setting.key] ?? setting.value
           const isChanged = edits[setting.key] !== undefined && edits[setting.key] !== setting.value
           const isBooleanish = setting.value === 'true' || setting.value === 'false'
           const isNumeric = /^\d+$/.test(setting.value)
           const coordinatorTargetOptions = setting.key === 'chat.coordinator_target_agent'
             ? [
-                { label: 'Auto (default/main-session fallback)', value: '' },
+                { label: t('coordinatorAutoFallback'), value: '' },
                 ...coordinatorTargetAgents.map(agent => ({
-                  label: `${agent.name}${agent.isDefault ? ' (default)' : ''} — ${agent.openclawId}`,
+                  label: `${agent.name}${agent.isDefault ? ` (${t('defaultBadge')})` : ''} — ${agent.openclawId}`,
                   value: agent.openclawId,
                 })),
               ]
@@ -876,53 +1027,57 @@ export function SettingsPanel() {
             ? getCoordinatorResolutionPreview(currentValue)
             : null
           const shortKey = setting.key.split('.').pop() || setting.key
+          const displayTitle = setting.description || formatLabel(shortKey)
 
           return (
             <div
               key={setting.key}
-              className={`bg-card border rounded-lg p-4 transition-colors ${
-                isChanged ? 'border-primary/50' : 'border-border'
+              className={`bg-card border rounded-lg p-4 transition-all ${
+                isChanged ? 'border-primary/50 shadow-sm shadow-primary/5' : 'border-border'
               }`}
             >
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-foreground">{formatLabel(shortKey)}</span>
+                    <span className="text-sm font-medium text-foreground">{displayTitle}</span>
                     {setting.is_default && (
-                      <span className="text-2xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">default</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium uppercase tracking-tighter">
+                        {t('defaultBadge')}
+                      </span>
                     )}
                     {isChanged && (
-                      <span className="text-2xs px-1.5 py-0.5 rounded bg-primary/15 text-primary">modified</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/15 text-primary font-medium uppercase tracking-tighter">
+                        {t('modifiedBadge')}
+                      </span>
                     )}
                   </div>
-                  <p className="text-xs text-muted-foreground mt-0.5">{setting.description}</p>
-                  <p className="text-2xs text-muted-foreground/60 mt-1 font-mono">{setting.key}</p>
+                  <p className="text-2xs text-muted-foreground/60 mt-1 font-mono tracking-tight">{setting.key}</p>
                 </div>
 
                 <div className="flex flex-col items-end gap-1 shrink-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-3">
                     {dropdownOptions ? (
                       <select
                         value={currentValue}
                         onChange={e => handleEdit(setting.key, e.target.value)}
-                        className="w-64 px-2 py-1 text-sm bg-background border border-border rounded-md focus:border-primary focus:outline-none"
+                        className="w-64 px-3 py-1.5 text-sm bg-background border border-border rounded-md focus:border-primary focus:outline-none transition-colors"
                       >
                         {dropdownOptions.map(opt => (
                           <option key={opt.value} value={opt.value}>{opt.label}</option>
                         ))}
                         {currentValue && !dropdownOptions.some(opt => opt.value === currentValue) && (
-                          <option value={currentValue}>Custom: {currentValue}</option>
+                          <option value={currentValue}>{t('customValuePrefix', { value: currentValue })}</option>
                         )}
                       </select>
                     ) : isBooleanish ? (
                     <button
                       onClick={() => handleEdit(setting.key, currentValue === 'true' ? 'false' : 'true')}
-                      className={`w-10 h-5 rounded-full relative transition-colors select-none ${
+                      className={`w-11 h-6 rounded-full relative transition-colors select-none ${
                         currentValue === 'true' ? 'bg-primary' : 'bg-muted'
                       }`}
                     >
-                      <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                        currentValue === 'true' ? 'left-5' : 'left-0.5'
+                      <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow-sm transition-all duration-200 ${
+                        currentValue === 'true' ? 'left-6' : 'left-1'
                       }`} />
                     </button>
                   ) : isNumeric ? (
@@ -930,26 +1085,26 @@ export function SettingsPanel() {
                       type="number"
                       value={currentValue}
                       onChange={e => handleEdit(setting.key, e.target.value)}
-                      className="w-24 px-2 py-1 text-sm text-right bg-background border border-border rounded-md focus:border-primary focus:outline-none font-mono"
+                      className="w-28 px-3 py-1.5 text-sm text-right bg-background border border-border rounded-md focus:border-primary focus:outline-none font-mono"
                     />
                   ) : (
                     <input
                       type="text"
                       value={currentValue}
                       onChange={e => handleEdit(setting.key, e.target.value)}
-                      className="w-48 px-2 py-1 text-sm bg-background border border-border rounded-md focus:border-primary focus:outline-none"
+                      className="w-56 px-3 py-1.5 text-sm bg-background border border-border rounded-md focus:border-primary focus:outline-none"
                     />
                   )}
 
                     {!setting.is_default && (
                       <Button
                         onClick={() => handleReset(setting.key)}
-                        title="Reset to default"
+                        title={t('resetToDefault')}
                         variant="ghost"
                         size="icon-xs"
-                        className="w-6 h-6"
+                        className="w-8 h-8 opacity-40 hover:opacity-100 transition-opacity"
                       >
-                        <svg className="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                           <path d="M2 8a6 6 0 1111.3-2.8" strokeLinecap="round" />
                           <path d="M14 2v3.5h-3.5" strokeLinecap="round" strokeLinejoin="round" />
                         </svg>
@@ -957,14 +1112,20 @@ export function SettingsPanel() {
                     )}
                   </div>
                   {coordinatorPreview && (
-                    <p className="text-2xs text-muted-foreground max-w-72 text-right">{coordinatorPreview}</p>
+                    <p className="text-2xs text-muted-foreground/70 max-w-72 text-right mt-1 leading-tight italic">
+                      {coordinatorPreview}
+                    </p>
                   )}
                 </div>
               </div>
 
               {setting.updated_by && setting.updated_at && (
-                <div className="text-2xs text-muted-foreground/50 mt-2">
-                  Last updated by {setting.updated_by} on {new Date(setting.updated_at * 1000).toLocaleDateString()}
+                <div className="text-[10px] text-muted-foreground/40 mt-3 flex items-center gap-1.5">
+                  <span className="w-1 h-1 rounded-full bg-muted-foreground/20" />
+                  {t('lastUpdatedByOn', {
+                    user: setting.updated_by,
+                    date: new Date(setting.updated_at * 1000).toLocaleDateString(),
+                  })}
                 </div>
               )}
             </div>
@@ -972,18 +1133,15 @@ export function SettingsPanel() {
         })}
       </div>
 
-      {/* Account / OAuth connection */}
-      <AccountOAuthSection />
-
       {/* Unsaved changes bar */}
       {hasChanges && (
         <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-card border border-border rounded-lg shadow-lg px-4 py-2.5 flex items-center gap-3 z-40">
           <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
           <span className="text-xs text-foreground">
-            {Object.keys(edits).filter(k => {
+            {t('unsavedChanges', { count: Object.keys(edits).filter(k => {
               const s = settings.find(s => s.key === k)
               return s && edits[k] !== s.value
-            }).length} unsaved change(s)
+            }).length })}
           </span>
           <Button
             onClick={handleDiscard}
@@ -1006,7 +1164,8 @@ export function SettingsPanel() {
 }
 
 function InterfaceModeSelector() {
-  const { interfaceMode, setInterfaceMode } = useMissionControl()
+  const t = useTranslations('settings')
+  const { interfaceMode, setInterfaceMode } = useAgentCenterStore()
   const [saving, setSaving] = useState(false)
   const navigateToPanel = useNavigateToPanel()
 
@@ -1022,7 +1181,7 @@ function InterfaceModeSelector() {
       // If switching to essential and on a hidden panel, redirect
       if (mode === 'essential') {
         const essentialIds = new Set(['overview', 'agents', 'tasks', 'chat', 'activity', 'logs', 'settings'])
-        const store = useMissionControl.getState()
+        const store = useAgentCenterStore.getState()
         if (!essentialIds.has(store.activeTab)) {
           navigateToPanel('overview')
         }
@@ -1033,14 +1192,12 @@ function InterfaceModeSelector() {
 
   return (
     <div className="bg-card border border-border rounded-lg p-4">
-      <h3 className="text-sm font-medium text-foreground mb-1">Interface Mode</h3>
-      <p className="text-xs text-muted-foreground mb-3">
-        Controls how many panels appear in the sidebar.
-      </p>
+      <h3 className="text-sm font-medium text-foreground mb-1">{t('interfaceModeTitle')}</h3>
+      <p className="text-xs text-muted-foreground mb-3">{t('interfaceModeDescription')}</p>
       <div className="space-y-2">
         {([
-          { value: 'essential' as const, label: 'Essential', desc: 'Focused view with core panels only — Overview, Agents, Tasks, Chat, Activity, Logs, Settings.' },
-          { value: 'full' as const, label: 'Full', desc: 'All panels and advanced features including Memory, Cron, Webhooks, Alerts, Audit, and more.' },
+          { value: 'essential' as const, label: t('interfaceEssentialLabel'), desc: t('interfaceEssentialDescription') },
+          { value: 'full' as const, label: t('interfaceFullLabel'), desc: t('interfaceFullDescription') },
         ]).map(option => (
           <button
             key={option.value}
@@ -1066,7 +1223,7 @@ function InterfaceModeSelector() {
           </button>
         ))}
       </div>
-      <p className="text-2xs text-muted-foreground/60 mt-2">You can also switch from the sidebar footer.</p>
+      <p className="text-2xs text-muted-foreground/60 mt-2">{t('interfaceSidebarHint')}</p>
     </div>
   )
 }
@@ -1098,7 +1255,8 @@ function formatLabel(key: string): string {
 // ---------------------------------------------------------------------------
 
 function AccountOAuthSection() {
-  const { currentUser } = useMissionControl()
+  const t = useTranslations('settings')
+  const { currentUser } = useAgentCenterStore()
   const [disconnecting, setDisconnecting] = useState(false)
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -1112,14 +1270,14 @@ function AccountOAuthSection() {
       const res = await fetch('/api/auth/google/disconnect', { method: 'POST' })
       const data = await res.json().catch(() => ({}))
       if (res.ok) {
-        setFeedback({ ok: true, text: 'Google account disconnected. You can now sign in with username and password.' })
+        setFeedback({ ok: true, text: t('googleDisconnectedSuccess') })
         // Reload after a short delay so the user sees the feedback
         setTimeout(() => window.location.reload(), 1500)
       } else {
-        setFeedback({ ok: false, text: data.error || 'Failed to disconnect' })
+        setFeedback({ ok: false, text: data.error || t('googleDisconnectFailed') })
       }
     } catch {
-      setFeedback({ ok: false, text: 'Network error' })
+      setFeedback({ ok: false, text: t('networkError') })
     } finally {
       setDisconnecting(false)
     }
@@ -1128,7 +1286,7 @@ function AccountOAuthSection() {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 pt-2">
-        <h3 className="text-sm font-medium text-foreground">Account</h3>
+        <h3 className="text-sm font-medium text-foreground">{t('accountTitle')}</h3>
       </div>
 
       <div className="bg-card border border-border rounded-lg p-4">
@@ -1150,15 +1308,15 @@ function AccountOAuthSection() {
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-foreground">Google</span>
                 {isGoogleConnected ? (
-                  <span className="text-2xs px-1.5 py-0.5 rounded bg-green-500/15 text-green-400">Connected</span>
+                  <span className="text-2xs px-1.5 py-0.5 rounded bg-green-500/15 text-green-400">{t('googleConnected')}</span>
                 ) : (
-                  <span className="text-2xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">Not connected</span>
+                  <span className="text-2xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{t('googleNotConnected')}</span>
                 )}
               </div>
               {isGoogleConnected && currentUser.email ? (
                 <p className="text-xs text-muted-foreground mt-0.5">{currentUser.email}</p>
               ) : (
-                <p className="text-xs text-muted-foreground mt-0.5">Link your Google account for OAuth sign-in</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('googleLinkHint')}</p>
               )}
             </div>
           </div>
@@ -1171,7 +1329,7 @@ function AccountOAuthSection() {
               size="sm"
               className="text-xs hover:text-destructive hover:border-destructive/50"
             >
-              {disconnecting ? 'Disconnecting...' : 'Disconnect'}
+              {disconnecting ? t('disconnectingGoogle') : t('disconnectGoogle')}
             </Button>
           )}
         </div>
@@ -1183,6 +1341,331 @@ function AccountOAuthSection() {
             {feedback.text}
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+function UpstreamSyncSection({ settings, edits, handleEdit, showFeedback }: any) {
+  const t = useTranslations('settings')
+  const [schedulerTasks, setSchedulerTasks] = useState<any[]>([])
+  const [syncDiagnostics, setSyncDiagnostics] = useState<any | null>(null)
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+
+  const fetchSchedulerStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/scheduler')
+      if (res.ok) {
+        const data = await res.json()
+        setSchedulerTasks(data.tasks || [])
+      }
+    } catch {}
+  }, [])
+
+  const fetchSyncDiagnostics = useCallback(async () => {
+    setDiagnosticsLoading(true)
+    try {
+      const res = await fetch('/api/server-sync/status')
+      if (res.ok) {
+        const data = await res.json()
+        setSyncDiagnostics(data)
+      }
+    } catch {} finally {
+      setDiagnosticsLoading(false)
+    }
+  }, [])
+
+  const handleSyncNow = async () => {
+    setSyncing(true)
+    try {
+      const res = await fetch('/api/scheduler', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: 'server_gateway_sync' }),
+      })
+      const data = await res.json()
+      if (res.ok && data.ok) {
+        showFeedback(true, data.message || t('clientSyncSuccessful'))
+        fetchSchedulerStatus()
+        fetchSyncDiagnostics()
+      } else {
+        showFeedback(false, data.error || data.message || t('clientSyncFailed'))
+      }
+    } catch {
+      showFeedback(false, t('clientSyncNetworkError'))
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchSchedulerStatus()
+    fetchSyncDiagnostics()
+    const interval = setInterval(() => {
+      fetchSchedulerStatus()
+      fetchSyncDiagnostics()
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [fetchSchedulerStatus, fetchSyncDiagnostics])
+
+  const getVal = (key: string) => edits[key] ?? settings.find((s: any) => s.key === key)?.value ?? ''
+  const syncTask = schedulerTasks.find(t => t.id === 'server_gateway_sync')
+  const diagnosticSyncTask = syncDiagnostics?.scheduler.tasks.find((t: any) => t.id === 'server_gateway_sync')
+  const bridgeInfo = syncDiagnostics?.upstream.bridge_info
+  const discoveredHttpBase = bridgeInfo?.payload?.service?.http_base_url || ''
+  const discoveredWsUrl = bridgeInfo?.payload?.bridge?.ws_url || ''
+
+  return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-top-2 duration-300">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">{t('clientTitle')}</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">{t('clientDescription')}</p>
+        </div>
+        <Button
+          onClick={handleSyncNow}
+          disabled={syncing}
+          variant="outline"
+          size="sm"
+        >
+          {syncing ? t('clientSyncing') : t('clientSyncNow')}
+        </Button>
+      </div>
+
+      <div className="space-y-4 bg-card border border-border rounded-lg p-4">
+        <div>
+          <label className="block text-xs font-medium text-foreground mb-1">{t('clientServerGatewayUrlLabel')}</label>
+          <input
+            type="text"
+            className="w-full bg-background border border-border rounded px-3 py-2 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all"
+            placeholder={t('clientServerGatewayUrlPlaceholder')}
+            value={getVal('gateway.server_url')}
+            onChange={(e) => handleEdit('gateway.server_url', e.target.value)}
+          />
+          <p className="text-2xs text-muted-foreground mt-1">{t('clientServerGatewayUrlHint')}</p>
+        </div>
+        
+        <div>
+          <label className="block text-xs font-medium text-foreground mb-1">{t('clientGatewayApiTokenLabel')}</label>
+          <input
+            type="password"
+            className="w-full bg-background border border-border rounded px-3 py-2 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all"
+            placeholder={t('clientGatewayApiTokenPlaceholder')}
+            value={getVal('gateway.token')}
+            onChange={(e) => handleEdit('gateway.token', e.target.value)}
+          />
+          <p className="text-2xs text-muted-foreground mt-1">{t('clientGatewayApiTokenHint')}</p>
+        </div>
+        
+        <div>
+          <label className="block text-xs font-medium text-foreground mb-1">{t('clientLocalClientNameLabel')}</label>
+          <input
+            type="text"
+            className="w-full bg-background border border-border rounded px-3 py-2 text-sm focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-all"
+            placeholder={t('clientLocalClientNamePlaceholder')}
+            value={getVal('gateway.client_name')}
+            onChange={(e) => handleEdit('gateway.client_name', e.target.value)}
+          />
+          <p className="text-2xs text-muted-foreground mt-1">{t('clientLocalClientNameHint')}</p>
+        </div>
+      </div>
+
+      <div className="bg-card border border-border rounded-lg p-4">
+        <h3 className="text-sm font-medium text-foreground mb-3">{t('clientSyncStatusTitle')}</h3>
+        <div className="space-y-2">
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground">{t('clientAutomaticSync')}</span>
+            <span className={syncTask?.enabled ? 'text-green-400 font-medium' : 'text-yellow-400'}>
+              {syncTask?.enabled ? t('clientEnabledEvery60s') : t('disabled')}
+            </span>
+          </div>
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground">{t('clientLastSyncResult')}</span>
+            <span className={syncTask?.lastResult?.ok ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
+              {syncTask?.lastResult?.message || t('neverRun')}
+            </span>
+          </div>
+          {syncTask?.lastRun && (
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">{t('clientLastRunAt')}</span>
+              <span className="text-foreground/80">{new Date(syncTask.lastRun).toLocaleString()}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-card border border-border rounded-lg p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium text-foreground">{t('syncDiagnosticsTitle')}</h3>
+          <Button
+            onClick={fetchSyncDiagnostics}
+            variant="ghost"
+            size="xs"
+            className="h-7 text-2xs"
+            disabled={diagnosticsLoading}
+          >
+            {diagnosticsLoading ? t('syncDiagnosticsRefreshing') : t('syncDiagnosticsRefresh')}
+          </Button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+          <div className="rounded-lg border border-border/60 bg-muted/20 p-3 space-y-2">
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">{t('configuredParentUrl')}</span>
+              <span className="font-mono text-right break-all text-foreground/70">{syncDiagnostics?.upstream.server_url || getVal('gateway.server_url') || '-'}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">{t('discoveredHttpBase')}</span>
+              <span className="font-mono text-right break-all text-foreground/70">{discoveredHttpBase || '-'}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">{t('discoveredBridgeWs')}</span>
+              <span className="font-mono text-right break-all text-foreground/70">{discoveredWsUrl || '-'}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">{t('tokenConfigured')}</span>
+              <span className={syncDiagnostics?.upstream.token_configured ? 'text-green-400 font-medium' : 'text-yellow-400'}>
+                {syncDiagnostics?.upstream.token_configured ? t('yes') : t('no')}
+              </span>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border/60 bg-muted/20 p-3 space-y-2">
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">{t('discoveryStatus')}</span>
+              <span className={bridgeInfo?.ok ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
+                {bridgeInfo ? (bridgeInfo.ok ? t('reachable') : t('failed')) : t('unknown')}
+              </span>
+            </div>
+            {bridgeInfo?.error && <div className="text-destructive text-2xs break-words">{bridgeInfo.error}</div>}
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">{t('clientLocalAgents')}</span>
+              <span className="text-foreground/80">{syncDiagnostics?.local_counts.total ?? '-'}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">{t('unsyncedMessages')}</span>
+              <span className="text-foreground/80">{syncDiagnostics?.backlog.unsynced_messages ?? '-'}</span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">{t('pendingRemoteTaskNotify')}</span>
+              <span className="text-foreground/80">{syncDiagnostics?.backlog.remote_tasks_pending_notify ?? '-'}</span>
+            </div>
+          </div>
+        </div>
+
+        {diagnosticSyncTask && (
+          <div className="rounded-lg border border-border/60 bg-muted/10 p-3 text-xs space-y-1">
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">{t('periodicUpstreamSync')}</span>
+              <span className={diagnosticSyncTask.enabled ? 'text-green-400 font-medium' : 'text-yellow-400'}>
+                {diagnosticSyncTask.enabled ? t('enabled') : t('disabled')}
+              </span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-muted-foreground">{t('lastResult')}</span>
+              <span className={diagnosticSyncTask.lastResult?.ok ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
+                {diagnosticSyncTask.lastResult?.message || t('neverRun')}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+function DownstreamConnectionSection({ apiKeyInfo }: { apiKeyInfo: any }) {
+  const t = useTranslations('settings')
+  const tc = useTranslations('common')
+  const [revealing, setRevealing] = useState(false)
+  const [fullToken, setFullToken] = useState<string | null>(null)
+  const [copiedUrl, setCopiedUrl] = useState(false)
+  const [copiedToken, setCopiedToken] = useState(false)
+
+  const serverUrl = typeof window !== 'undefined' ? window.location.origin : ''
+
+  const handleReveal = async () => {
+    setRevealing(true)
+    try {
+      const res = await fetch('/api/tokens/rotate?reveal=true')
+      if (res.ok) {
+        const data = await res.json()
+        setFullToken(data.key)
+      }
+    } catch {}
+    setRevealing(false)
+  }
+
+  const handleCopyUrl = () => {
+    navigator.clipboard.writeText(serverUrl)
+    setCopiedUrl(true)
+    setTimeout(() => setCopiedUrl(false), 2000)
+  }
+
+  const handleCopyToken = () => {
+    if (fullToken) {
+      navigator.clipboard.writeText(fullToken)
+      setCopiedToken(true)
+      setTimeout(() => setCopiedToken(false), 2000)
+    }
+  }
+
+  return (
+    <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+      <div>
+        <h2 className="text-lg font-semibold text-foreground">{t('downstreamTitle')}</h2>
+        <p className="text-xs text-muted-foreground mt-0.5">{t('downstreamDescription')}</p>
+      </div>
+
+      <div className="bg-card border border-border rounded-lg p-4 space-y-4">
+        <div className="flex flex-col gap-1.5">
+          <label className="text-2xs uppercase tracking-wider font-semibold text-muted-foreground/70">
+            {t('downstreamUrlLabel')}
+          </label>
+          <div className="flex gap-2">
+            <code className="flex-1 bg-muted/30 border border-border/50 rounded px-3 py-2 text-xs truncate font-mono text-foreground/80">
+              {serverUrl}
+            </code>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleCopyUrl}
+              className="shrink-0 h-9"
+            >
+              {copiedUrl ? t('copied') : t('copyUrl')}
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <label className="text-2xs uppercase tracking-wider font-semibold text-muted-foreground/70">
+            {t('downstreamTokenLabel')}
+          </label>
+          <div className="flex gap-2">
+            <code className="flex-1 bg-muted/30 border border-border/50 rounded px-3 py-2 text-xs truncate font-mono text-foreground/80">
+              {fullToken || apiKeyInfo?.masked_key || '••••••••'}
+            </code>
+            {!fullToken ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleReveal}
+                disabled={revealing}
+                className="shrink-0 h-9"
+              >
+                {revealing ? tc('loading') : tc('reveal')}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleCopyToken}
+                className="shrink-0 h-9"
+              >
+                {copiedToken ? t('copied') : t('copyToken')}
+              </Button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   )

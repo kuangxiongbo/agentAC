@@ -72,12 +72,59 @@ export async function GET(request: NextRequest) {
  * Combines system health, DB stats, audit summary, and recent activity.
  */
 async function getDashboardData(workspaceId: number) {
-  const [system, dbStats] = await Promise.all([
+  const [system, dbStats, claudeRes, hermesRes] = await Promise.allSettled([
     getSystemStatus(workspaceId),
     getDbStats(workspaceId),
+    fetchClaudeStats(),
+    fetchHermesStats(),
   ])
 
-  return { ...system, db: dbStats }
+  const systemData = system.status === 'fulfilled' ? system.value : null
+  const dbData = dbStats.status === 'fulfilled' ? dbStats.value : null
+  const claudeData = claudeRes.status === 'fulfilled' ? claudeRes.value : null
+  const hermesData = hermesRes.status === 'fulfilled' ? hermesRes.value : null
+
+  return { 
+    ...systemData, 
+    db: dbData,
+    claude: claudeData,
+    hermes: hermesData,
+  }
+}
+
+async function fetchClaudeStats() {
+  try {
+    const db = getDatabase()
+    return db.prepare(`
+      SELECT
+        COUNT(*) as total_sessions,
+        SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) as active_sessions,
+        SUM(input_tokens) as total_input_tokens,
+        SUM(output_tokens) as total_output_tokens,
+        SUM(estimated_cost) as total_estimated_cost,
+        COUNT(DISTINCT project_slug) as unique_projects
+      FROM claude_sessions
+    `).get() as any
+  } catch {
+    return null
+  }
+}
+
+async function fetchHermesStats() {
+  try {
+    const { isHermesInstalled } = await import('@/lib/hermes-sessions')
+    const { getHermesTasks } = await import('@/lib/hermes-tasks')
+    const { getHermesMemory } = await import('@/lib/hermes-memory')
+    
+    if (!isHermesInstalled()) return null
+
+    return {
+      cronJobCount: getHermesTasks().cronJobs.length,
+      memoryEntries: getHermesMemory().agentMemoryEntries,
+    }
+  } catch {
+    return null
+  }
 }
 
 async function getMemorySnapshot() {

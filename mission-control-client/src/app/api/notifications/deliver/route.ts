@@ -3,6 +3,10 @@ import { getDatabase, Notification, db_helpers } from '@/lib/db';
 import { runOpenClaw } from '@/lib/command';
 import { requireRole } from '@/lib/auth';
 import { logger } from '@/lib/logger';
+import {
+  executeBoundLocalAgentPrompt,
+  getLocalSessionKindForFramework,
+} from '@/lib/local-session-executor';
 
 /**
  * POST /api/notifications/deliver - Notification delivery daemon endpoint
@@ -26,7 +30,7 @@ export async function POST(request: NextRequest) {
     
     // Get undelivered notifications
     let query = `
-      SELECT n.*, a.session_key 
+      SELECT n.*, a.id as agent_id, a.session_key, a.framework, a.workspace_path, a.config
       FROM notifications n
       LEFT JOIN agents a ON n.recipient = a.name AND a.workspace_id = n.workspace_id
       WHERE n.delivered_at IS NULL AND n.workspace_id = ?
@@ -42,7 +46,13 @@ export async function POST(request: NextRequest) {
     query += ' ORDER BY n.created_at ASC LIMIT ?';
     params.push(limit);
     
-    const undeliveredNotifications = db.prepare(query).all(...params) as (Notification & { session_key?: string })[];
+    const undeliveredNotifications = db.prepare(query).all(...params) as (Notification & {
+      agent_id?: number | null
+      session_key?: string | null
+      framework?: string | null
+      workspace_path?: string | null
+      config?: string | null
+    })[];
     
     if (undeliveredNotifications.length === 0) {
       return NextResponse.json({
@@ -81,26 +91,44 @@ export async function POST(request: NextRequest) {
         if (!dry_run) {
           // Send notification via OpenClaw gateway call agent
           try {
-            const invokeParams = {
-              message,
-              agentId: notification.recipient,
-              idempotencyKey: `notification-${notification.id}-${Date.now()}`,
-              deliver: false,
-            };
-            const { stdout, stderr } = await runOpenClaw(
-              [
-                'gateway',
-                'call',
-                'agent',
-                '--params',
-                JSON.stringify(invokeParams),
-                '--json'
-              ],
-              { timeoutMs: 30000 }
-            );
+            let stdout = ''
+            const localSessionKind = getLocalSessionKindForFramework(notification.framework)
+            if (localSessionKind) {
+              const result = await executeBoundLocalAgentPrompt(
+                {
+                  id: notification.agent_id,
+                  name: notification.recipient,
+                  framework: notification.framework,
+                  session_key: notification.session_key,
+                  workspace_path: notification.workspace_path,
+                  config: notification.config,
+                },
+                message,
+              )
+              stdout = result.reply
+            } else {
+              const invokeParams = {
+                message,
+                agentId: notification.recipient,
+                idempotencyKey: `notification-${notification.id}-${Date.now()}`,
+                deliver: false,
+              };
+              const result = await runOpenClaw(
+                [
+                  'gateway',
+                  'call',
+                  'agent',
+                  '--params',
+                  JSON.stringify(invokeParams),
+                  '--json'
+                ],
+                { timeoutMs: 30000 }
+              );
+              stdout = result.stdout
 
-            if (stderr && stderr.includes('error')) {
-              throw new Error(`OpenClaw error: ${stderr}`);
+              if (result.stderr && result.stderr.includes('error')) {
+                throw new Error(`OpenClaw error: ${result.stderr}`);
+              }
             }
             
             // Mark as delivered
@@ -242,11 +270,12 @@ export async function GET(request: NextRequest) {
       SELECT 
         n.recipient,
         a.session_key,
+        a.framework,
         COUNT(*) as pending_count
       FROM notifications n
       LEFT JOIN agents a ON n.recipient = a.name AND a.workspace_id = n.workspace_id
       WHERE n.delivered_at IS NULL AND n.workspace_id = ?
-      GROUP BY n.recipient, a.session_key
+      GROUP BY n.recipient, a.session_key, a.framework
       ORDER BY pending_count DESC
     `).all(workspaceId) as any[];
     

@@ -107,7 +107,7 @@ describe('DELETE /api/agents/[id]', () => {
     expect(deleteStmt.run).toHaveBeenCalledWith(8, 1)
   })
 
-  it('still deletes the Mission Control agent when config cleanup fails', async () => {
+  it('still deletes the E-Agent-Client agent when config cleanup fails', async () => {
     const agent = { id: 9, name: 'trinity', role: 'tester', config: JSON.stringify({ openclawId: 'trinity' }) }
     const selectStmt = { get: vi.fn(() => agent) }
     const deleteStmt = { run: vi.fn() }
@@ -131,5 +131,39 @@ describe('DELETE /api/agents/[id]', () => {
     expect(deleteStmt.run).toHaveBeenCalledWith(9, 1)
     expect(body.success).toBe(true)
     expect(body.warning).toContain('OpenClaw config cleanup skipped')
+  })
+
+  it('skips OpenClaw workspace cleanup for non-openclaw agents', async () => {
+    const agent = {
+      id: 10,
+      name: 'test2',
+      role: 'builder engineer',
+      framework: 'claude',
+      config: JSON.stringify({ main_runtime: 'claude' }),
+    }
+    const selectStmt = { get: vi.fn(() => agent) }
+    const deleteStmt = { run: vi.fn() }
+    prepare.mockImplementation((sql: string) => {
+      if (sql.startsWith('SELECT * FROM agents')) return selectStmt
+      if (sql.startsWith('DELETE FROM agents')) return deleteStmt
+      throw new Error(`Unexpected SQL: ${sql}`)
+    })
+
+    const { DELETE } = await import('@/app/api/agents/[id]/route')
+    const request = new NextRequest('http://localhost/api/agents/10', {
+      method: 'DELETE',
+      body: JSON.stringify({ remove_workspace: true }),
+      headers: { 'content-type': 'application/json' },
+    })
+
+    const response = await DELETE(request, { params: Promise.resolve({ id: '10' }) })
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(runOpenClaw).not.toHaveBeenCalled()
+    expect(removeAgentFromConfig).not.toHaveBeenCalled()
+    expect(deleteStmt.run).toHaveBeenCalledWith(10, 1)
+    expect(body.success).toBe(true)
+    expect(body.warning).toContain('does not use OpenClaw workspace deletion')
   })
 })

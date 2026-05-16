@@ -1,27 +1,28 @@
 'use client'
 
 import { useRef, useEffect, useState, useCallback } from 'react'
-import { useMissionControl, ChatMessage } from '@/store'
+import { useTranslations } from 'next-intl'
+import { useAgentCenterStore, ChatMessage } from '@/store'
 import { MessageBubble } from './message-bubble'
 import { Button } from '@/components/ui/button'
 
-function formatDateGroup(timestamp: number): string {
+function formatDateGroup(timestamp: number, labels: { today: string; yesterday: string }): string {
   const date = new Date(timestamp * 1000)
   const today = new Date()
   const yesterday = new Date(today)
   yesterday.setDate(yesterday.getDate() - 1)
 
-  if (date.toDateString() === today.toDateString()) return 'Today'
-  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday'
+  if (date.toDateString() === today.toDateString()) return labels.today
+  if (date.toDateString() === yesterday.toDateString()) return labels.yesterday
   return date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
 }
 
-function groupMessagesByDate(messages: ChatMessage[]): Array<{ date: string; messages: ChatMessage[] }> {
+function groupMessagesByDate(messages: ChatMessage[], labels: { today: string; yesterday: string }): Array<{ date: string; messages: ChatMessage[] }> {
   const groups: Array<{ date: string; messages: ChatMessage[] }> = []
   let currentDate = ''
 
   for (const msg of messages) {
-    const dateStr = formatDateGroup(msg.created_at)
+    const dateStr = formatDateGroup(msg.created_at, labels)
     if (dateStr !== currentDate) {
       currentDate = dateStr
       groups.push({ date: dateStr, messages: [] })
@@ -47,7 +48,8 @@ function isGroupedWithPrevious(messages: ChatMessage[], index: number): boolean 
 }
 
 export function MessageList() {
-  const { chatMessages, activeConversation, isSendingMessage, updatePendingMessage, removePendingMessage, addChatMessage } = useMissionControl()
+  const t = useTranslations('chat')
+  const { chatMessages, activeConversation, isSendingMessage, updatePendingMessage, removePendingMessage, addChatMessage } = useAgentCenterStore()
   const bottomRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [showNewMessages, setShowNewMessages] = useState(false)
@@ -136,8 +138,8 @@ export function MessageList() {
               <path d="M6 7h.01M10 7h.01" />
             </svg>
           </div>
-          <p className="text-sm text-muted-foreground">Select a conversation</p>
-          <p className="text-xs text-muted-foreground/50 mt-1">or start a new one with an agent</p>
+          <p className="text-sm text-muted-foreground">{t('selectConversation')}</p>
+          <p className="text-xs text-muted-foreground/50 mt-1">{t('startNewConversation')}</p>
         </div>
       </div>
     )
@@ -157,14 +159,17 @@ export function MessageList() {
               <path d="M7 11v1a1 1 0 001 1h5l2 2v-6a1 1 0 00-1-1h-1" />
             </svg>
           </div>
-          <p className="text-sm text-muted-foreground">No messages yet</p>
-          <p className="text-xs text-muted-foreground/50 mt-1">Send a message to get started</p>
+          <p className="text-sm text-muted-foreground">{t('noMessagesYet')}</p>
+          <p className="text-xs text-muted-foreground/50 mt-1">{t('sendMessageToGetStarted')}</p>
         </div>
       </div>
     )
   }
 
-  const groups = groupMessagesByDate(conversationMessages)
+  const groups = groupMessagesByDate(conversationMessages, {
+    today: t('today'),
+    yesterday: t('yesterday'),
+  })
 
   return (
     <div ref={containerRef} className="relative flex-1 overflow-y-auto px-4 py-3" onScroll={handleScroll}>
@@ -188,20 +193,20 @@ export function MessageList() {
                     isGrouped={isGroupedWithPrevious(group.messages, idx)}
                   />
                   <div className="flex items-center gap-2 px-3 pb-2">
-                    <span className="text-[10px] text-red-400">Failed to send</span>
+                    <span className="text-[10px] text-red-400">{t('failedToSend')}</span>
                     <Button
                       onClick={() => handleRetry(msg)}
                       variant="link"
                       className="text-[10px] text-primary h-auto p-0"
                     >
-                      Retry
+                      {t('retry')}
                     </Button>
                     <Button
                       onClick={() => removePendingMessage(msg.id)}
                       variant="ghost"
                       className="text-[10px] text-muted-foreground h-auto p-0"
                     >
-                      Remove
+                      {t('remove')}
                     </Button>
                   </div>
                 </div>
@@ -248,7 +253,7 @@ export function MessageList() {
           onClick={scrollToBottom}
           className="sticky bottom-3 left-1/2 -translate-x-1/2 z-10 bg-primary text-primary-foreground px-4 py-1.5 rounded-full text-xs font-medium shadow-lg hover:bg-primary/90 transition-colors flex items-center gap-1.5"
         >
-          New messages
+          {t('newMessages')}
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M8 3v10M4 9l4 4 4-4" />
           </svg>

@@ -44,8 +44,6 @@ import { useTranslations } from 'next-intl'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { LocalModeBanner } from '@/components/layout/local-mode-banner'
 import { UpdateBanner } from '@/components/layout/update-banner'
-import { OpenClawUpdateBanner } from '@/components/layout/openclaw-update-banner'
-import { OpenClawDoctorBanner } from '@/components/layout/openclaw-doctor-banner'
 import { OnboardingWizard } from '@/components/onboarding/onboarding-wizard'
 import { Loader } from '@/components/ui/loader'
 import { ProjectManagerModal } from '@/components/modals/project-manager-modal'
@@ -56,26 +54,21 @@ import { completeNavigationTiming } from '@/lib/navigation-metrics'
 import { panelHref, useNavigateToPanel } from '@/lib/navigation'
 import { clearOnboardingDismissedThisSession, clearOnboardingReplayFromStart, getOnboardingSessionDecision, markOnboardingReplayFromStart, readOnboardingDismissedThisSession } from '@/lib/onboarding-session'
 import { Button } from '@/components/ui/button'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 
 interface GatewaySummary {
   id: number
   is_primary: number
 }
 
-const STEP_KEYS = ['auth', 'capabilities', 'config', 'connect', 'agents', 'sessions', 'projects', 'memory', 'skills'] as const
+  const STEP_KEYS = ['auth', 'config', 'connect', 'init'] as const
 
-const bootLabelKeys: Record<string, string> = {
-  auth: 'authenticatingOperator',
-  capabilities: 'detectingStationMode',
-  config: 'loadingControlConfig',
-  connect: 'connectingRuntimeLinks',
-  agents: 'syncingAgentRegistry',
-  sessions: 'loadingActiveSessions',
-  projects: 'hydratingWorkspaceBoard',
-  memory: 'mappingMemoryGraph',
-  skills: 'indexingSkillCatalog',
-}
+  const bootLabelKeys: Record<string, string> = {
+    auth: 'authenticatingOperator',
+    config: 'loadingControlConfig',
+    connect: 'connectingRuntimeLinks',
+    init: 'syncingAgentRegistry', // Repurposing 'syncingAgentRegistry' for the whole init step
+  }
 
 function renderPluginPanel(panelId: string) {
   const pluginPanel = getPluginPanel(panelId)
@@ -88,7 +81,8 @@ export default function Home() {
   const tb = useTranslations('boot')
   const tp = useTranslations('page')
   const tc = useTranslations('common')
-  const { activeTab, setActiveTab, setCurrentUser, setDashboardMode, setGatewayAvailable, setLocalSessionsAvailable, setCapabilitiesChecked, setSubscription, setDefaultOrgName, setUpdateAvailable, setOpenclawUpdate, showOnboarding, setShowOnboarding, liveFeedOpen, toggleLiveFeed, showProjectManagerModal, setShowProjectManagerModal, fetchProjects, setChatPanelOpen, bootComplete, setBootComplete, setAgents, setSessions, setProjects, setInterfaceMode, setMemoryGraphAgents, setSkillsData } = useMissionControl()
+  const td = useTranslations('dashboardOverview')
+  const { activeTab, setActiveTab, setCurrentUser, setDashboardMode, setGatewayAvailable, setLocalSessionsAvailable, setCapabilitiesChecked, setSubscription, setDefaultOrgName, setUpdateAvailable, setOpenclawUpdate, showOnboarding, setShowOnboarding, liveFeedOpen, toggleLiveFeed, showProjectManagerModal, setShowProjectManagerModal, fetchProjects, setChatPanelOpen, bootComplete, setBootComplete, setAgents, setSessions, setProjects, setInterfaceMode, setMemoryGraphAgents, setSkillsData, setClientName } = useAgentCenterStore()
 
   // Sync URL → Zustand activeTab
   const pathname = usePathname()
@@ -220,136 +214,69 @@ export default function Home() {
       }
     }
 
-    // Bypass authentication check (previously check /api/auth/me)
+    // 1. Authenticate (synthetic)
     setCurrentUser({
       id: 1,
-      username: 'admin',
-      display_name: 'Administrator',
+      username: 'proxy-client',
+      display_name: td('modeProxy'),
       role: 'admin',
     } as any)
+    setDefaultOrgName(td('modeProxy'))
     markStep('auth')
 
-    /*
-    // Check for available updates
-    fetch('/api/releases/check')
-      .then(res => res.ok ? res.json() : null)
-      .then(data => {
-        if (data?.updateAvailable) {
-          setUpdateAvailable({
-            latestVersion: data.latestVersion,
-            releaseUrl: data.releaseUrl,
-            releaseNotes: data.releaseNotes,
-          })
-        }
-      })
-      .catch(() => {})
-    */
+    // 2. Load Config & Connect Gateway
+    const runBootSequence = async () => {
+      try {
+        markStep('config')
 
-    /*
-    // Check for OpenClaw updates
-    fetch('/api/openclaw/version')
-      .then(res => res.ok ? res.json() : null)
-      .then(data => {
-        if (data?.updateAvailable) {
-          setOpenclawUpdate({
-            installed: data.installed,
-            latest: data.latest,
-            releaseUrl: data.releaseUrl,
-            releaseNotes: data.releaseNotes,
-            updateCommand: data.updateCommand,
-          })
-        } else {
-          setOpenclawUpdate(null)
-        }
-      })
-      .catch(() => {})
-    */
+        // Fetch initial state + capabilities in one go
+        const initRes = await fetch('/api/init')
+        if (!initRes.ok) throw new Error('Init failed')
+        const initData = await initRes.json()
 
-    // Check capabilities, then conditionally connect to gateway
-    fetch('/api/status?action=capabilities')
-      .then(res => res.ok ? res.json() : null)
-      .then(async data => {
-        if (data?.subscription) {
-          setSubscription(data.subscription)
-        }
-        if (data?.processUser) {
-          setDefaultOrgName(data.processUser)
-        }
-        if (data?.interfaceMode === 'essential' || data?.interfaceMode === 'full') {
-          setInterfaceMode(data.interfaceMode)
-        }
-        if (data && data.gateway === false) {
-          setDashboardMode('local')
-          setGatewayAvailable(false)
-          setCapabilitiesChecked(true)
-          markStep('capabilities')
-          markStep('connect')
-          // Skip WebSocket connect — no gateway to talk to
-          return
-        }
-        if (data && data.gateway === true) {
-          setDashboardMode('full')
-          setGatewayAvailable(true)
-        }
-        if (data?.claudeHome) {
-          setLocalSessionsAvailable(true)
+        // Hydrate store
+        if (initData.agents) setAgents(initData.agents)
+        if (initData.sessions) setSessions(initData.sessions)
+        if (initData.projects) setProjects(initData.projects)
+        if (initData.clientName) setClientName(initData.clientName)
+        if (initData.skills) setSkillsData(initData.skills, [], initData.skills.length)
+        
+        const caps = initData.capabilities
+        if (caps) {
+          if (caps.subscription) setSubscription(caps.subscription)
+          if (caps.interfaceMode) setInterfaceMode(caps.interfaceMode)
+          if (caps.gateway === false) {
+            setDashboardMode('local')
+            setGatewayAvailable(false)
+          } else {
+            setDashboardMode('full')
+            setGatewayAvailable(true)
+          }
+          if (caps.claudeHome) setLocalSessionsAvailable(true)
         }
         setCapabilitiesChecked(true)
-        markStep('capabilities')
+        markStep('init')
 
+        // 3. Connect WebSocket
         const primaryConnect = await connectWithPrimaryGateway()
         if (!primaryConnect.connected && !primaryConnect.attempted) {
           connectWithEnvFallback()
         }
         markStep('connect')
-      })
-      .catch(() => {
-        // If capabilities check fails, still try to connect
-        setCapabilitiesChecked(true)
-        markStep('capabilities')
+
+      } catch (err) {
+        console.error('Boot sequence failed:', err)
+        // Fallback: mark everything as done so user can at least see the UI
+        markStep('init')
         markStep('connect')
         connectWithEnvFallback()
-      })
+      }
+    }
 
-    // Skip onboarding check for minimal UI
-    markStep('config')
-
-    // Preload workspace data in parallel
-    Promise.allSettled([
-      fetch('/api/agents')
-        .then(r => r.ok ? r.json() : null)
-        .then((agentsData) => {
-          if (agentsData?.agents) setAgents(agentsData.agents)
-        })
-        .finally(() => { markStep('agents') }),
-      fetch('/api/sessions')
-        .then(r => r.ok ? r.json() : null)
-        .then((sessionsData) => {
-          if (sessionsData?.sessions) setSessions(sessionsData.sessions)
-        })
-        .finally(() => { markStep('sessions') }),
-      fetch('/api/projects')
-        .then(r => r.ok ? r.json() : null)
-        .then((projectsData) => {
-          if (projectsData?.projects) setProjects(projectsData.projects)
-        })
-        .finally(() => { markStep('projects') }),
-      fetch('/api/memory/graph?agent=all')
-        .then(r => r.ok ? r.json() : null)
-        .then((graphData) => {
-          if (graphData?.agents) setMemoryGraphAgents(graphData.agents)
-        })
-        .finally(() => { markStep('memory') }),
-      fetch('/api/skills')
-        .then(r => r.ok ? r.json() : null)
-        .then((skillsData) => {
-          if (skillsData?.skills) setSkillsData(skillsData.skills, skillsData.groups || [], skillsData.total || 0)
-        })
-        .finally(() => { markStep('skills') }),
-    ]).catch(() => { /* panels will lazy-load as fallback */ })
+    runBootSequence()
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- boot once on mount, not on every pathname change
-  }, [connect, router, setCurrentUser, setDashboardMode, setGatewayAvailable, setLocalSessionsAvailable, setCapabilitiesChecked, setSubscription, setUpdateAvailable, setShowOnboarding, setAgents, setSessions, setProjects, setInterfaceMode, setMemoryGraphAgents, setSkillsData])
+  }, [connect, router, setCurrentUser, setDashboardMode, setGatewayAvailable, setLocalSessionsAvailable, setCapabilitiesChecked, setSubscription, setDefaultOrgName, setUpdateAvailable, setShowOnboarding, setAgents, setSessions, setProjects, setInterfaceMode, setMemoryGraphAgents, setSkillsData, setClientName, td])
 
   if (!isClient || !bootComplete) {
     return <Loader variant="page" steps={isClient ? initSteps : undefined} />
@@ -396,7 +323,7 @@ const ESSENTIAL_PANELS = new Set([
 
 function ContentRouter({ tab }: { tab: string }) {
   const tp = useTranslations('page')
-  const { dashboardMode, interfaceMode, setInterfaceMode } = useMissionControl()
+  const { dashboardMode, interfaceMode, setInterfaceMode } = useAgentCenterStore()
   const navigateToPanel = useNavigateToPanel()
   const isLocal = dashboardMode === 'local'
   const panelName = tab.replace(/-/g, ' ')
@@ -457,6 +384,7 @@ function ContentRouter({ tab }: { tab: string }) {
       return <NotificationsPanel />
     case 'standup':
       return <StandupPanel />
+    case 'chat':
     case 'sessions':
       return <ChatPagePanel />
     case 'logs':

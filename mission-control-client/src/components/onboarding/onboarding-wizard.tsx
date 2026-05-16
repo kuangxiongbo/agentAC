@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { useNavigateToPanel } from '@/lib/navigation'
 import { clampWizardStep, getWizardSteps, stepIdAt } from '@/lib/onboarding-flow'
 import { SecurityScanCard } from '@/components/onboarding/security-scan-card'
@@ -53,7 +53,7 @@ function modeColors(isGateway: boolean) {
 }
 
 export function OnboardingWizard() {
-  const { showOnboarding, setShowOnboarding, dashboardMode, gatewayAvailable, interfaceMode, setInterfaceMode } = useMissionControl()
+  const { showOnboarding, setShowOnboarding, dashboardMode, gatewayAvailable, interfaceMode, setInterfaceMode } = useAgentCenterStore()
   const navigateToPanel = useNavigateToPanel()
   const t = useTranslations('onboarding')
   const [step, setStep] = useState(0)
@@ -222,7 +222,7 @@ export function OnboardingWizard() {
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Mission Control onboarding"
+        aria-label="E-Agent-Client onboarding"
         className="relative z-10 w-full max-w-lg mx-4 bg-background border border-border/50 rounded-xl shadow-2xl overflow-hidden"
       >
         {/* Progress bar */}
@@ -301,11 +301,11 @@ function StepWelcome({ isGateway, capabilities, onNext, onSkip }: {
       <div className="flex-1 flex flex-col items-center justify-center text-center gap-4">
         <div className="w-14 h-14 rounded-xl overflow-hidden bg-surface-1 border border-border/50 flex items-center justify-center shadow-lg">
           <Image
-            src="/brand/mc-logo-128.png"
-            alt="Mission Control"
+            src="/brand/app-logo.png"
+            alt="E-Agent-Client"
             width={56}
             height={56}
-            className="w-full h-full object-cover"
+            className="w-full h-full object-contain"
           />
         </div>
         <div>
@@ -428,7 +428,7 @@ function StepInterfaceMode({ isGateway, onNext, onBack }: {
   const mc = modeColors(isGateway)
   const t = useTranslations('onboarding.interfaceMode')
   const tc = useTranslations('common')
-  const { interfaceMode, setInterfaceMode } = useMissionControl()
+  const { interfaceMode, setInterfaceMode } = useAgentCenterStore()
   const [selected, setSelected] = useState<'essential' | 'full'>(interfaceMode)
 
   const handleSelect = async (mode: 'essential' | 'full') => {

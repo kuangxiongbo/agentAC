@@ -88,11 +88,11 @@ function getSecurityInfo() {
     detail: allowedHosts.trim() ? 'MC_ALLOWED_HOSTS is configured' : 'MC_ALLOWED_HOSTS is not set',
   })
 
-  const sameSite = process.env.MC_COOKIE_SAMESITE || ''
+  const sameSite = String(process.env.MC_COOKIE_SAMESITE || 'lax').trim().toLowerCase()
   checks.push({
-    name: 'Cookie SameSite strict',
-    pass: sameSite.toLowerCase() === 'strict',
-    detail: sameSite ? `MC_COOKIE_SAMESITE is '${sameSite}'` : 'MC_COOKIE_SAMESITE is not set',
+    name: 'Cookie SameSite (lax or strict)',
+    pass: sameSite === 'strict' || sameSite === 'lax',
+    detail: `MC_COOKIE_SAMESITE effective: '${sameSite}' (OIDC 场景建议 lax)`,
   })
 
   const hsts = process.env.MC_ENABLE_HSTS || ''

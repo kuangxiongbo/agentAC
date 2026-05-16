@@ -150,9 +150,12 @@ function getDbStats(workspaceId: number) {
       totalTasks += row.count
     }
 
-    // Agent breakdown
+    // Agent breakdown (exclude hidden; central mode only counts gateway/client sources)
+    const agentSourceFilter = config.centralMode ? " AND source IN ('gateway', 'client')" : ''
     const agentStats = db.prepare(`
-      SELECT status, COUNT(*) as count FROM agents WHERE workspace_id = ? GROUP BY status
+      SELECT status, COUNT(*) as count FROM agents
+      WHERE workspace_id = ? AND hidden = 0${agentSourceFilter}
+      GROUP BY status
     `).all(workspaceId) as Array<{ status: string; count: number }>
     const agentsByStatus: Record<string, number> = {}
     let totalAgents = 0
@@ -160,6 +163,18 @@ function getDbStats(workspaceId: number) {
       agentsByStatus[row.status] = row.count
       totalAgents += row.count
     }
+
+    const presenceSeconds = 10 * 60
+    const presenceSince = now - presenceSeconds
+    const signalingRow = db.prepare(`
+      SELECT COUNT(*) as c FROM agents
+      WHERE workspace_id = ? AND hidden = 0${agentSourceFilter}
+      AND (
+        status IN ('online', 'busy', 'active')
+        OR (status = 'idle' AND last_seen IS NOT NULL AND last_seen >= ?)
+      )
+    `).get(workspaceId, presenceSince) as { c: number }
+    const signalingOnline = signalingRow?.c ?? 0
 
     // Audit events (24h / 7d)
     const auditDay = (db.prepare('SELECT COUNT(*) as c FROM audit_log WHERE created_at > ?').get(day) as any).c
@@ -232,7 +247,7 @@ function getDbStats(workspaceId: number) {
 
     return {
       tasks: { total: totalTasks, byStatus: tasksByStatus },
-      agents: { total: totalAgents, byStatus: agentsByStatus },
+      agents: { total: totalAgents, byStatus: agentsByStatus, signalingOnline },
       audit: { day: auditDay, week: auditWeek, loginFailures },
       activities: { day: activityDay },
       notifications: { unread: unreadNotifs },
@@ -625,24 +640,27 @@ async function getCapabilities(request?: NextRequest) {
   }
 
   const gateway = gatewayReachable || await isPortOpen(config.gatewayHost, config.gatewayPort)
+  const centralMode = config.centralMode
 
-  const openclawHome = Boolean(
+  const openclawHome = !centralMode && Boolean(
     (config.openclawStateDir && existsSync(config.openclawStateDir)) ||
     (config.openclawConfigPath && existsSync(config.openclawConfigPath))
   )
 
   const claudeProjectsPath = path.join(config.claudeHome, 'projects')
-  const claudeHome = existsSync(claudeProjectsPath)
+  const claudeHome = !centralMode && existsSync(claudeProjectsPath)
 
   let claudeSessions = 0
-  try {
-    const db = getDatabase()
-    const row = db.prepare(
-      "SELECT COUNT(*) as c FROM claude_sessions WHERE is_active = 1"
-    ).get() as { c: number } | undefined
-    claudeSessions = row?.c ?? 0
-  } catch {
-    // claude_sessions table may not exist
+  if (!centralMode) {
+    try {
+      const db = getDatabase()
+      const row = db.prepare(
+        "SELECT COUNT(*) as c FROM claude_sessions WHERE is_active = 1"
+      ).get() as { c: number } | undefined
+      claudeSessions = row?.c ?? 0
+    } catch {
+      // claude_sessions table may not exist
+    }
   }
 
   const subscriptions = detectProviderSubscriptions().active
@@ -681,7 +699,7 @@ async function getCapabilities(request?: NextRequest) {
     // settings table may not exist yet
   }
 
-  const hermesInstalled = isHermesInstalled()
+  const hermesInstalled = !centralMode && isHermesInstalled()
   let hermesSessions = 0
   if (hermesInstalled) {
     try {
@@ -691,7 +709,7 @@ async function getCapabilities(request?: NextRequest) {
 
   // Auto-register MC as default dashboard when gateway + openclaw home detected
   let dashboardRegistration: { registered: boolean; alreadySet: boolean } | null = null
-  if (gateway && openclawHome) {
+  if (!centralMode && gateway && openclawHome) {
     try {
       let mcUrl = process.env.MC_BASE_URL || ''
       if (!mcUrl && request) {
@@ -709,7 +727,7 @@ async function getCapabilities(request?: NextRequest) {
 
   const isDocker = existsSync('/.dockerenv')
 
-  return { gateway, openclawHome, claudeHome, claudeSessions, hermesInstalled, hermesSessions, subscription, subscriptions, processUser, interfaceMode, dashboardRegistration, isDocker }
+  return { gateway, openclawHome, claudeHome, claudeSessions, hermesInstalled, hermesSessions, subscription, subscriptions, processUser, interfaceMode, dashboardRegistration, isDocker, centralMode }
 }
 
 function isPortOpen(host: string, port: number): Promise<boolean> {

@@ -2,8 +2,6 @@ import { chromium } from '@playwright/test';
 import path from 'path';
 
 const BASE_URL = 'http://localhost:3100';
-const USERNAME = 'admin';
-const PASSWORD = 'mc-screenshots-2026';
 const OUTPUT_DIR = path.join(__dirname, '..', 'docs');
 
 const PANELS: [string, string][] = [
@@ -27,17 +25,10 @@ async function main() {
   });
   const page = await ctx.newPage();
 
-  // Login
-  console.log('Logging in...');
-  await page.goto(`${BASE_URL}/login`, { waitUntil: 'networkidle', timeout: 20000 });
-  await page.waitForSelector('#username', { timeout: 10000 });
-  await page.fill('#username', USERNAME);
-  await page.fill('#password', PASSWORD);
-  await Promise.all([
-    page.waitForResponse(r => r.url().includes('/api/auth/login'), { timeout: 10000 }),
-    page.click('button[type="submit"]'),
-  ]);
-  await page.waitForTimeout(5000);
+  // Client runs without hosted login — open dashboard directly (MC_DISABLE_AUTH / proxy mode).
+  console.log('Opening dashboard...');
+  await page.goto(`${BASE_URL}/`, { waitUntil: 'networkidle', timeout: 20000 });
+  await page.waitForTimeout(2000);
   console.log(`  URL: ${page.url()}`);
 
   // Dismiss onboarding

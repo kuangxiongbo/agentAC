@@ -4,7 +4,7 @@ import { useTranslations } from 'next-intl'
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
-import { useMissionControl, CronJob } from '@/store'
+import { useAgentCenterStore, CronJob } from '@/store'
 import { createClientLogger } from '@/lib/client-logger'
 const log = createClientLogger('CronManagement')
 import { buildDayKey, getCronOccurrences } from '@/lib/cron-occurrences'
@@ -101,7 +101,7 @@ function formatDateLabel(date: Date): string {
 
 export function CronManagementPanel() {
   const t = useTranslations('cronManagement')
-  const { cronJobs, setCronJobs, dashboardMode } = useMissionControl()
+  const { cronJobs, setCronJobs, dashboardMode } = useAgentCenterStore()
   const isLocalMode = dashboardMode === 'local'
   const [isLoading, setIsLoading] = useState(false)
   const [showAddForm, setShowAddForm] = useState(false)

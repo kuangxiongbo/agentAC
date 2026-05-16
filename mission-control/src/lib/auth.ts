@@ -3,6 +3,8 @@ import { getDatabase } from './db'
 import { hashPassword, verifyPassword, verifyPasswordWithRehashCheck } from './password'
 import { logSecurityEvent } from './security-events'
 import { parseMcSessionCookieHeader } from './session-cookie'
+import { config } from './config'
+import { mapUsercenterTenantRoleToMcRole } from './usercenter-tenant-role-map'
 
 // Trusted IPs for proxy auth header (comma-separated)
 const PROXY_AUTH_TRUSTED_IPS = new Set(
@@ -39,15 +41,34 @@ export interface User {
   role: 'admin' | 'operator' | 'viewer'
   workspace_id: number
   tenant_id: number
-  provider?: 'local' | 'google' | 'proxy'
+  provider?: 'local' | 'google' | 'zitadel' | 'proxy'
   email?: string | null
   avatar_url?: string | null
   is_approved?: number
+  /** 用户中心 / 门户返回的租户帐号原始角色字符串（如「租户负责人」）；未对接或无租户时为 null */
+  portal_tenant_role?: string | null
   created_at: number
   updated_at: number
   last_login_at: number | null
   /** Agent name when request is made on behalf of a specific agent (via X-Agent-Name header) */
   agent_name?: string | null
+}
+
+/** 登录态 JSON 中与权限相关的字段：`role` 为 MC 内部权限；`account_role` 为上游租户帐号角色原文 */
+export function publicAuthUserFields(user: User) {
+  return {
+    id: user.id,
+    username: user.username,
+    display_name: user.display_name,
+    role: user.role,
+    account_role: user.portal_tenant_role ?? null,
+    provider: user.provider || 'local',
+    email: user.email ?? null,
+    avatar_url: user.avatar_url ?? null,
+    is_approved: user.is_approved ?? 1,
+    workspace_id: user.workspace_id ?? 1,
+    tenant_id: user.tenant_id ?? 1,
+  }
 }
 
 export interface UserSession {
@@ -67,12 +88,13 @@ interface SessionQueryRow {
   username: string
   display_name: string
   role: 'admin' | 'operator' | 'viewer'
-  provider: 'local' | 'google' | null
+  provider: 'local' | 'google' | 'zitadel' | null
   email: string | null
   avatar_url: string | null
   is_approved: number
   workspace_id: number
   tenant_id: number
+  portal_tenant_role: string | null
   created_at: number
   updated_at: number
   last_login_at: number | null
@@ -84,12 +106,13 @@ interface UserQueryRow {
   username: string
   display_name: string
   role: 'admin' | 'operator' | 'viewer'
-  provider: 'local' | 'google' | null
+  provider: 'local' | 'google' | 'zitadel' | null
   email: string | null
   avatar_url: string | null
   is_approved: number
   workspace_id: number
   tenant_id?: number
+  portal_tenant_role: string | null
   created_at: number
   updated_at: number
   last_login_at: number | null
@@ -169,6 +192,7 @@ export function validateSession(token: string): (User & { sessionId: number }) |
 
   const row = db.prepare(`
     SELECT u.id, u.username, u.display_name, u.role, u.provider, u.email, u.avatar_url, u.is_approved,
+           u.portal_tenant_role,
            COALESCE(s.workspace_id, u.workspace_id, 1) as workspace_id,
            COALESCE(s.tenant_id, w.tenant_id, 1) as tenant_id,
            u.created_at, u.updated_at, u.last_login_at,
@@ -181,6 +205,15 @@ export function validateSession(token: string): (User & { sessionId: number }) |
 
   if (!row) return null
 
+  const portalRole = row.portal_tenant_role != null && String(row.portal_tenant_role).trim()
+  if (portalRole) {
+    const expected = mapUsercenterTenantRoleToMcRole(portalRole)
+    if (expected !== row.role) {
+      updateUser(row.id, { role: expected })
+      row.role = expected
+    }
+  }
+
   return {
     id: row.id,
     username: row.username,
@@ -191,6 +224,7 @@ export function validateSession(token: string): (User & { sessionId: number }) |
     provider: row.provider || 'local',
     email: row.email ?? null,
     avatar_url: row.avatar_url ?? null,
+    portal_tenant_role: row.portal_tenant_role ?? null,
     is_approved: typeof row.is_approved === 'number' ? row.is_approved : 1,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -257,6 +291,7 @@ export function authenticateUser(username: string, password: string): User | nul
     provider: row.provider || 'local',
     email: row.email ?? null,
     avatar_url: row.avatar_url ?? null,
+    portal_tenant_role: row.portal_tenant_role ?? null,
     is_approved: row.is_approved ?? 1,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -268,7 +303,7 @@ export function getUserById(id: number): User | null {
   const db = getDatabase()
   const row = db.prepare(`
     SELECT u.id, u.username, u.display_name, u.role, u.workspace_id, COALESCE(w.tenant_id, 1) as tenant_id,
-           u.provider, u.email, u.avatar_url, u.is_approved, u.created_at, u.updated_at, u.last_login_at
+           u.provider, u.email, u.avatar_url, u.is_approved, u.portal_tenant_role, u.created_at, u.updated_at, u.last_login_at
     FROM users u
     LEFT JOIN workspaces w ON w.id = u.workspace_id
     WHERE u.id = ?
@@ -280,7 +315,7 @@ export function getAllUsers(): User[] {
   const db = getDatabase()
   return db.prepare(`
     SELECT u.id, u.username, u.display_name, u.role, u.workspace_id, COALESCE(w.tenant_id, 1) as tenant_id,
-           u.provider, u.email, u.avatar_url, u.is_approved, u.created_at, u.updated_at, u.last_login_at
+           u.provider, u.email, u.avatar_url, u.is_approved, u.portal_tenant_role, u.created_at, u.updated_at, u.last_login_at
     FROM users u
     LEFT JOIN workspaces w ON w.id = u.workspace_id
     ORDER BY u.created_at
@@ -292,7 +327,7 @@ export function createUser(
   password: string,
   displayName: string,
   role: User['role'] = 'operator',
-  options?: { provider?: 'local' | 'google'; provider_user_id?: string | null; email?: string | null; avatar_url?: string | null; is_approved?: 0 | 1; approved_by?: string | null; approved_at?: number | null; workspace_id?: number }
+  options?: { provider?: 'local' | 'google' | 'zitadel'; provider_user_id?: string | null; email?: string | null; avatar_url?: string | null; is_approved?: 0 | 1; approved_by?: string | null; approved_at?: number | null; workspace_id?: number; portal_tenant_role?: string | null }
 ): User {
   const db = getDatabase()
   if (password.length < 12) throw new Error('Password must be at least 12 characters')
@@ -300,8 +335,8 @@ export function createUser(
   const provider = options?.provider || 'local'
   const workspaceId = options?.workspace_id || getDefaultWorkspaceContext().workspaceId
   const result = db.prepare(`
-    INSERT INTO users (username, display_name, password_hash, role, provider, provider_user_id, email, avatar_url, is_approved, approved_by, approved_at, workspace_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO users (username, display_name, password_hash, role, provider, provider_user_id, email, avatar_url, is_approved, approved_by, approved_at, workspace_id, portal_tenant_role)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     username,
     displayName,
@@ -315,12 +350,13 @@ export function createUser(
     options?.approved_by || null,
     options?.approved_at || null,
     workspaceId,
+    options?.portal_tenant_role ?? null,
   )
 
   return getUserById(Number(result.lastInsertRowid))!
 }
 
-export function updateUser(id: number, updates: { display_name?: string; role?: User['role']; password?: string; email?: string | null; avatar_url?: string | null; is_approved?: 0 | 1 }): User | null {
+export function updateUser(id: number, updates: { display_name?: string; role?: User['role']; password?: string; email?: string | null; avatar_url?: string | null; is_approved?: 0 | 1; workspace_id?: number; portal_tenant_role?: string | null }): User | null {
   const db = getDatabase()
   const fields: string[] = []
   const params: any[] = []
@@ -331,6 +367,8 @@ export function updateUser(id: number, updates: { display_name?: string; role?: 
   if (updates.email !== undefined) { fields.push('email = ?'); params.push(updates.email) }
   if (updates.avatar_url !== undefined) { fields.push('avatar_url = ?'); params.push(updates.avatar_url) }
   if (updates.is_approved !== undefined) { fields.push('is_approved = ?'); params.push(updates.is_approved) }
+  if (updates.workspace_id !== undefined) { fields.push('workspace_id = ?'); params.push(updates.workspace_id) }
+  if (updates.portal_tenant_role !== undefined) { fields.push('portal_tenant_role = ?'); params.push(updates.portal_tenant_role) }
 
   if (fields.length === 0) return getUserById(id)
 
@@ -370,7 +408,7 @@ function resolveOrProvisionProxyUser(username: string): User | null {
     const row = db.prepare(`
       SELECT u.id, u.username, u.display_name, u.role, u.workspace_id,
              COALESCE(w.tenant_id, 1) as tenant_id,
-             u.provider, u.email, u.avatar_url, u.is_approved,
+             u.provider, u.email, u.avatar_url, u.is_approved, u.portal_tenant_role,
              u.created_at, u.updated_at, u.last_login_at
       FROM users u
       LEFT JOIN workspaces w ON w.id = u.workspace_id
@@ -389,6 +427,7 @@ function resolveOrProvisionProxyUser(username: string): User | null {
         provider: row.provider || 'local',
         email: row.email ?? null,
         avatar_url: row.avatar_url ?? null,
+        portal_tenant_role: row.portal_tenant_role ?? null,
         is_approved: row.is_approved ?? 1,
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -410,6 +449,22 @@ function resolveOrProvisionProxyUser(username: string): User | null {
 }
 
 export function getUserFromRequest(request: Request): User | null {
+  // Bypass auth if disabled in config
+  if (config.authDisabled) {
+    return {
+      id: 0,
+      username: 'admin',
+      display_name: 'Admin-Bypass',
+      role: 'admin',
+      workspace_id: 1,
+      tenant_id: 1,
+      portal_tenant_role: null,
+      created_at: 0,
+      updated_at: 0,
+      last_login_at: null,
+    }
+  }
+
   // Extract agent identity header (optional, for attribution)
   const agentName = (request.headers.get('x-agent-name') || '').trim() || null
 
@@ -480,6 +535,7 @@ export function getUserFromRequest(request: Request): User | null {
       role: 'admin',
       workspace_id: getDefaultWorkspaceContext().workspaceId,
       tenant_id: getDefaultWorkspaceContext().tenantId,
+      portal_tenant_role: null,
       created_at: 0,
       updated_at: 0,
       last_login_at: null,
@@ -527,6 +583,7 @@ export function getUserFromRequest(request: Request): User | null {
             role: deriveRoleFromScopes(scopes),
             workspace_id: row.workspace_id,
             tenant_id: getDefaultWorkspaceContext().tenantId,
+            portal_tenant_role: null,
             created_at: 0,
             updated_at: now,
             last_login_at: now,

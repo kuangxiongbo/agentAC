@@ -4,7 +4,6 @@ import { headers } from 'next/headers'
 import { ThemeProvider } from 'next-themes'
 import { NextIntlClientProvider } from 'next-intl'
 import { getLocale, getMessages } from 'next-intl/server'
-import Script from 'next/script'
 import { THEME_IDS } from '@/lib/themes'
 import { ThemeBackground } from '@/components/ui/theme-background'
 import './globals.css'
@@ -53,34 +52,33 @@ export const viewport: Viewport = {
 }
 
 export const metadata: Metadata = {
-  title: 'Mission Control — AI Agent Orchestration Dashboard',
+  title: 'E-Agent-Client — AI Agent Orchestration Dashboard',
   description: 'Open-source dashboard for AI agent orchestration. Manage agent fleets, dispatch tasks, track costs, and coordinate multi-agent workflows. Self-hosted, zero dependencies, SQLite-powered.',
   metadataBase,
   icons: {
     icon: [
-      { url: '/icon.png', type: 'image/png', sizes: '256x256' },
-      { url: '/brand/mc-logo-128.png', type: 'image/png', sizes: '128x128' },
+      { url: '/brand/app-logo.png', type: 'image/png', sizes: 'any' },
     ],
-    apple: [{ url: '/apple-icon.png', sizes: '180x180', type: 'image/png' }],
-    shortcut: ['/icon.png'],
+    apple: [{ url: '/brand/app-logo.png', sizes: 'any', type: 'image/png' }],
+    shortcut: ['/brand/app-logo.png'],
   },
   openGraph: {
-    title: 'Mission Control — AI Agent Orchestration Dashboard',
+    title: 'E-Agent-Client — AI Agent Orchestration Dashboard',
     description: 'Open-source dashboard for AI agent orchestration. Manage agent fleets, dispatch tasks, track costs, and coordinate multi-agent workflows.',
-    images: [{ url: '/brand/mc-logo-512.png', width: 512, height: 512, alt: 'Mission Control — open-source AI agent orchestration dashboard' }],
+    images: [{ url: '/brand/app-logo.png', width: 512, height: 512, alt: 'E-Agent-Client — AI agent orchestration dashboard' }],
     type: 'website',
-    siteName: 'Mission Control',
+    siteName: 'E-Agent-Client',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Mission Control — AI Agent Orchestration Dashboard',
+    title: 'E-Agent-Client — AI Agent Orchestration Dashboard',
     description: 'Open-source dashboard for AI agent orchestration. Manage agent fleets, dispatch tasks, track costs, and coordinate multi-agent workflows.',
-    images: ['/brand/mc-logo-512.png'],
+    images: ['/brand/app-logo.png'],
   },
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
-    title: 'Mission Control',
+    title: 'E-Agent-Client',
   },
 }
 
@@ -89,7 +87,9 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode
 }) {
-  const nonce = (await headers()).get('x-nonce') || undefined
+  const nonce = process.env.NODE_ENV === 'production'
+    ? ((await headers()).get('x-nonce') || undefined)
+    : undefined
   const locale = await getLocale()
   const messages = await getMessages()
 
@@ -98,9 +98,14 @@ export default async function RootLayout({
       <head>
         {/* Blocking script to set 'dark' class before first paint, preventing FOUC.
             Content is a static string literal — no user input, no XSS vector. */}
-        <Script id="theme-script" strategy="beforeInteractive" nonce={nonce}>
-          {`(function(){try{var t=localStorage.getItem('theme')||'void';var light=['light','paper'];if(light.indexOf(t)===-1)document.documentElement.classList.add('dark')}catch(e){}})()`}
-        </Script>
+        <script
+          id="theme-script"
+          nonce={nonce}
+          suppressHydrationWarning
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem('theme')||'void';var light=['light','paper'];if(light.indexOf(t)===-1)document.documentElement.classList.add('dark')}catch(e){}})()`,
+          }}
+        />
       </head>
       <body className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased`} suppressHydrationWarning>
         <NextIntlClientProvider messages={messages}>

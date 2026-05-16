@@ -8,7 +8,7 @@ export type JsonPrimitive = string | number | boolean | null
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue | undefined }
 type DashboardLayoutUpdater = string[] | null | ((current: string[] | null) => string[] | null)
 
-// Enhanced types for Mission Control
+// Enhanced types for E-Agent-Client
 export interface Session {
   id: string
   key: string
@@ -95,7 +95,7 @@ export interface ModelConfig {
   costPer1k: number
 }
 
-// Mission Control Phase 2 Types
+// E-Agent-Client Phase 2 Types
 export interface Task {
   id: number
   title: string
@@ -144,6 +144,9 @@ export interface Agent {
   created_at: number
   updated_at: number
   hidden?: number
+  node_id?: string
+  framework?: string
+  parent_id?: number
   config?: JsonValue
   taskStats?: {
     total: number
@@ -239,6 +242,7 @@ export interface Conversation {
     sessionId: string
     sessionKey?: string
     sessionKind: 'claude-code' | 'codex-cli' | 'hermes' | 'gateway'
+    runtimeGroup?: 'claude' | 'codex' | 'openclaw' | 'cursor' | 'opencode' | 'hermes' | 'other'
     agent?: string
     displayName?: string
     colorTag?: string
@@ -303,7 +307,7 @@ export interface CurrentUser {
   avatar_url?: string | null
 }
 
-// Billing/provisioning entity that can own multiple Mission Control workspaces.
+// Billing/provisioning entity that can own multiple E-Agent-Client workspaces.
 export interface Tenant {
   id: number
   slug: string
@@ -368,7 +372,7 @@ export interface ExecApprovalRequest {
   status: 'pending' | 'approved' | 'denied' | 'expired'
 }
 
-interface MissionControlStore {
+interface AgentCenterStore {
   // Dashboard Mode (local vs full gateway)
   dashboardMode: 'full' | 'local'
   gatewayAvailable: boolean
@@ -409,7 +413,7 @@ interface MissionControlStore {
   setConnection: (connection: Partial<ConnectionStatus>) => void
   setLastMessage: (message: unknown) => void
 
-  // Mission Control Phase 2 - Tasks
+  // E-Agent-Client Phase 2 - Tasks
   tasks: Task[]
   selectedTask: Task | null
   setTasks: (tasks: Task[]) => void
@@ -418,7 +422,7 @@ interface MissionControlStore {
   updateTask: (taskId: number, updates: Partial<Task>) => void
   deleteTask: (taskId: number) => void
 
-  // Mission Control Phase 2 - Agents
+  // E-Agent-Client Phase 2 - Agents
   agents: Agent[]
   selectedAgent: Agent | null
   setAgents: (agents: Agent[]) => void
@@ -427,12 +431,12 @@ interface MissionControlStore {
   updateAgent: (agentId: number, updates: Partial<Agent>) => void
   deleteAgent: (agentId: number) => void
 
-  // Mission Control Phase 2 - Activities
+  // E-Agent-Client Phase 2 - Activities
   activities: Activity[]
   setActivities: (activities: Activity[]) => void
   addActivity: (activity: Activity) => void
 
-  // Mission Control Phase 2 - Notifications
+  // E-Agent-Client Phase 2 - Notifications
   notifications: Notification[]
   unreadNotificationCount: number
   setNotifications: (notifications: Notification[]) => void
@@ -440,12 +444,12 @@ interface MissionControlStore {
   markNotificationRead: (notificationId: number) => void
   markAllNotificationsRead: () => void
 
-  // Mission Control Phase 2 - Comments
+  // E-Agent-Client Phase 2 - Comments
   taskComments: Record<number, Comment[]>
   setTaskComments: (taskId: number, comments: Comment[]) => void
   addTaskComment: (taskId: number, comment: Comment) => void
 
-  // Mission Control Phase 2 - Standup
+  // E-Agent-Client Phase 2 - Standup
   standupReports: StandupReport[]
   currentStandupReport: StandupReport | null
   setStandupReports: (reports: StandupReport[]) => void
@@ -596,11 +600,13 @@ interface MissionControlStore {
   toggleGroup: (groupId: string) => void
   toggleLiveFeed: () => void
   setHeaderDensity: (mode: 'focus' | 'compact') => void
+  clientName: string
+  setClientName: (name: string) => void
 }
 
 const MAX_LOG_BUFFER = 1000
 
-export const useMissionControl = create<MissionControlStore>()(
+export const useAgentCenterStore = create<AgentCenterStore>()(
   subscribeWithSelector((set, get) => ({
     // Dashboard Mode
     dashboardMode: 'local' as const,
@@ -619,6 +625,8 @@ export const useMissionControl = create<MissionControlStore>()(
     setBootComplete: () => set({ bootComplete: true }),
     setSubscription: (sub) => set({ subscription: sub }),
     setDefaultOrgName: (name) => set({ defaultOrgName: name }),
+    clientName: 'LocalClient',
+    setClientName: (name) => set({ clientName: name }),
 
     // Onboarding
     showOnboarding: false,
@@ -989,7 +997,7 @@ export const useMissionControl = create<MissionControlStore>()(
       set({ headerDensity: mode })
     },
 
-    // Mission Control Phase 2 - Tasks
+    // E-Agent-Client Phase 2 - Tasks
     tasks: [],
     selectedTask: null,
     setTasks: (tasks) => set({ tasks }),
@@ -1013,15 +1021,19 @@ export const useMissionControl = create<MissionControlStore>()(
         selectedTask: state.selectedTask?.id === taskId ? null : state.selectedTask
       })),
 
-    // Mission Control Phase 2 - Agents
+    // E-Agent-Client Phase 2 - Agents
     agents: [],
     selectedAgent: null,
     setAgents: (agents) => set({ agents }),
     setSelectedAgent: (agent) => set({ selectedAgent: agent }),
     addAgent: (agent) =>
-      set((state) => ({
-        agents: [agent, ...state.agents]
-      })),
+      set((state) => {
+        const exists = state.agents.some((a) => a.id === agent.id)
+        if (exists) return state
+        return {
+          agents: [agent, ...state.agents]
+        }
+      }),
     updateAgent: (agentId, updates) =>
       set((state) => ({
         agents: state.agents.map((agent) =>
@@ -1037,7 +1049,7 @@ export const useMissionControl = create<MissionControlStore>()(
         selectedAgent: state.selectedAgent?.id === agentId ? null : state.selectedAgent
       })),
 
-    // Mission Control Phase 2 - Activities
+    // E-Agent-Client Phase 2 - Activities
     activities: [],
     setActivities: (activities) => set({ activities }),
     addActivity: (activity) =>
@@ -1045,7 +1057,7 @@ export const useMissionControl = create<MissionControlStore>()(
         activities: [activity, ...state.activities].slice(0, 1000) // Keep last 1000
       })),
 
-    // Mission Control Phase 2 - Notifications
+    // E-Agent-Client Phase 2 - Notifications
     notifications: [],
     unreadNotificationCount: 0,
     setNotifications: (notifications) =>
@@ -1075,7 +1087,7 @@ export const useMissionControl = create<MissionControlStore>()(
         unreadNotificationCount: 0
       })),
 
-    // Mission Control Phase 2 - Comments
+    // E-Agent-Client Phase 2 - Comments
     taskComments: {},
     setTaskComments: (taskId, comments) =>
       set((state) => ({
@@ -1146,7 +1158,7 @@ export const useMissionControl = create<MissionControlStore>()(
         )
       })),
 
-    // Mission Control Phase 2 - Standup
+    // E-Agent-Client Phase 2 - Standup
     standupReports: [],
     currentStandupReport: null,
     setStandupReports: (reports) => set({ standupReports: reports }),

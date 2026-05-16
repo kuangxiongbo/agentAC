@@ -12,6 +12,8 @@ import { syncSkillsFromDisk } from './skill-sync'
 import { syncLocalAgents } from './local-agent-sync'
 import { dispatchAssignedTasks, runAegisReviews, requeueStaleTasks, autoRouteInboxTasks } from './task-dispatch'
 import { spawnRecurringTasks } from './recurring-tasks'
+import { runServerGatewaySync } from './gateway-sync'
+import { startRemoteBridge } from './remote-server-bridge'
 
 const BACKUP_DIR = join(dirname(config.dbPath), 'backups')
 
@@ -280,9 +282,21 @@ export function initScheduler() {
   if (tickInterval) return // Already running
 
   // Auto-sync agents from openclaw.json on startup
-  syncAgentsFromConfig('startup').catch(err => {
-    logger.warn({ err }, 'Agent auto-sync failed')
-  })
+  if (config.agentMonitoring) {
+    syncAgentsFromConfig('startup').catch(err => {
+      logger.warn({ err }, 'Agent auto-sync failed')
+    })
+  }
+
+  // Start the bridge server to accept connections from edge nodes
+  try {
+    const { initBridgeServer } = require('./bridge-server')
+    initBridgeServer(5002) // Running on 5002 to avoid conflict
+  } catch (err) {
+    logger.warn({ err }, 'Failed to start bridge server')
+  }
+
+  startRemoteBridge()
 
   // Register tasks
   const now = Date.now()
@@ -398,9 +412,25 @@ export function initScheduler() {
     running: false,
   })
 
+  tasks.set('server_gateway_sync', {
+    name: 'Server Gateway Sync',
+    intervalMs: TICK_MS,
+    lastRun: null,
+    nextRun: now + 35_000,
+    enabled: true,
+    running: false,
+  })
+
   // Start the tick loop
   tickInterval = setInterval(tick, TICK_MS)
-  logger.info('Scheduler initialized - backup at ~3AM, cleanup at ~4AM, heartbeat every 5m, webhook/claude/skill/local-agent/gateway-agent sync every 60s')
+  eventBus.on('server-event', (event) => {
+    if (event.type === 'agent.status_changed' || event.type === 'agent.synced') {
+      logger.info({ event: event.type }, 'Triggering real-time gateway sync')
+      runServerGatewaySync().catch(err => logger.error({ err }, 'Real-time sync failed'))
+    }
+  })
+
+  logger.info('Scheduler initialized - real-time sync enabled, backup at ~3AM, cleanup at ~4AM')
 }
 
 /** Calculate ms until next occurrence of a given hour (UTC) */
@@ -433,9 +463,18 @@ async function tick() {
       : id === 'aegis_review' ? 'general.aegis_review'
       : id === 'recurring_task_spawn' ? 'general.recurring_task_spawn'
       : id === 'stale_task_requeue' ? 'general.stale_task_requeue'
+      : id === 'server_gateway_sync' ? 'general.server_gateway_sync'
       : 'general.agent_heartbeat'
-    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue'
+    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue' || id === 'server_gateway_sync'
     if (!isSettingEnabled(settingKey, defaultEnabled)) continue
+    
+    // Skip agent-related tasks if local monitoring is disabled
+    const isAgentTask = id === 'agent_heartbeat' || id === 'local_agent_sync' || id === 'gateway_agent_sync'
+    if (isAgentTask && !config.agentMonitoring) continue
+
+    // Skip all local discovery in centralMode
+    const isLocalDiscovery = id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync'
+    if (config.centralMode && isLocalDiscovery) continue
 
     task.running = true
     try {
@@ -457,6 +496,7 @@ async function tick() {
         : id === 'aegis_review' ? await runAegisReviews()
         : id === 'recurring_task_spawn' ? await spawnRecurringTasks()
         : id === 'stale_task_requeue' ? await requeueStaleTasks()
+        : id === 'server_gateway_sync' ? await runServerGatewaySync()
         : await runCleanup()
       task.lastResult = { ...result, timestamp: now }
     } catch (err: any) {
@@ -493,8 +533,9 @@ export function getSchedulerStatus() {
       : id === 'aegis_review' ? 'general.aegis_review'
       : id === 'recurring_task_spawn' ? 'general.recurring_task_spawn'
       : id === 'stale_task_requeue' ? 'general.stale_task_requeue'
+      : id === 'server_gateway_sync' ? 'general.server_gateway_sync'
       : 'general.agent_heartbeat'
-    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue'
+    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue' || id === 'server_gateway_sync'
     result.push({
       id,
       name: task.name,
@@ -523,6 +564,7 @@ export async function triggerTask(taskId: string): Promise<{ ok: boolean; messag
   if (taskId === 'aegis_review') return runAegisReviews()
   if (taskId === 'recurring_task_spawn') return spawnRecurringTasks()
   if (taskId === 'stale_task_requeue') return requeueStaleTasks()
+  if (taskId === 'server_gateway_sync') return runServerGatewaySync()
   return { ok: false, message: `Unknown task: ${taskId}` }
 }
 

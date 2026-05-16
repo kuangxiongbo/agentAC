@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useCallback } from 'react'
-import { useMissionControl } from '@/store'
+import { useTranslations } from 'next-intl'
+import { useAgentCenterStore } from '@/store'
 import { useNavigateToPanel } from '@/lib/navigation'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 import { SignalPill, getLocalOsStatus, getProviderHealth, getMcHealth } from './widget-primitives'
@@ -11,17 +12,19 @@ import { WidgetGrid } from './widget-grid'
 import type { DbStats, ClaudeStats, LogLike, DashboardData } from './widget-primitives'
 
 export function Dashboard() {
+  const t = useTranslations('dashboardOverview')
   const {
     sessions,
     setSessions,
     connection,
     dashboardMode,
+    centralMode,
     subscription,
     logs,
     agents,
     tasks,
     setActiveConversation,
-  } = useMissionControl()
+  } = useAgentCenterStore()
 
   const navigateToPanel = useNavigateToPanel()
   const isLocal = dashboardMode === 'local'
@@ -135,9 +138,21 @@ export function Dashboard() {
 
   const activeSessions = sessions.filter((s) => s.active).length
   const errorCount = logs.filter((l) => l.level === 'error').length
-  const onlineAgents = dbStats
-    ? dbStats.agents.total - (dbStats.agents.byStatus?.offline ?? 0)
-    : agents.filter((a) => a.status !== 'offline').length
+
+  const presenceWindowSec = 10 * 60
+  const nowSec = Math.floor(Date.now() / 1000)
+  const agentIsSignaling = (a: { status?: string; last_seen?: number }) => {
+    const st = a.status ?? 'offline'
+    if (st === 'offline' || st === 'error') return false
+    if (st === 'online' || st === 'busy' || st === 'active') return true
+    if (st === 'idle' && (a.last_seen ?? 0) >= nowSec - presenceWindowSec) return true
+    return false
+  }
+
+  const onlineAgents =
+    typeof dbStats?.agents.signalingOnline === 'number'
+      ? dbStats.agents.signalingOnline
+      : agents.filter(agentIsSignaling).length
 
   const claudeLocalSessions = sessions.filter((s) => s.kind === 'claude-code')
   const codexLocalSessions = sessions.filter((s) => s.kind === 'codex-cli')
@@ -153,25 +168,61 @@ export function Dashboard() {
   const doneCount = dbStats?.tasks.byStatus?.done ?? 0
   const backlogCount = inboxCount + assignedCount + reviewCount
 
+  const translateHealthValue = useCallback((value: string) => {
+    if (value === 'Loading...') return t('loadingShort')
+    if (value === 'No sessions') return t('healthNoSessions')
+    if (value === 'Unknown') return t('healthUnknown')
+    if (value === 'Critical') return t('healthCritical')
+    if (value === 'Degraded') return t('healthDegraded')
+    if (value === 'Healthy') return t('healthHealthy')
+    if (value === 'Unavailable') return t('healthUnavailable')
+
+    const activeMatch = value.match(/^(\d+) active$/)
+    if (activeMatch) return t('healthActiveCount', { count: Number(activeMatch[1]) })
+
+    const idleMatch = value.match(/^Idle \((\d+)\)$/)
+    if (idleMatch) return t('healthIdleCount', { count: Number(idleMatch[1]) })
+
+    const errorsMatch = value.match(/^(\d+) errors$/)
+    if (errorsMatch) return t('healthErrorsCount', { count: Number(errorsMatch[1]) })
+
+    return value
+  }, [t])
+
   const localOsStatus = isSystemLoading
-    ? { value: 'Loading...', status: 'warn' as const }
-    : getLocalOsStatus(memPct, Number.isFinite(diskPct) ? diskPct : null)
+    ? { value: t('loadingShort'), status: 'warn' as const }
+    : (() => {
+        const status = getLocalOsStatus(memPct, Number.isFinite(diskPct) ? diskPct : null)
+        return { ...status, value: translateHealthValue(status.value) }
+      })()
 
   const claudeHealth = isClaudeLoading
-    ? { value: 'Loading...', status: 'warn' as const }
-    : getProviderHealth(claudeStats?.active_sessions ?? claudeActive, claudeStats?.total_sessions ?? claudeLocalSessions.length)
+    ? { value: t('loadingShort'), status: 'warn' as const }
+    : (() => {
+        const status = getProviderHealth(claudeStats?.active_sessions ?? claudeActive, claudeStats?.total_sessions ?? claudeLocalSessions.length)
+        return { ...status, value: translateHealthValue(status.value) }
+      })()
 
   const codexHealth = isSessionsLoading
-    ? { value: 'Loading...', status: 'warn' as const }
-    : getProviderHealth(codexActive, codexLocalSessions.length)
+    ? { value: t('loadingShort'), status: 'warn' as const }
+    : (() => {
+        const status = getProviderHealth(codexActive, codexLocalSessions.length)
+        return { ...status, value: translateHealthValue(status.value) }
+      })()
 
   const hermesHealth = isSessionsLoading
-    ? { value: 'Loading...', status: 'warn' as const }
-    : getProviderHealth(hermesActive, hermesLocalSessions.length)
+    ? { value: t('loadingShort'), status: 'warn' as const }
+    : (() => {
+        const status = getProviderHealth(hermesActive, hermesLocalSessions.length)
+        return { ...status, value: translateHealthValue(status.value) }
+      })()
 
   const mcHealth = isSystemLoading
-    ? { value: 'Loading...', status: 'warn' as const }
-    : getMcHealth(systemStats, dbStats, errorCount)
+    ? { value: t('loadingShort'), status: 'warn' as const }
+    : (() => {
+        const status = getMcHealth(systemStats, dbStats, errorCount)
+        return { ...status, value: translateHealthValue(status.value) }
+      })()
 
   const localSessionLogs: LogLike[] = isLocal
     ? sessions.reduce<LogLike[]>((acc, session) => {
@@ -188,8 +239,8 @@ export function Dashboard() {
           level: 'info',
           source: session.kind === 'codex-cli' ? 'codex-local' : session.kind === 'hermes' ? 'hermes-local' : 'claude-local',
           message: lastPrompt
-            ? `Prompt: ${lastPrompt}`
-            : `${session.active ? 'Active' : 'Idle'} session: ${session.key || session.id}`,
+            ? `${t('eventPromptPrefix')}: ${lastPrompt}`
+            : `${session.active ? t('eventActiveSession') : t('eventIdleSession')}: ${session.key || session.id}`,
         })
         return acc
       }, [])
@@ -267,21 +318,21 @@ export function Dashboard() {
       <section className="rounded-xl border border-border bg-card p-4">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <div className="text-2xs uppercase tracking-[0.12em] text-muted-foreground">Overview</div>
+            <div className="text-2xs uppercase tracking-[0.12em] text-muted-foreground">{t('eyebrow')}</div>
             <h2 className="text-lg font-semibold text-foreground">
-              {isLocal ? 'Local Agent Runtime' : 'Gateway Control Plane'}
+              {isLocal ? (centralMode ? t('serviceTitle') : t('localTitle')) : t('gatewayTitle')}
             </h2>
             <p className="text-xs text-muted-foreground">
               {isLocal
-                ? 'Unified visibility for Claude, Codex & Hermes local sessions, host pressure, and operator continuity.'
-                : 'Gateway-first health, session routing, queue pressure, and incident response signals.'}
+                ? (centralMode ? t('serviceDescription') : t('localDescription'))
+                : t('gatewayDescription')}
             </p>
           </div>
           <div className="grid grid-cols-2 gap-2 min-w-[280px]">
-            <SignalPill label="Mode" value={isLocal ? 'Local' : 'Gateway'} tone="info" />
-            <SignalPill label="Events" value={`${mergedRecentLogs.length} stream`} tone={recentErrorLogs > 0 ? 'warning' : 'success'} />
-            <SignalPill label="Queue" value={String(backlogCount)} tone={backlogCount > 10 ? 'warning' : 'info'} />
-            <SignalPill label="Errors" value={String(errorCount)} tone={errorCount > 0 ? 'warning' : 'success'} />
+            <SignalPill label={t('pillMode')} value={isLocal ? (centralMode ? t('modeService') : t('modeLocal')) : t('modeGateway')} tone="info" />
+            <SignalPill label={t('pillEvents')} value={t('streamCount', { count: mergedRecentLogs.length })} tone={recentErrorLogs > 0 ? 'warning' : 'success'} />
+            <SignalPill label={t('pillQueue')} value={String(backlogCount)} tone={backlogCount > 10 ? 'warning' : 'info'} />
+            <SignalPill label={t('pillErrors')} value={String(errorCount)} tone={errorCount > 0 ? 'warning' : 'success'} />
           </div>
         </div>
       </section>

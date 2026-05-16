@@ -3,7 +3,7 @@
 import { useTranslations } from 'next-intl'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 
 import { createClientLogger } from '@/lib/client-logger'
@@ -386,7 +386,7 @@ interface SpawnFormData {
 export function TaskBoardPanel() {
   const t = useTranslations('taskBoard')
   const statusColumns = STATUS_COLUMN_KEYS.map(col => ({ ...col, title: t(col.titleKey as any) }))
-  const { tasks: storeTasks, setTasks: storeSetTasks, selectedTask, setSelectedTask, activeProject, availableModels, spawnRequests, addSpawnRequest, updateSpawnRequest, dashboardMode } = useMissionControl()
+  const { tasks: storeTasks, setTasks: storeSetTasks, selectedTask, setSelectedTask, activeProject, availableModels, spawnRequests, addSpawnRequest, updateSpawnRequest, dashboardMode } = useAgentCenterStore()
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -395,6 +395,8 @@ export function TaskBoardPanel() {
   const [projectFilter, setProjectFilter] = useState<string>(
     activeProject ? String(activeProject.id) : 'all'
   )
+  const [clientFilter, setClientFilter] = useState<string>('all')
+  const [clients, setClients] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [aegisMap, setAegisMap] = useState<Record<number, boolean>>({})
@@ -447,21 +449,26 @@ export function TaskBoardPanel() {
       if (projectFilter !== 'all') {
         tasksQuery.set('project_id', projectFilter)
       }
+      if (clientFilter !== 'all') {
+        tasksQuery.set('client_id', clientFilter)
+      }
       const tasksUrl = tasksQuery.toString() ? `/api/tasks?${tasksQuery.toString()}` : '/api/tasks'
 
-      const [tasksResponse, agentsResponse, projectsResponse] = await Promise.all([
+      const [tasksResponse, agentsResponse, projectsResponse, clientsResponse] = await Promise.all([
         fetch(tasksUrl),
         fetch('/api/agents'),
-        fetch('/api/projects')
+        fetch('/api/projects'),
+        fetch('/api/bridge/clients')
       ])
 
-      if (!tasksResponse.ok || !agentsResponse.ok || !projectsResponse.ok) {
+      if (!tasksResponse.ok || !agentsResponse.ok || !projectsResponse.ok || !clientsResponse.ok) {
         throw new Error('Failed to fetch data')
       }
 
       const tasksData = await tasksResponse.json()
       const agentsData = await agentsResponse.json()
       const projectsData = await projectsResponse.json()
+      const clientsData = await clientsResponse.json()
 
       const tasksList = tasksData.tasks || []
       const taskIds = tasksList.map((task: Task) => task.id)
@@ -470,6 +477,7 @@ export function TaskBoardPanel() {
       storeSetTasks(tasksList)
       setAgents(agentsData.agents || [])
       setProjects(projectsData.projects || [])
+      setClients(clientsData.clients || [])
 
       if (taskIds.length > 0) {
         fetch(`/api/quality-review?taskIds=${taskIds.join(',')}`)
@@ -495,7 +503,7 @@ export function TaskBoardPanel() {
     } finally {
       setLoading(false)
     }
-  }, [projectFilter, storeSetTasks])
+  }, [projectFilter, clientFilter, storeSetTasks])
 
   useEffect(() => {
     fetchData()
@@ -583,7 +591,7 @@ export function TaskBoardPanel() {
     e.preventDefault()
   }
 
-  const { updateTask } = useMissionControl()
+  const { updateTask } = useAgentCenterStore()
 
   const handleDrop = async (e: React.DragEvent, newStatus: string) => {
     e.preventDefault()
@@ -803,6 +811,23 @@ export function TaskBoardPanel() {
               {projects.map((project) => (
                 <option key={project.id} value={String(project.id)}>
                   {project.name} ({project.ticket_prefix})
+                </option>
+              ))}
+            </select>
+            <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 6l4 4 4-4" />
+            </svg>
+          </div>
+          <div className="relative">
+            <select
+              value={clientFilter}
+              onChange={(e) => setClientFilter(e.target.value)}
+              className="h-9 px-3 pr-8 bg-surface-1 text-foreground border border-border rounded-md text-sm appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/50"
+            >
+              <option value="all">{t('allClients')}</option>
+              {clients.map((client) => (
+                <option key={client.id} value={client.id}>
+                  {client.name}
                 </option>
               ))}
             </select>
@@ -1201,7 +1226,7 @@ function TaskDetailModal({
 }) {
   const t = useTranslations('taskBoard')
   const router = useRouter()
-  const { currentUser } = useMissionControl()
+  const { currentUser } = useAgentCenterStore()
   const commentAuthor = currentUser?.username || 'system'
   const resolvedProjectName =
     task.project_name ||

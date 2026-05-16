@@ -1,8 +1,8 @@
-# Mission Control
+# E-AgentCenter
 
 > Open-source dashboard for AI agent orchestration.
 
-Mission Control is a self-hosted dashboard for managing AI agent fleets. It provides task dispatch, cost tracking, quality review gates, recurring task scheduling, and multi-agent coordination — all powered by SQLite with zero external dependencies.
+E-AgentCenter is a self-hosted dashboard for managing AI agent fleets. It provides task dispatch, cost tracking, quality review gates, recurring task scheduling, and multi-agent coordination — all powered by SQLite with zero external dependencies.
 
 ## Key Features
 - Agent management with full lifecycle (register, heartbeat, wake, retire)

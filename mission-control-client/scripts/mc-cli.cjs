@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- Mission Control CLI (v2)
+ E-AgentCenter CLI (v2)
  - Zero heavy dependencies
  - API-key first for agent automation
  - JSON mode + stable exit codes
@@ -42,7 +42,7 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  console.log(`Mission Control CLI
+  console.log(`E-AgentCenter CLI
 
 Usage:
   mc <group> <action> [--flags]

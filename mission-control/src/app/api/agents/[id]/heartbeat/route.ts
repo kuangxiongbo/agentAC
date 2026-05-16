@@ -139,20 +139,6 @@ export async function GET(
       });
     }
     
-    // Update agent last_seen and status to show heartbeat activity
-    db_helpers.updateAgentStatus(agent.name, 'idle', 'Heartbeat check', workspaceId);
-    
-    // Log heartbeat activity
-    db_helpers.logActivity(
-      'agent_heartbeat',
-      'agent',
-      agent.id,
-      agent.name,
-      `Heartbeat check completed - ${workItems.length > 0 ? `${workItems.length} work items found` : 'no work items'}`,
-      { workItemsCount: workItems.length, workItemTypes: workItems.map(w => w.type) },
-      workspaceId
-    );
-    
     if (workItems.length === 0) {
       return NextResponse.json({
         status: 'HEARTBEAT_OK',
@@ -207,6 +193,18 @@ export async function POST(
   const now = Math.floor(Date.now() / 1000);
   const workspaceId = auth.user.workspace_id ?? 1;
 
+  const resolvedParams = await params;
+  const routeAgentId = resolvedParams.id;
+  let postAgent: any;
+  if (isNaN(Number(routeAgentId))) {
+    postAgent = db.prepare('SELECT * FROM agents WHERE name = ? AND workspace_id = ?').get(routeAgentId, workspaceId);
+  } else {
+    postAgent = db.prepare('SELECT * FROM agents WHERE id = ? AND workspace_id = ?').get(Number(routeAgentId), workspaceId);
+  }
+  if (!postAgent) {
+    return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
+  }
+
   // Update direct connection heartbeat if connection_id provided
   if (connection_id) {
     db.prepare('UPDATE direct_connections SET last_heartbeat = ?, updated_at = ? WHERE connection_id = ? AND status = ? AND workspace_id = ?')
@@ -216,49 +214,56 @@ export async function POST(
   // Inline token reporting
   let tokenRecorded = false;
   if (token_usage && token_usage.model && token_usage.inputTokens != null && token_usage.outputTokens != null) {
-    const resolvedParams = await params;
-    const agentId = resolvedParams.id;
-    let agent: any;
-    if (isNaN(Number(agentId))) {
-      agent = db.prepare('SELECT * FROM agents WHERE name = ? AND workspace_id = ?').get(agentId, workspaceId);
-    } else {
-      agent = db.prepare('SELECT * FROM agents WHERE id = ? AND workspace_id = ?').get(Number(agentId), workspaceId);
-    }
+    const agent = postAgent
+    const sessionId = `${agent.name}:cli`
+    const parsedTaskId =
+      token_usage.taskId != null && Number.isFinite(Number(token_usage.taskId))
+        ? Number(token_usage.taskId)
+        : null
 
-    if (agent) {
-      const sessionId = `${agent.name}:cli`;
-      const parsedTaskId =
-        token_usage.taskId != null && Number.isFinite(Number(token_usage.taskId))
-          ? Number(token_usage.taskId)
-          : null
-
-      let taskId: number | null = null
-      if (parsedTaskId && parsedTaskId > 0) {
-        const taskRow = db.prepare(
-          'SELECT id FROM tasks WHERE id = ? AND workspace_id = ?'
-        ).get(parsedTaskId, workspaceId) as { id?: number } | undefined
-        if (taskRow?.id) {
-          taskId = taskRow.id
-        } else {
-          logger.warn({ taskId: parsedTaskId, workspaceId, agent: agent.name }, 'Ignoring token usage with unknown taskId')
-        }
+    let taskId: number | null = null
+    if (parsedTaskId && parsedTaskId > 0) {
+      const taskRow = db.prepare(
+        'SELECT id FROM tasks WHERE id = ? AND workspace_id = ?'
+      ).get(parsedTaskId, workspaceId) as { id?: number } | undefined
+      if (taskRow?.id) {
+        taskId = taskRow.id
+      } else {
+        logger.warn({ taskId: parsedTaskId, workspaceId, agent: agent.name }, 'Ignoring token usage with unknown taskId')
       }
-
-      db.prepare(
-        `INSERT INTO token_usage (model, session_id, input_tokens, output_tokens, created_at, workspace_id, task_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        token_usage.model,
-        sessionId,
-        token_usage.inputTokens,
-        token_usage.outputTokens,
-        now,
-        workspaceId,
-        taskId
-      );
-      tokenRecorded = true;
     }
+
+    db.prepare(
+      `INSERT INTO token_usage (model, session_id, input_tokens, output_tokens, created_at, workspace_id, task_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      token_usage.model,
+      sessionId,
+      token_usage.inputTokens,
+      token_usage.outputTokens,
+      now,
+      workspaceId,
+      taskId
+    )
+    tokenRecorded = true
   }
+
+  // Client / CLI reported heartbeat — update presence (GET checks work items only, no status writes)
+  type AgentPresence = 'online' | 'offline' | 'busy' | 'idle' | 'error'
+  const allowed: AgentPresence[] = ['online', 'offline', 'busy', 'idle', 'error']
+  let nextStatus: AgentPresence = 'idle'
+  if (body.status && allowed.includes(body.status as AgentPresence)) {
+    nextStatus = body.status as AgentPresence
+  } else if (connection_id) {
+    nextStatus = 'online'
+  }
+  const activity =
+    typeof body.last_activity === 'string' && body.last_activity.trim()
+      ? body.last_activity.trim()
+      : connection_id
+        ? 'Connection heartbeat'
+        : 'API heartbeat'
+  db_helpers.updateAgentStatus(postAgent.name, nextStatus as any, activity, workspaceId)
 
   // Reuse GET logic for work-items check, then augment response
   const getResponse = await GET(request, { params });

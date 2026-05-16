@@ -29,16 +29,21 @@ export async function GET(request: NextRequest) {
     // Parse query parameters
     const status = searchParams.get('status');
     const role = searchParams.get('role');
+    const nodeId = searchParams.get('node_id');
     const showHidden = searchParams.get('show_hidden') === 'true';
     const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 200);
     const offset = parseInt(searchParams.get('offset') || '0');
-
+ 
     // Build dynamic query
     let query = 'SELECT * FROM agents WHERE workspace_id = ?';
     const params: any[] = [workspaceId];
-
+ 
     if (!showHidden) {
       query += ' AND hidden = 0';
+    }
+
+    if (appConfig.centralMode) {
+      query += " AND source IN ('gateway', 'client')";
     }
     
     if (status) {
@@ -49,6 +54,11 @@ export async function GET(request: NextRequest) {
     if (role) {
       query += ' AND role = ?';
       params.push(role);
+    }
+
+    if (nodeId) {
+      query += ' AND node_id = ?';
+      params.push(nodeId);
     }
     
     query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
@@ -66,7 +76,7 @@ export async function GET(request: NextRequest) {
     // Get task counts for all listed agents in one query (avoids N+1 queries)
     const agentNames = agentsWithParsedData.map(agent => agent.name).filter(Boolean)
     const taskStatsByAgent = new Map<string, { total: number; assigned: number; in_progress: number; quality_review: number; done: number }>()
-
+ 
     if (agentNames.length > 0) {
       const placeholders = agentNames.map(() => '?').join(', ')
       const groupedTaskStats = db.prepare(`
@@ -88,7 +98,7 @@ export async function GET(request: NextRequest) {
         quality_review: number | null
         done: number | null
       }>
-
+ 
       for (const row of groupedTaskStats) {
         taskStatsByAgent.set(row.assigned_to, {
           total: row.total || 0,
@@ -99,7 +109,7 @@ export async function GET(request: NextRequest) {
         })
       }
     }
-
+ 
     const agentsWithStats = agentsWithParsedData.map(agent => {
       const taskStats = taskStatsByAgent.get(agent.name) || {
         total: 0,
@@ -108,7 +118,7 @@ export async function GET(request: NextRequest) {
         quality_review: 0,
         done: 0,
       }
-
+ 
       return {
         ...agent,
         taskStats: {
@@ -124,6 +134,9 @@ export async function GET(request: NextRequest) {
     if (!showHidden) {
       countQuery += ' AND hidden = 0';
     }
+    if (appConfig.centralMode) {
+      countQuery += " AND source IN ('gateway', 'client')";
+    }
     if (status) {
       countQuery += ' AND status = ?';
       countParams.push(status);
@@ -132,8 +145,12 @@ export async function GET(request: NextRequest) {
       countQuery += ' AND role = ?';
       countParams.push(role);
     }
+    if (nodeId) {
+      countQuery += ' AND node_id = ?';
+      countParams.push(nodeId);
+    }
     const countRow = db.prepare(countQuery).get(...countParams) as { total: number };
-
+ 
     return NextResponse.json({
       agents: agentsWithStats,
       total: countRow.total,
@@ -175,7 +192,9 @@ export async function POST(request: NextRequest) {
       gateway_config,
       write_to_gateway,
       provision_openclaw_workspace,
-      openclaw_workspace_path
+      openclaw_workspace_path,
+      framework = 'openclaw',
+      parent_id
     } = body;
 
     const openclawId = (openclaw_id || name || 'agent')
@@ -209,7 +228,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Agent name already exists' }, { status: 409 });
     }
 
-    if (provision_openclaw_workspace) {
+    if (provision_openclaw_workspace && framework === 'openclaw') {
       if (!appConfig.openclawStateDir) {
         return NextResponse.json(
           { error: 'OPENCLAW_STATE_DIR is not configured; cannot provision OpenClaw workspace' },
@@ -240,8 +259,8 @@ export async function POST(request: NextRequest) {
     const stmt = db.prepare(`
       INSERT INTO agents (
         name, role, session_key, soul_content, status, 
-        created_at, updated_at, config, workspace_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, config, workspace_id, framework, parent_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     const dbResult = stmt.run(
@@ -253,7 +272,9 @@ export async function POST(request: NextRequest) {
       now,
       now,
       JSON.stringify(finalConfig),
-      workspaceId
+      workspaceId,
+      framework,
+      parent_id
     );
 
     const agentId = dbResult.lastInsertRowid as number;

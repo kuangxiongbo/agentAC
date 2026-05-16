@@ -1,8 +1,7 @@
 import { test, expect } from '@playwright/test'
 
 /**
- * E2E smoke test — Login flow and session auth
- * Verifies the basic login/session/logout lifecycle works end-to-end.
+ * E2E smoke — Session API (client does not host /login UI; auth is server-side MC or proxy mode).
  */
 
 test.describe('Login Flow', () => {
@@ -26,14 +25,15 @@ test.describe('Login Flow', () => {
     expect([201, 409]).toContain(createRes.status())
   })
 
-  test('login page loads', async ({ page }) => {
-    await page.goto('/login')
-    await expect(page).toHaveURL(/\/login/)
+  test('/login redirects away (no client login page)', async ({ page }) => {
+    const res = await page.goto('/login', { waitUntil: 'commit' })
+    expect(res?.status() === 200 || res?.status() === 302 || res?.status() === 307).toBeTruthy()
+    await expect(page).not.toHaveURL(/\/login$/)
   })
 
-  test('unauthenticated access redirects to login', async ({ page }) => {
+  test('home loads without forcing /login', async ({ page }) => {
     await page.goto('/')
-    await expect(page).toHaveURL(/\/login/)
+    await expect(page).not.toHaveURL(/\/login/)
   })
 
   test('login API returns session cookie on success', async ({ request }) => {
@@ -57,20 +57,17 @@ test.describe('Login Flow', () => {
   })
 
   test('session cookie grants API access', async ({ request }) => {
-    // Login to get a session
     const loginRes = await request.post('/api/auth/login', {
       data: { username: TEST_USER, password: TEST_PASS },
       headers: { 'x-forwarded-for': '10.88.88.2' }
     })
     expect(loginRes.status()).toBe(200)
 
-    // Extract session cookie from Set-Cookie header
     const setCookie = loginRes.headers()['set-cookie'] || ''
     const match = setCookie.match(/(?:__Host-)?mc-session=([^;]+)/)
     expect(match).toBeTruthy()
     const sessionCookiePair = match?.[0] || ''
 
-    // Use the same cookie name/value returned by login
     const meRes = await request.get('/api/auth/me', {
       headers: { 'cookie': sessionCookiePair, 'x-forwarded-for': '10.88.88.2' }
     })

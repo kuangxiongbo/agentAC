@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 
 export interface DbStats {
   tasks: { total: number; byStatus: Record<string, number> }
-  agents: { total: number; byStatus: Record<string, number> }
+  agents: { total: number; byStatus: Record<string, number>; signalingOnline: number }
   audit: { day: number; week: number; loginFailures: number }
   activities: { day: number }
   notifications: { unread: number }

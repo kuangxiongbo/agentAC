@@ -2,7 +2,7 @@
 
 import Image from 'next/image'
 import { useState, useEffect } from 'react'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { Button } from '@/components/ui/button'
 
 interface NavItem {
@@ -25,7 +25,7 @@ const navGroups: NavGroup[] = [
       { id: 'overview', label: 'Overview', icon: <OverviewIcon />, priority: true },
       { id: 'agents', label: 'Agents', icon: <AgentsIcon />, priority: true },
       { id: 'tasks', label: 'Tasks', icon: <TasksIcon />, priority: true },
-      { id: 'chat', label: 'Chat', icon: <SessionsIcon />, priority: false },
+      { id: 'chat', label: 'Chat', icon: <SessionsIcon />, priority: true },
     ],
   },
   {
@@ -66,7 +66,7 @@ const navGroups: NavGroup[] = [
 const allNavItems = navGroups.flatMap(g => g.items)
 
 export function NavRail() {
-  const { activeTab, setActiveTab, connection, sidebarExpanded, collapsedGroups, toggleSidebar, toggleGroup } = useMissionControl()
+  const { activeTab, setActiveTab, connection, sidebarExpanded, collapsedGroups, toggleSidebar, toggleGroup } = useAgentCenterStore()
 
   // Keyboard shortcut: [ to toggle sidebar
   useEffect(() => {
@@ -92,15 +92,15 @@ export function NavRail() {
         <div className={`flex items-center shrink-0 ${sidebarExpanded ? 'px-3 py-3 gap-2.5' : 'flex-col py-3 gap-2'}`}>
           <div className="w-9 h-9 rounded-lg overflow-hidden bg-background border border-border/50 flex items-center justify-center shrink-0">
             <Image
-              src="/brand/mc-logo-128.png"
-              alt="Mission Control logo"
+              src="/brand/app-logo.png"
+              alt="E-Agent-Client logo"
               width={36}
               height={36}
-              className="w-full h-full object-cover"
+              className="w-full h-full object-contain"
             />
           </div>
           {sidebarExpanded && (
-            <span className="text-sm font-semibold text-foreground truncate flex-1">Mission Control</span>
+            <span className="text-sm font-semibold text-foreground truncate flex-1">E-Agent-Client</span>
           )}
           <Button
             variant="ghost"

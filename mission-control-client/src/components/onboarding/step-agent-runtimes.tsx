@@ -14,6 +14,7 @@ interface RuntimeStatus {
   authRequired: boolean
   authHint: string
   authenticated: boolean
+  installSupported: boolean
 }
 
 interface InstallJob {
@@ -58,6 +59,14 @@ export function StepAgentRuntimes({ isGateway, onNext, onBack }: Props) {
     }
   }, [])
 
+  const syncMainAgents = useCallback(async () => {
+    try {
+      await fetch('/api/agents/sync?source=local', { method: 'POST' })
+    } catch {
+      // ignore
+    }
+  }, [])
+
   useEffect(() => { fetchRuntimes() }, [fetchRuntimes])
 
   // Poll active jobs
@@ -78,6 +87,7 @@ export function StepAgentRuntimes({ isGateway, onNext, onBack }: Props) {
           if (data.job) {
             setActiveJobs(prev => ({ ...prev, [data.job.runtime]: data.job }))
             if (data.job.status === 'success' || data.job.status === 'failed') {
+              if (data.job.status === 'success') syncMainAgents()
               fetchRuntimes()
             }
           }
@@ -88,7 +98,7 @@ export function StepAgentRuntimes({ isGateway, onNext, onBack }: Props) {
     }, 2000)
 
     return () => clearInterval(interval)
-  }, [activeJobs, fetchRuntimes])
+  }, [activeJobs, fetchRuntimes, syncMainAgents])
 
   const handleInstall = async (runtimeId: string) => {
     try {
@@ -174,6 +184,11 @@ export function StepAgentRuntimes({ isGateway, onNext, onBack }: Props) {
                     Detected
                   </span>
                 )}
+                {!rt.installSupported && !rt.installed && !justInstalled && (
+                  <span className="absolute -top-2 right-2 text-2xs px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/20">
+                    Detection only
+                  </span>
+                )}
 
                 <p className={`text-sm font-medium mb-1 ${rt.installed || justInstalled ? 'text-emerald-400' : 'text-foreground'}`}>
                   {rt.name}
@@ -208,7 +223,7 @@ export function StepAgentRuntimes({ isGateway, onNext, onBack }: Props) {
                           Retry
                         </button>
                       </div>
-                    ) : (
+                    ) : rt.installSupported ? (
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => handleInstall(rt.id)}
@@ -225,6 +240,8 @@ export function StepAgentRuntimes({ isGateway, onNext, onBack }: Props) {
                           </button>
                         )}
                       </div>
+                    ) : (
+                      <p className="text-2xs text-muted-foreground/60">Detected automatically after local install.</p>
                     )}
                   </div>
                 )}

@@ -22,7 +22,8 @@ import {
   CreateAgentModal
 } from './agent-detail-tabs'
 import { formatModelName, buildTaskStatParts } from '@/lib/agent-card-helpers'
-import { useMissionControl, type Agent } from '@/store'
+import { useAgentCenterStore, type Agent } from '@/store'
+import { isRuntimeManagedAgent } from '@/lib/runtime-agents'
 
 const log = createClientLogger('AgentSquadPhase3')
 
@@ -93,9 +94,49 @@ const statusCardStyles: Record<string, { edge: string; glow: string; dot: string
   },
 }
 
+function getAgentFrameworkLabel(agent: Agent) {
+  if (agent.framework) return agent.framework
+  if ((agent as any).source === 'local') return 'generic'
+  return 'openclaw'
+}
+
+function isDiskImportedAgent(agent: Agent) {
+  return (agent as any).source === 'local' && !isRuntimeManagedAgent(agent)
+}
+
+function getAgentSourceLabel(agent: Agent) {
+  const source = (agent as any).source
+  if (!source || source === 'manual') return null
+  if (source === 'local') return 'disk'
+  if (source === 'runtime') return 'runtime'
+  if (source === 'gateway') return 'gateway'
+  if (source === 'bridge') return 'bridge'
+  return source
+}
+
+const formatLastSeen = (timestamp?: number) => {
+  if (!timestamp) return 'Never'
+  const now = Date.now()
+  const diffMs = now - (timestamp * 1000)
+  const diffMinutes = Math.floor(diffMs / (1000 * 60))
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+  if (diffMinutes < 1) return 'Just now'
+  if (diffMinutes < 60) return `${diffMinutes}m ago`
+  if (diffHours < 24) return `${diffHours}h ago`
+  if (diffDays < 7) return `${diffDays}d ago`
+  return new Date(timestamp * 1000).toLocaleDateString()
+}
+
+const hasRecentHeartbeat = (agent: Agent) => {
+  if (!agent.last_seen) return false
+  const thirtyMinutesAgo = Math.floor(Date.now() / 1000) - (30 * 60)
+  return agent.last_seen > thirtyMinutesAgo
+}
+
 export function AgentSquadPanelPhase3() {
   const t = useTranslations('agentSquadPhase3')
-  const { agents, setAgents } = useMissionControl()
+  const { agents, setAgents } = useAgentCenterStore()
   const [loading, setLoading] = useState(agents.length === 0)
   const [error, setError] = useState<string | null>(null)
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null)
@@ -211,7 +252,7 @@ export function AgentSquadPanelPhase3() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: `🤖 **Wake Up Call**\n\nAgent ${agentName}, you have been manually woken up.\nCheck Mission Control for any pending tasks or notifications.\n\n⏰ ${new Date().toLocaleString()}`
+          message: `🤖 **Wake Up Call**\n\nAgent ${agentName}, you have been manually woken up.\nCheck E-Agent-Client for any pending tasks or notifications.\n\n⏰ ${new Date().toLocaleString()}`
         })
       })
 
@@ -271,33 +312,11 @@ export function AgentSquadPanelPhase3() {
     setTimeout(() => setSyncToast(null), 5000)
   }
 
-  // Format last seen time
-  const formatLastSeen = (timestamp?: number) => {
-    if (!timestamp) return 'Never'
-    
-    const now = Date.now()
-    const diffMs = now - (timestamp * 1000)
-    const diffMinutes = Math.floor(diffMs / (1000 * 60))
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-
-    if (diffMinutes < 1) return 'Just now'
-    if (diffMinutes < 60) return `${diffMinutes}m ago`
-    if (diffHours < 24) return `${diffHours}h ago`
-    if (diffDays < 7) return `${diffDays}d ago`
-    
-    return new Date(timestamp * 1000).toLocaleDateString()
-  }
-
-  // Check if agent had recent heartbeat (within 30 minutes)
-  const hasRecentHeartbeat = (agent: Agent) => {
-    if (!agent.last_seen) return false
-    const thirtyMinutesAgo = Math.floor(Date.now() / 1000) - (30 * 60)
-    return agent.last_seen > thirtyMinutesAgo
-  }
+  // Get status distribution for summary
 
   // Get status distribution for summary
-  const statusCounts = agents.reduce((acc, agent) => {
+  const mainLayerAgents = agents.filter(agent => !isDiskImportedAgent(agent))
+  const statusCounts = mainLayerAgents.reduce((acc, agent) => {
     acc[agent.status] = (acc[agent.status] || 0) + 1
     return acc
   }, {} as Record<string, number>)
@@ -327,7 +346,7 @@ export function AgentSquadPanelPhase3() {
           <div className="flex items-center gap-1">
             <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></div>
             <span className="text-sm text-muted-foreground">
-              {t('activeHeartbeats', { count: agents.filter(hasRecentHeartbeat).length })}
+              {t('activeHeartbeats', { count: mainLayerAgents.filter(hasRecentHeartbeat).length })}
             </span>
           </div>
         </div>
@@ -370,7 +389,7 @@ export function AgentSquadPanelPhase3() {
             {t('addAgent')}
           </Button>
           <Button
-            onClick={fetchAgents}
+            onClick={() => fetchAgents(true)}
             variant="secondary"
             size="sm"
           >
@@ -402,7 +421,7 @@ export function AgentSquadPanelPhase3() {
       )}
 
       {/* Agent Grid */}
-      <div className="flex-1 p-4 overflow-y-auto">
+      <div className="flex-1 p-4 overflow-y-auto space-y-8">
         {agents.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/50">
             <div className="w-12 h-12 rounded-full bg-surface-2 flex items-center justify-center mb-3">
@@ -412,136 +431,53 @@ export function AgentSquadPanelPhase3() {
               </svg>
             </div>
             <p className="text-sm font-medium">{t('noAgents')}</p>
-            <p className="text-xs text-muted-foreground/70 mt-1 max-w-xs text-center">
-              {t('noAgentsHint')}
-            </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {agents.map(agent => {
-              const modelName = formatModelName(agent.config)
-              const taskStatsLine = buildTaskStatParts(agent.taskStats)
+          Object.entries(
+            agents.reduce((acc, a) => {
+              if (a.parent_id) return acc
+              const sectionKey = isDiskImportedAgent(a) ? '__disk_imports__' : getAgentFrameworkLabel(a)
+              if (!acc[sectionKey]) acc[sectionKey] = []
+              acc[sectionKey].push(a)
+              return acc
+            }, {} as Record<string, Agent[]>)
+          )
+            .sort(([left], [right]) => {
+              if (left === '__disk_imports__') return 1
+              if (right === '__disk_imports__') return -1
+              return left.localeCompare(right)
+            })
+            .map(([fw, fwAgents]) => (
+            <div key={fw} className="space-y-4">
+              <div className="flex items-center gap-4 px-1">
+                 <div className="h-px flex-1 bg-border/20" />
+                 <span className="text-[10px] font-bold tracking-[0.2em] text-muted-foreground/40 uppercase bg-surface-2/30 px-3 py-1 rounded-full border border-border/10">
+                   {fw === '__disk_imports__' ? 'disk imports' : fw}
+                 </span>
+                 <div className="h-px flex-1 bg-border/20" />
+              </div>
 
-              return (
-                <div
-                  key={agent.id}
-                  className="group relative overflow-hidden rounded-xl border border-border/70 bg-card p-4 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-border hover:shadow-lg cursor-pointer"
-                  onClick={() => setSelectedAgent(agent)}
-                >
-                  <div className={`pointer-events-none absolute inset-y-0 left-0 w-1 bg-gradient-to-b ${(statusCardStyles[agent.status] || defaultCardStyle).edge}`} />
-                  {agent.hidden ? <div className="absolute top-2 right-2 text-2xs text-slate-500">hidden</div> : null}
-
-                  {/* Header: avatar + name + status */}
-                  <div className="flex items-start justify-between mb-2">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <AgentAvatar name={agent.name} size="md" />
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <h3 className="font-semibold text-foreground truncate">{agent.name}</h3>
-                          {(agent as any).source && (agent as any).source !== 'manual' && (
-                            <span className={`text-2xs px-1.5 py-0.5 rounded-full border ${
-                              (agent as any).source === 'local'
-                                ? 'bg-violet-500/15 text-violet-300 border-violet-500/30'
-                                : (agent as any).source === 'gateway'
-                                  ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
-                                  : 'bg-slate-500/15 text-slate-300 border-slate-500/30'
-                            }`}>
-                              {(agent as any).source}
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs text-muted-foreground truncate">
-                          {agent.role}{modelName && <> · <span className="font-mono text-muted-foreground/80">{modelName}</span></>}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      {hasRecentHeartbeat(agent) && (
-                        <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" title="Recent heartbeat" />
-                      )}
-                      <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs capitalize ${statusBadgeStyles[agent.status]}`}>
-                        <span className={`h-1.5 w-1.5 rounded-full ${(statusCardStyles[agent.status] || defaultCardStyle).dot}`} />
-                        {agent.status}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Task stats — inline */}
-                  {taskStatsLine && (
-                    <div className="text-xs text-muted-foreground mb-2 pl-0.5">
-                      {taskStatsLine.map((part, i) => (
-                        <span key={part.label}>
-                          {i > 0 && <span className="mx-1 text-muted-foreground/40">·</span>}
-                          <span className={part.color || 'text-foreground/80'}>{part.count}</span>
-                          {' '}{part.label}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Footer: last seen + actions */}
-                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/30">
-                    <span className="text-[11px] text-muted-foreground/70">
-                      {formatLastSeen(agent.last_seen)}
-                    </span>
-                    <div className="flex gap-1">
-                      {agent.session_key ? (
-                        <Button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            wakeAgent(agent.name, agent.session_key!)
-                          }}
-                          size="xs"
-                          variant="ghost"
-                          className="h-6 px-2 text-xs text-cyan-300 hover:bg-cyan-500/15 hover:text-cyan-200"
-                          title="Wake agent via session"
-                        >
-                          {t('wake')}
-                        </Button>
-                      ) : (
-                        <Button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            updateAgentStatus(agent.name, 'idle', 'Manually activated')
-                          }}
-                          disabled={agent.status === 'idle'}
-                          size="xs"
-                          variant="ghost"
-                          className="h-6 px-2 text-xs"
-                        >
-                          {t('wake')}
-                        </Button>
-                      )}
-                      <Button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setSelectedAgent(agent)
-                          setShowQuickSpawnModal(true)
-                        }}
-                        size="xs"
-                        variant="ghost"
-                        className="h-6 px-2 text-xs text-blue-300 hover:bg-blue-500/15 hover:text-blue-200"
-                      >
-                        {t('spawn')}
-                      </Button>
-                      <Button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          toggleAgentHidden(agent.id, !agent.hidden)
-                        }}
-                        size="xs"
-                        variant="ghost"
-                        className="h-6 px-2 text-xs text-slate-400 hover:bg-slate-500/15 hover:text-slate-300"
-                      >
-                        {agent.hidden ? 'Unhide' : 'Hide'}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {fwAgents
+                  .filter(agent => showHidden || !agent.hidden)
+                  .sort((a, b) =>
+                    Number(isRuntimeManagedAgent(b)) - Number(isRuntimeManagedAgent(a)) ||
+                    a.name.localeCompare(b.name)
+                  )
+                  .map(agent => (
+                    <AgentCardWithSubAgents 
+                      key={agent.id} 
+                      agent={agent} 
+                      allAgents={agents}
+                      onSelect={setSelectedAgent}
+                      onWakeAgent={wakeAgent}
+                      onStatusUpdate={updateAgentStatus}
+                    />
+                  ))
+                }
+              </div>
+            </div>
+          ))
         )}
       </div>
 
@@ -822,18 +758,22 @@ function AgentDetailModalPhase3({
     }))
   }
 
+  const isOpenClaw = (agentState.framework || 'openclaw') === 'openclaw'
+
   const tabs = [
-    { id: 'overview', label: 'Overview', icon: 'O' },
-    { id: 'files', label: 'Files', icon: 'F' },
-    { id: 'tools', label: 'Tools', icon: 'W' },
-    { id: 'models', label: 'Models', icon: 'P' },
-    { id: 'channels', label: 'Channels', icon: 'H' },
-    { id: 'cron', label: 'Cron', icon: 'R' },
-    { id: 'soul', label: 'SOUL', icon: 'S' },
-    { id: 'memory', label: 'Memory', icon: 'M' },
-    { id: 'tasks', label: 'Tasks', icon: 'T' },
-    { id: 'config', label: 'Config', icon: 'C' },
-    { id: 'activity', label: 'Activity', icon: 'A' }
+    { id: 'overview', label: 'Overview' },
+    ...(isOpenClaw ? [
+      { id: 'files', label: 'Files' },
+      { id: 'tools', label: 'Tools' },
+      { id: 'models', label: 'Models' },
+      { id: 'channels', label: 'Channels' },
+      { id: 'cron', label: 'Cron' },
+      { id: 'soul', label: 'SOUL' },
+      { id: 'memory', label: 'Memory' },
+    ] : []),
+    { id: 'tasks', label: 'Tasks' },
+    { id: 'config', label: 'Config' },
+    { id: 'activity', label: 'Activity' }
   ]
 
   const handleDelete = async (removeWorkspace: boolean) => {
@@ -1222,3 +1162,123 @@ function QuickSpawnModal({
 }
 
 export default AgentSquadPanelPhase3
+
+/**
+ * Enhanced Agent Card that optionally shows sub-agents
+ */
+function AgentCardWithSubAgents({ 
+  agent, 
+  allAgents, 
+  onSelect,
+  onWakeAgent,
+  onStatusUpdate,
+}: { 
+  agent: Agent, 
+  allAgents: Agent[], 
+  onSelect: (a: Agent) => void 
+  onWakeAgent: (name: string, sessionKey: string) => Promise<void>
+  onStatusUpdate: (name: string, status: Agent['status'], activity?: string) => Promise<void>
+}) {
+  const t = useTranslations('agentSquadPhase3')
+  const subAgents = allAgents.filter(a => a.parent_id === agent.id)
+  
+  const modelName = formatModelName(agent.config)
+  const taskStatsLine = buildTaskStatParts(agent.taskStats)
+
+  return (
+    <div className="space-y-3">
+      <div
+        className="group relative overflow-hidden rounded-xl border border-border/70 bg-card p-4 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-border hover:shadow-lg cursor-pointer"
+        onClick={() => onSelect(agent)}
+      >
+        <div className={`pointer-events-none absolute inset-y-0 left-0 w-1 bg-gradient-to-b ${(statusCardStyles[agent.status] || defaultCardStyle).edge}`} />
+        {agent.hidden ? <div className="absolute top-2 right-2 text-2xs text-slate-500">hidden</div> : null}
+
+        <div className="flex items-start justify-between mb-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <AgentAvatar name={agent.name} size="md" />
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <h3 className="font-semibold text-foreground truncate text-sm">{agent.name}</h3>
+                {getAgentSourceLabel(agent) && (
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full border ${
+                    (agent as any).source === 'local'
+                      ? 'bg-violet-500/15 text-violet-300 border-violet-500/30'
+                      : (agent as any).source === 'gateway'
+                        ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
+                        : 'bg-slate-500/15 text-slate-300 border-slate-500/30'
+                  }`}>
+                    {getAgentSourceLabel(agent)}
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground truncate">
+                {agent.role}{modelName && <> · <span className="font-mono text-muted-foreground/60">{modelName}</span></>}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+             <span className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] capitalize ${statusBadgeStyles[agent.status]}`}>
+               <span className={`h-1 w-1 rounded-full ${(statusCardStyles[agent.status] || defaultCardStyle).dot}`} />
+               {agent.status}
+             </span>
+          </div>
+        </div>
+
+        {taskStatsLine && (
+          <div className="text-[10px] text-muted-foreground/80 mb-2 pl-0.5 flex flex-wrap gap-x-2">
+            {taskStatsLine.map((part, i) => (
+              <span key={part.label} className={part.color}>{part.count} {part.label}</span>
+            ))}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/20">
+          <span className="text-[10px] text-muted-foreground/50">
+            {formatLastSeen(agent.last_seen)}
+          </span>
+          <div className="flex gap-1">
+            <Button
+              onClick={(e) => {
+                e.stopPropagation()
+                if (agent.session_key) onWakeAgent(agent.name, agent.session_key)
+                else onStatusUpdate(agent.name, 'idle')
+              }}
+              size="xs"
+              variant="ghost"
+              className="h-5 px-1.5 text-[10px]"
+            >
+              {t('wake')}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Nested Sub-agents */}
+      {subAgents.length > 0 && (
+        <div className="pl-6 space-y-2 relative">
+          <div className="absolute left-3 top-0 bottom-2 w-px bg-border/40" />
+          {subAgents.map(sub => (
+            <div 
+              key={sub.id}
+              onClick={(e) => { e.stopPropagation(); onSelect(sub); }}
+              className="relative flex items-center gap-3 p-2 rounded-lg border border-border/40 bg-card/40 hover:bg-card/60 cursor-pointer transition-colors"
+            >
+              <div className="absolute -left-3 w-3 h-px bg-border/40" />
+              <AgentAvatar name={sub.name} size="xs" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium truncate">{sub.name}</span>
+                  <span className={`w-1.5 h-1.5 rounded-full ${(statusCardStyles[sub.status] || defaultCardStyle).dot}`} title={sub.status} />
+                </div>
+                {sub.last_activity && (
+                  <p className="text-[10px] text-muted-foreground truncate">{sub.last_activity}</p>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}

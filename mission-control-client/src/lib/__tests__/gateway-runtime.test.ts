@@ -31,7 +31,7 @@ describe('registerMcAsDashboard', () => {
     vi.resetModules()
   })
 
-  it('adds the Mission Control origin without disabling device auth', async () => {
+  it('adds the E-Agent-Client origin without disabling device auth', async () => {
     writeFileSync(configPath, JSON.stringify({
       gateway: {
         controlUi: {

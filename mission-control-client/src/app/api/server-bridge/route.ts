@@ -54,7 +54,9 @@ export async function POST(request: NextRequest) {
       const agents = db.prepare(
         `SELECT id, name, role, status FROM agents WHERE hidden = 0 ORDER BY name`
       ).all()
-      const sent = sendBridgeEvent('agent_status', { agents })
+      const clientId = (db.prepare(`SELECT value FROM settings WHERE key = 'device.client_id'`).get() as { value?: string } | undefined)?.value || 'mc-node-static'
+      const clientLabel = (db.prepare(`SELECT value FROM settings WHERE key = 'gateway.client_name'`).get() as { value?: string } | undefined)?.value || clientId
+      const sent = sendBridgeEvent('agent_status', { clientId, clientLabel, agents })
       return NextResponse.json({ ok: sent, message: sent ? 'Status pushed' : 'Bridge not connected' })
     }
 

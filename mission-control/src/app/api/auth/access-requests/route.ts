@@ -94,26 +94,27 @@ export async function POST(request: NextRequest) {
   }
 
   const email = String(reqRow.email || '').toLowerCase()
+  const provider = String(reqRow.provider || 'google').toLowerCase() === 'zitadel' ? 'zitadel' : 'google'
   const providerUserId = reqRow.provider_user_id ? String(reqRow.provider_user_id) : null
-  const displayName = String(reqRow.display_name || email.split('@')[0] || 'Google User')
+  const displayName = String(reqRow.display_name || email.split('@')[0] || (provider === 'zitadel' ? 'Zitadel User' : 'Google User'))
   const avatarUrl = reqRow.avatar_url ? String(reqRow.avatar_url) : null
 
   const user = db.transaction(() => {
-    const existing = db.prepare('SELECT * FROM users WHERE lower(email) = ? OR (provider = ? AND provider_user_id = ?) ORDER BY id ASC LIMIT 1').get(email, 'google', providerUserId || '') as any
+    const existing = db.prepare('SELECT * FROM users WHERE lower(email) = ? OR (provider = ? AND provider_user_id = ?) ORDER BY id ASC LIMIT 1').get(email, provider, providerUserId || '') as any
 
     let userId: number
     if (existing) {
       db.prepare(`
         UPDATE users
-        SET provider = 'google', provider_user_id = ?, email = ?, avatar_url = COALESCE(?, avatar_url), is_approved = 1, role = ?, approved_by = ?, approved_at = (unixepoch()), updated_at = (unixepoch())
+        SET provider = ?, provider_user_id = ?, email = ?, avatar_url = COALESCE(?, avatar_url), is_approved = 1, role = ?, approved_by = ?, approved_at = (unixepoch()), updated_at = (unixepoch())
         WHERE id = ?
-      `).run(providerUserId, email, avatarUrl, role, admin.username, existing.id)
+      `).run(provider, providerUserId, email, avatarUrl, role, admin.username, existing.id)
       userId = Number(existing.id)
     } else {
       const username = ensureUniqueUsername(makeUsernameFromEmail(email))
       const randomPwd = randomBytes(24).toString('hex')
       const created = createUser(username, randomPwd, displayName, role, {
-        provider: 'google',
+        provider,
         provider_user_id: providerUserId,
         email,
         avatar_url: avatarUrl,

@@ -265,10 +265,15 @@ export async function scanClaudeSessions(): Promise<SessionStats[]> {
   return sessions
 }
 
-// Throttle full disk scans — at most once per 30 seconds
+// Throttle full disk scans — keep session metadata reasonably fresh for
+// chat/session UIs without rescanning on every single request.
 let lastSyncAt = 0
 let lastSyncResult: { ok: boolean; message: string } = { ok: true, message: 'Not yet scanned' }
-const SYNC_THROTTLE_MS = 30_000
+const SYNC_THROTTLE_MS = 5_000
+
+export function invalidateClaudeSessionSync(): void {
+  lastSyncAt = 0
+}
 
 /** Scan and upsert sessions into the database (throttled to avoid repeated disk scans) */
 export async function syncClaudeSessions(force = false): Promise<{ ok: boolean; message: string }> {

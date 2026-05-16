@@ -11,7 +11,25 @@ import { validateBody, createAgentSchema } from '@/lib/validation';
 import { runOpenClaw } from '@/lib/command';
 import { config as appConfig } from '@/lib/config';
 import { resolveWithin } from '@/lib/paths';
+import { syncRuntimeAgents } from '@/lib/runtime-agent-sync';
 import path from 'node:path';
+
+function parseAgentConfigRecord(value: unknown): Record<string, unknown> {
+  if (!value) return {}
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : {}
+    } catch {
+      return {}
+    }
+  }
+  return typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
 
 /**
  * GET /api/agents - List all agents with optional filtering
@@ -175,7 +193,9 @@ export async function POST(request: NextRequest) {
       gateway_config,
       write_to_gateway,
       provision_openclaw_workspace,
-      openclaw_workspace_path
+      openclaw_workspace_path,
+      framework = 'openclaw',
+      parent_id
     } = body;
 
     const openclawId = (openclaw_id || name || 'agent')
@@ -196,6 +216,16 @@ export async function POST(request: NextRequest) {
     } else if (gateway_config) {
       finalConfig = { ...finalConfig, ...(gateway_config as Record<string, any>) };
     }
+    finalConfig.main_runtime = framework
+    if (framework && framework !== 'openclaw' && finalConfig.runtime_managed !== true) {
+      finalConfig.session_mode = finalConfig.session_mode || 'dedicated'
+      finalConfig.session_strategy = finalConfig.session_strategy || 'persistent'
+      finalConfig.session_state = session_key ? 'ready' : (finalConfig.session_state || 'pending')
+      finalConfig.primary_session_key = session_key || finalConfig.primary_session_key || null
+      finalConfig.session_bootstrap_state = 'pending'
+      finalConfig.session_bootstrap_hash = null
+      finalConfig.session_bootstrap_error = null
+    }
 
     if (!name || !finalRole) {
       return NextResponse.json({ error: 'Name and role are required' }, { status: 400 });
@@ -209,7 +239,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Agent name already exists' }, { status: 409 });
     }
 
-    if (provision_openclaw_workspace) {
+    if (provision_openclaw_workspace && framework === 'openclaw') {
       if (!appConfig.openclawStateDir) {
         return NextResponse.json(
           { error: 'OPENCLAW_STATE_DIR is not configured; cannot provision OpenClaw workspace' },
@@ -234,14 +264,32 @@ export async function POST(request: NextRequest) {
         );
       }
     }
+
+    let resolvedParentId = parent_id ?? undefined
+    if (!resolvedParentId && framework) {
+      try {
+        await syncRuntimeAgents(auth.user.username)
+        const runtimeParent = db.prepare(`
+          SELECT id
+          FROM agents
+          WHERE workspace_id = ? AND source = 'runtime' AND framework = ? AND hidden = 0
+          LIMIT 1
+        `).get(workspaceId, framework) as { id: number } | undefined
+        if (runtimeParent?.id) {
+          resolvedParentId = runtimeParent.id
+        }
+      } catch (runtimeSyncError) {
+        logger.warn({ err: runtimeSyncError, framework }, 'Runtime parent auto-link failed')
+      }
+    }
     
     const now = Math.floor(Date.now() / 1000);
     
     const stmt = db.prepare(`
       INSERT INTO agents (
         name, role, session_key, soul_content, status, 
-        created_at, updated_at, config, workspace_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, config, workspace_id, framework, parent_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     const dbResult = stmt.run(
@@ -253,7 +301,9 @@ export async function POST(request: NextRequest) {
       now,
       now,
       JSON.stringify(finalConfig),
-      workspaceId
+      workspaceId,
+      framework,
+      resolvedParentId
     );
 
     const agentId = dbResult.lastInsertRowid as number;
@@ -382,6 +432,25 @@ export async function PUT(request: NextRequest) {
       if (session_key !== undefined) {
         fieldsToUpdate.push('session_key = ?');
         params.push(session_key);
+
+        const mergedConfig = {
+          ...parseAgentConfigRecord(config !== undefined ? config : agent.config),
+          primary_session_key: session_key || null,
+          session_state: session_key ? 'ready' : 'pending',
+          session_bootstrap_state: 'pending',
+          session_bootstrap_hash: null,
+          session_bootstrap_error: null,
+        } as Record<string, unknown>
+
+        if (agent.framework && agent.framework !== 'openclaw' && mergedConfig.runtime_managed !== true) {
+          mergedConfig.session_mode = mergedConfig.session_mode || 'dedicated'
+          mergedConfig.session_strategy = mergedConfig.session_strategy || 'persistent'
+        }
+
+        if (config === undefined) {
+          fieldsToUpdate.push('config = ?');
+          params.push(JSON.stringify(mergedConfig));
+        }
       }
       
       if (soul_content !== undefined) {

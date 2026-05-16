@@ -1,10 +1,10 @@
 # Orchestration Patterns
 
-This guide covers the task orchestration patterns available in Mission Control, from simple manual assignment to fully automated multi-agent workflows.
+This guide covers the task orchestration patterns available in E-AgentCenter, from simple manual assignment to fully automated multi-agent workflows.
 
 ## Task Lifecycle
 
-Every task in Mission Control follows this status flow:
+Every task in E-AgentCenter follows this status flow:
 
 ```
 inbox ──► assigned ──► in_progress ──► review ──► done

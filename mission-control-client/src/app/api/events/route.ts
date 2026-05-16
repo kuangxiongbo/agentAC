@@ -1,6 +1,7 @@
 import { NextRequest , NextResponse } from 'next/server'
 import { eventBus, ServerEvent } from '@/lib/event-bus'
 import { requireRole } from '@/lib/auth'
+import { ensureSessionRealtimeBridge } from '@/lib/session-realtime'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -20,6 +21,8 @@ export async function GET(request: NextRequest) {
 
   const stream = new ReadableStream({
     start(controller) {
+      ensureSessionRealtimeBridge()
+
       // Send initial connection event
       controller.enqueue(
         encoder.encode(`data: ${JSON.stringify({ type: 'connected', data: null, timestamp: Date.now() })}\n\n`)

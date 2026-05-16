@@ -3,11 +3,12 @@
 import Image from 'next/image'
 import { useState, useEffect } from 'react'
 import { useTranslations } from 'next-intl'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { useNavigateToPanel, usePrefetchPanel } from '@/lib/navigation'
 import { Button } from '@/components/ui/button'
 import { APP_VERSION } from '@/lib/version'
 import { getPluginNavItems } from '@/lib/plugins'
+import { logoutThenFollowSsoRedirect } from '@/lib/zitadel-sso-client'
 
 interface NavItem {
   id: string
@@ -125,7 +126,7 @@ const gatewayOnlyPanels = new Set([
 const adminOnlyPanels = new Set<string>([])
 
 export function NavRail() {
-  const { activeTab, connection, dashboardMode, currentUser, activeTenant, tenants, osUsers, setActiveTenant, fetchTenants, fetchOsUsers, activeProject, projects, setActiveProject, fetchProjects, sidebarExpanded, collapsedGroups, toggleSidebar, toggleGroup, defaultOrgName, interfaceMode, setInterfaceMode } = useMissionControl()
+  const { activeTab, connection, dashboardMode, currentUser, activeTenant, tenants, osUsers, setActiveTenant, fetchTenants, fetchOsUsers, activeProject, projects, setActiveProject, fetchProjects, sidebarExpanded, collapsedGroups, toggleSidebar, toggleGroup, defaultOrgName, interfaceMode, setInterfaceMode } = useAgentCenterStore()
   const navigateToPanel = useNavigateToPanel()
   const prefetchPanel = usePrefetchPanel()
   const tn = useTranslations('nav')
@@ -244,16 +245,16 @@ export function NavRail() {
         <div className={`flex items-center shrink-0 ${sidebarExpanded ? 'px-3 py-3 gap-2.5' : 'flex-col py-3 gap-2'}`}>
           <div className="w-9 h-9 rounded-lg overflow-hidden bg-background border border-border/50 flex items-center justify-center shrink-0 hover:border-void-cyan/40 hover:glow-cyan transition-smooth">
             <Image
-              src="/brand/mc-logo-128.png"
-              alt="Mission Control logo"
+              src="/brand/app-logo.png"
+              alt="E-Agent-Center logo"
               width={36}
               height={36}
-              className="w-full h-full object-cover"
+              className="w-full h-full object-contain"
             />
           </div>
           {sidebarExpanded && (
             <div className="flex items-baseline gap-2 truncate flex-1 min-w-0">
-              <span className="text-sm font-semibold text-foreground truncate">Mission Control</span>
+              <span className="text-sm font-semibold text-foreground truncate">E-Agent-Center</span>
               <span className="text-2xs text-muted-foreground font-mono-tight shrink-0">v{APP_VERSION}</span>
             </div>
           )}
@@ -806,10 +807,11 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
   setInterfaceMode: (mode: 'essential' | 'full') => void
   activeTab: string
 }) {
-  const { setShowProjectManagerModal } = useMissionControl()
+  const { setShowProjectManagerModal, centralMode, setCurrentUser } = useAgentCenterStore()
   const tcs = useTranslations('contextSwitcher')
   const tn = useTranslations('nav')
   const tc = useTranslations('common')
+  const td = useTranslations('dashboardOverview')
   // Build unified org list: DB tenants + unlinked OS users
   const linkedUsernames = new Set(tenants.map(t => t.linux_user))
   const unlinkedOsUsers = osUsers.filter(u => !linkedUsernames.has(u.username) && !u.is_process_owner)
@@ -818,14 +820,56 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
   const [createForm, setCreateForm] = useState({ username: '', display_name: '', gateway_port: '', install_openclaw: true, install_claude: false, install_codex: false })
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
+  const [signingOut, setSigningOut] = useState(false)
 
-  const userName = currentUser?.display_name || currentUser?.username || 'User'
-  const initials = userName.split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0, 2)
-  const tenantName = activeTenant?.display_name || defaultOrgName
   const projectName = activeProject?.name
-  const contextLine = projectName ? `${tenantName} / ${projectName}` : tenantName
-  const connectionLabel = isLocal ? tcs('localMode') : isConnected ? tcs('connected') : tcs('disconnected')
+  const isSsoUser = Boolean(currentUser?.provider && currentUser.provider !== 'local')
+  const orgLine = (currentUser?.organization?.display_name || '').trim() || activeTenant?.display_name?.trim() || ''
+  const personLine = (currentUser?.display_name || '').trim() || (currentUser?.email || '').trim() || (currentUser?.username || '').trim() || ''
+  const baseIdentityLabel = isLocal
+    ? (centralMode ? td('modeService') : tcs('localMode'))
+    : td('modeService')
+  const connectionLabel = isLocal
+    ? (centralMode ? tcs('serviceStatus') : tcs('localMode'))
+    : isConnected
+      ? tcs('connected')
+      : tcs('disconnected')
+
+  let contextTitle = baseIdentityLabel
+  let contextMeta = projectName ? `${projectName} · ${connectionLabel}` : connectionLabel
+  if (isSsoUser && (personLine || orgLine)) {
+    contextTitle = personLine || orgLine
+    const tail = projectName ? `${projectName} · ${connectionLabel}` : connectionLabel
+    contextMeta = orgLine ? `${orgLine} · ${tail}` : tail
+  }
+
+  const initials = (() => {
+    const parts = contextTitle.split(/\s+/).filter(Boolean)
+    if (parts.length >= 2) {
+      return parts.map(w => w[0]).join('').toUpperCase().slice(0, 2)
+    }
+    const s = parts[0] || contextTitle
+    return s.slice(0, 2).toUpperCase()
+  })()
   const connectionDotClass = isLocal ? 'bg-void-cyan' : isConnected ? 'bg-green-500' : 'bg-red-500'
+
+  const handleSignOut = async () => {
+    if (signingOut || !currentUser) return
+    setSigningOut(true)
+    setOpen(false)
+    try {
+      const redirected = await logoutThenFollowSsoRedirect()
+      if (!redirected) {
+        setCurrentUser(null)
+        window.location.href = '/login'
+      }
+    } catch {
+      setCurrentUser(null)
+      window.location.href = '/login'
+    } finally {
+      setSigningOut(false)
+    }
+  }
 
   return (
     <div className={`shrink-0 relative ${expanded ? 'px-3 pb-3' : 'flex flex-col items-center pb-3'}`}>
@@ -833,7 +877,7 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
       <Button
         variant="ghost"
         onClick={() => setOpen(!open)}
-        title={expanded ? undefined : `${userName} · ${contextLine} · ${connectionLabel}`}
+        title={expanded ? undefined : `${contextTitle} · ${contextMeta}`}
         className={`flex items-center rounded-lg ${
           expanded
             ? 'w-full gap-2.5 px-2.5 py-2 h-auto hover:bg-secondary/80 border border-transparent hover:border-border justify-start'
@@ -843,27 +887,16 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
         {/* Avatar */}
         <div className={`shrink-0 rounded-full flex items-center justify-center text-[11px] font-semibold relative ${
           expanded ? 'w-8 h-8' : 'w-8 h-8'
-        } ${currentUser?.avatar_url ? '' : 'bg-primary/20 text-primary'}`}>
-          {currentUser?.avatar_url ? (
-            <Image
-              src={currentUser.avatar_url}
-              alt=""
-              width={32}
-              height={32}
-              unoptimized
-              className="w-full h-full rounded-full object-cover"
-            />
-          ) : (
-            initials
-          )}
+        } bg-primary/20 text-primary`}>
+          {initials}
           {/* Connection dot on avatar */}
           <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-card ${connectionDotClass}`} />
         </div>
 
         {expanded && (
           <div className="flex-1 min-w-0 text-left">
-            <div className="text-sm font-medium text-foreground truncate leading-tight">{userName}</div>
-            <div className="text-[11px] text-muted-foreground truncate leading-tight">{contextLine}</div>
+            <div className="text-sm font-medium text-foreground truncate leading-tight">{contextTitle}</div>
+            <div className="text-[11px] text-muted-foreground truncate leading-tight">{contextMeta}</div>
           </div>
         )}
 
@@ -876,7 +909,7 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
         {/* Collapsed tooltip */}
         {!expanded && (
           <span className="absolute left-full ml-2 px-2 py-1 text-xs font-medium bg-popover text-popover-foreground border border-border rounded-md opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">
-            {userName}
+            {contextTitle}
           </span>
         )}
       </Button>
@@ -891,27 +924,14 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
             {/* User info header */}
             <div className="px-3 pt-3 pb-2">
               <div className="flex items-center gap-2">
-                <div className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[11px] font-semibold ${
-                  currentUser?.avatar_url ? '' : 'bg-primary/20 text-primary'
-                }`}>
-                  {currentUser?.avatar_url ? (
-                    <Image
-                      src={currentUser.avatar_url}
-                      alt=""
-                      width={32}
-                      height={32}
-                      unoptimized
-                      className="w-full h-full rounded-full object-cover"
-                    />
-                  ) : (
-                    initials
-                  )}
+                <div className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[11px] font-semibold bg-primary/20 text-primary">
+                  {initials}
                 </div>
                 <div className="min-w-0">
-                  <div className="text-sm font-medium text-foreground truncate">{userName}</div>
+                  <div className="text-sm font-medium text-foreground truncate">{contextTitle}</div>
                   <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                    <span>{currentUser?.role || 'user'}</span>
-                    <span className="text-muted-foreground/30">·</span>
+                    {projectName && <span>{projectName}</span>}
+                    {projectName && <span className="text-muted-foreground/30">·</span>}
                     <span className={`flex items-center gap-1`}>
                       <span className={`w-1.5 h-1.5 rounded-full inline-block ${connectionDotClass}`} />
                       {connectionLabel}
@@ -986,6 +1006,26 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
                 {tn('activity')}
               </Button>
             </div>
+
+            {currentUser && (
+              <>
+                <div className="mx-2 border-t border-border my-1" />
+                <div className="px-1 pb-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={signingOut}
+                    onClick={() => { void handleSignOut() }}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 h-auto rounded-md text-xs justify-start text-destructive/90 hover:text-destructive hover:bg-destructive/10"
+                  >
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5 shrink-0">
+                      <path d="M6 14H3.5A1.5 1.5 0 012 12.5v-9A1.5 1.5 0 013.5 2H6M10.5 11.5L14 8l-3.5-3.5M14 8H6" />
+                    </svg>
+                    {signingOut ? tcs('signingOut') : tcs('signOut')}
+                  </Button>
+                </div>
+              </>
+            )}
 
             {/* Organizations with nested projects (admin only, always visible) */}
             {isAdmin && (

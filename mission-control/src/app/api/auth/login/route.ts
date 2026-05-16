@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { authenticateUser, createSession } from '@/lib/auth'
+import { authenticateUser, createSession, publicAuthUserFields } from '@/lib/auth'
 import { logAuditEvent, needsFirstTimeSetup } from '@/lib/db'
 import { getMcSessionCookieName, getMcSessionCookieOptions, isRequestSecure } from '@/lib/session-cookie'
 import { loginLimiter } from '@/lib/rate-limit'
@@ -43,17 +43,7 @@ export async function POST(request: Request) {
     logAuditEvent({ action: 'login', actor: user.username, actor_id: user.id, ip_address: ipAddress, user_agent: userAgent })
 
     const response = NextResponse.json({
-      user: {
-        id: user.id,
-        username: user.username,
-        display_name: user.display_name,
-        role: user.role,
-        provider: user.provider || 'local',
-        email: user.email || null,
-        avatar_url: user.avatar_url || null,
-        workspace_id: user.workspace_id ?? 1,
-        tenant_id: user.tenant_id ?? 1,
-      },
+      user: publicAuthUserFields(user),
     })
 
     const isSecureRequest = isRequestSecure(request)

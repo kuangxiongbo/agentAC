@@ -33,15 +33,38 @@ function envFlag(name: string): boolean | undefined {
   return undefined
 }
 
-export function getMcSessionCookieOptions(input: { maxAgeSeconds: number; isSecureRequest?: boolean }): Partial<ResponseCookie> {
+function resolveDefaultSameSite(): 'strict' | 'lax' | 'none' {
+  const v = String(process.env.MC_COOKIE_SAMESITE || '').trim().toLowerCase()
+  if (v === 'strict' || v === 'lax' || v === 'none') return v
+  // Zitadel 等 OIDC：从 IdP 顶级跳转回本域 `/api/auth/callback` 时写会话 Cookie，Strict 会被部分浏览器丢弃，随后 `/api/auth/me` 401 又回登录页。
+  return 'lax'
+}
+
+export function getMcSessionCookieOptions(input: {
+  maxAgeSeconds: number
+  isSecureRequest?: boolean
+  /**
+   * OIDC 短期 Cookie `mc_oidc_flow` 在发起路由中显式传 `sameSite: 'lax'`。
+   * 会话类 Cookie 默认 SameSite 见 `resolveDefaultSameSite()`（未配置 `MC_COOKIE_SAMESITE` 时为 **lax**，以支持 IdP 顶级跳回写会话）。
+   */
+  sameSite?: 'strict' | 'lax' | 'none'
+}): Partial<ResponseCookie> {
   const secureEnv = envFlag('MC_COOKIE_SECURE')
-  const isProduction = process.env.NODE_ENV === 'production'
-  const secure = secureEnv ?? input.isSecureRequest ?? isProduction
+  const isSecureConnection = Boolean(input.isSecureRequest)
+
+  // 浏览器会丢弃「非 HTTPS 连接上的 Secure Cookie」。HTTP 开发环境若误设 MC_COOKIE_SECURE=1，
+  // OIDC 回调里 Set-Cookie 会被静默忽略，用户会回到 /login 且看似「SSO 已成功」。
+  let secure: boolean
+  if (!isSecureConnection) {
+    secure = false
+  } else {
+    secure = secureEnv !== undefined ? secureEnv : true
+  }
 
   return {
     httpOnly: true,
     secure,
-    sameSite: 'strict',
+    sameSite: input.sameSite ?? resolveDefaultSameSite(),
     maxAge: input.maxAgeSeconds,
     path: '/',
   }

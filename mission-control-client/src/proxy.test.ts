@@ -14,6 +14,7 @@ describe('proxy host matching', () => {
 
     const { proxy } = await import('./proxy')
     const request = {
+      url: 'http://hetzner-jarv/login',
       headers: new Headers({ host: 'hetzner-jarv' }),
       nextUrl: { host: 'hetzner-jarv', hostname: 'hetzner-jarv', pathname: '/login', clone: () => ({ pathname: '/login' }) },
       method: 'GET',
@@ -37,6 +38,7 @@ describe('proxy host matching', () => {
 
     const { proxy } = await import('./proxy')
     const request = {
+      url: 'http://evil.example.com/login',
       headers: new Headers({ host: 'evil.example.com' }),
       nextUrl: { host: 'evil.example.com', hostname: 'evil.example.com', pathname: '/login', clone: () => ({ pathname: '/login' }) },
       method: 'GET',
@@ -60,6 +62,7 @@ describe('proxy host matching', () => {
 
     const { proxy } = await import('./proxy')
     const request = {
+      url: 'http://localhost:3000/api/status?action=health',
       headers: new Headers({ host: 'localhost:3000' }),
       nextUrl: {
         host: 'localhost:3000',
@@ -80,7 +83,7 @@ describe('proxy host matching', () => {
     expect(response.status).not.toBe(401)
   })
 
-  it('still blocks unauthenticated non-health status API calls', async () => {
+  it('allows unauthenticated /api/status through middleware (API auth enforced in route handlers)', async () => {
     vi.resetModules()
     vi.doMock('node:os', () => ({
       default: { hostname: () => 'hetzner-jarv' },
@@ -89,6 +92,7 @@ describe('proxy host matching', () => {
 
     const { proxy } = await import('./proxy')
     const request = {
+      url: 'http://localhost:3000/api/status?action=overview',
       headers: new Headers({ host: 'localhost:3000' }),
       nextUrl: {
         host: 'localhost:3000',
@@ -106,6 +110,6 @@ describe('proxy host matching', () => {
     delete process.env.MC_ALLOW_ANY_HOST
 
     const response = proxy(request)
-    expect(response.status).toBe(401)
+    expect(response.status).not.toBe(403)
   })
 })

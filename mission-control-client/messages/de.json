@@ -30,7 +30,7 @@
     "moreIssues": "+ {count} {count, plural, one {weiteres Problem} other {weitere Probleme}}"
   },
   "auth": {
-    "missionControl": "Mission Control",
+    "missionControl": "E-Agent-Client",
     "signInToContinue": "Melden Sie sich an, um fortzufahren",
     "username": "Benutzername",
     "password": "Passwort",
@@ -48,10 +48,10 @@
     "accessRequestDescription": "Ihre Anfrage wurde zur Überprüfung an einen Administrator gesendet. Nach der Genehmigung können Sie sich anmelden.",
     "tryAgain": "Erneut versuchen",
     "noAdminAccount": "Noch kein Administratorkonto erstellt",
-    "noAdminDescription": "Richten Sie Ihr Administratorkonto ein, um mit Mission Control zu beginnen.",
+    "noAdminDescription": "Richten Sie Ihr Administratorkonto ein, um mit E-Agent-Client zu beginnen.",
     "createAdminAccount": "Administratorkonto erstellen",
-    "welcomeToMC": "Willkommen bei Mission Control",
-    "settingUpMC": "Mission Control wird eingerichtet",
+    "welcomeToMC": "Willkommen bei E-Agent-Client",
+    "settingUpMC": "E-Agent-Client wird eingerichtet",
     "createAdminToStart": "Erstellen Sie Ihr Administratorkonto, um zu beginnen",
     "creatingAdmin": "Ihr Administratorkonto wird erstellt...",
     "displayName": "Anzeigename",
@@ -139,7 +139,7 @@
     "resetting": "Wird zurückgesetzt..."
   },
   "boot": {
-    "missionControl": "Mission Control",
+    "missionControl": "E-Agent-Client",
     "agentOrchestration": "Agenten-Orchestrierung",
     "authenticatingOperator": "Operator wird authentifiziert",
     "detectingStationMode": "Stationsmodus wird erkannt",
@@ -226,7 +226,7 @@
     "updating": "Aktualisierung...",
     "restartingServer": "Server wird neu gestartet...",
     "updateAvailable": "Update verfügbar: v{version}",
-    "newerVersionAvailable": " — eine neuere Version von Mission Control ist verfügbar.",
+    "newerVersionAvailable": " — eine neuere Version von E-Agent-Client ist verfügbar.",
     "updateFailed": "Aktualisierung fehlgeschlagen",
     "networkError": "Netzwerkfehler — Server konnte nicht erreicht werden."
   },
@@ -285,7 +285,7 @@
     "stationOnline": "Station online",
     "stationReady": "Ihre Station ist bereit für Agenten.",
     "welcome": {
-      "title": "Willkommen bei Mission Control",
+      "title": "Willkommen bei E-Agent-Client",
       "description": "Ihre Station für KI-Agenten. Wenn Agenten hier andocken, erhalten sie persistenten Speicher, Aufgabenverwaltung, koordinierte Workflows und vollständige Beobachtbarkeit. Wir haben Ihr Setup gescannt — hier ist, was online ist.",
       "availableModes": "Verfügbare Modi",
       "localMode": "Lokaler Modus",
@@ -304,7 +304,7 @@
       "localModeNoGateway": "Lokaler Modus — kein Gateway",
       "agentsRegistered": "{count} {count, plural, one {Agent} other {Agenten}} registriert",
       "noAgentsYet": "Noch keine Agenten",
-      "gatewayRegistered": "Gateway: Mission Control registriert",
+      "gatewayRegistered": "Gateway: E-Agent-Client registriert",
       "gatewayRegistrationPending": "Gateway-Registrierung ausstehend",
       "skipSetup": "Einrichtung überspringen",
       "getStarted": "Loslegen"
@@ -325,9 +325,9 @@
     },
     "gatewayLink": {
       "title": "Gateway-Verbindung",
-      "description": "Mission Control registriert seinen Ursprung beim OpenClaw-Gateway, um sich über WebSocket zu verbinden und Agenten remote zu verwalten.",
+      "description": "E-Agent-Client registriert seinen Ursprung beim OpenClaw-Gateway, um sich über WebSocket zu verbinden und Agenten remote zu verwalten.",
       "originRegistered": "Gateway-Ursprung registriert",
-      "originAdded": "Mission Control Ursprung zu Gateway allowedOrigins hinzugefügt",
+      "originAdded": "E-Agent-Client Ursprung zu Gateway allowedOrigins hinzugefügt",
       "registrationPending": "Registrierung ausstehend — wird bei der nächsten Fähigkeitsprüfung konfiguriert",
       "deviceAuthConfigured": "Geräteauthentifizierung konfiguriert",
       "deviceAuthDisabled": "Geräteauthentifizierung deaktiviert — MC authentifiziert sich über Gateway-Token",
@@ -1189,7 +1189,7 @@
     "openingFlightDeck": "Flight Deck wird geöffnet...",
     "flightDeckCompanion": "Private/Pro-Begleit-App für tiefe Sitzungsanalyse",
     "flightDeckRequired": "Flight Deck erforderlich",
-    "flightDeckDescription": "Flight Deck ist die private/Pro-Begleit-App für Mission Control.",
+    "flightDeckDescription": "Flight Deck ist die private/Pro-Begleit-App für E-Agent-Client.",
     "flightDeckNotInstalled": "Flight Deck scheint auf diesem Gerät nicht installiert zu sein. Installieren Sie es, um Agent-Sitzungen mit umfangreicheren Steuerelementen und Diagnosen zu öffnen.",
     "maybeLater": "Später",
     "downloadFlightDeck": "Flight Deck herunterladen",

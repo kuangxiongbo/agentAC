@@ -6,6 +6,14 @@ import { eventBus } from '@/lib/event-bus'
 import { logger } from '@/lib/logger'
 import { runOpenClaw } from '@/lib/command'
 
+function resolveAgentFramework(agent: any, parsedConfig: Record<string, any>): string {
+  return String(
+    agent?.framework ||
+    parsedConfig?.main_runtime ||
+    (parsedConfig?.openclawId ? 'openclaw' : '')
+  ).trim().toLowerCase()
+}
+
 /**
  * GET /api/agents/[id] - Get a single agent by ID or name
  */
@@ -226,36 +234,42 @@ export async function DELETE(
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
 
+    const agentConfig = agent.config ? JSON.parse(agent.config) : {}
+    const framework = resolveAgentFramework(agent, agentConfig)
+    const warnings: string[] = []
+
     if (removeWorkspace) {
-      const agentConfig = agent.config ? JSON.parse(agent.config) : {}
       const openclawId =
         String(agentConfig?.openclawId || agent.name || '')
           .toLowerCase()
           .replace(/[^a-z0-9._-]+/g, '-')
           .replace(/^-+|-+$/g, '') || agent.name
-      try {
-        await runOpenClaw(['agents', 'delete', openclawId, '--force'], { timeoutMs: 30000 })
-      } catch (err: any) {
-        logger.error({ err, openclawId, agent: agent.name }, 'Failed to remove OpenClaw agent/workspace')
-        return NextResponse.json(
-          { error: `Failed to remove OpenClaw workspace for ${agent.name}: ${err?.message || 'unknown error'}` },
-          { status: 502 }
-        )
+
+      if (framework !== 'openclaw') {
+        warnings.push(`Workspace cleanup skipped for ${agent.name}: framework "${framework || 'unknown'}" does not use OpenClaw workspace deletion`)
+      } else {
+        try {
+          await runOpenClaw(['agents', 'delete', openclawId, '--force'], { timeoutMs: 30000 })
+        } catch (err: any) {
+          logger.warn({ err, openclawId, agent: agent.name }, 'Failed to remove OpenClaw agent/workspace; continuing with agent delete')
+          warnings.push(`OpenClaw workspace cleanup skipped for ${agent.name}: ${err?.message || 'unknown error'}`)
+        }
       }
     }
 
     let configCleanupWarning: string | null = null
-    try {
-      const agentConfig = agent.config ? JSON.parse(agent.config) : {}
+    if (framework === 'openclaw') {
+      try {
       const openclawId =
         String(agentConfig?.openclawId || agent.name || '')
           .toLowerCase()
           .replace(/[^a-z0-9._-]+/g, '-')
           .replace(/^-+|-+$/g, '') || agent.name
       await removeAgentFromConfig({ id: openclawId, name: agent.name })
-    } catch (err: any) {
-      configCleanupWarning = `OpenClaw config cleanup skipped for ${agent.name}: ${err?.message || 'unknown error'}`
-      logger.warn({ err, agent: agent.name }, 'Failed to remove OpenClaw agent config entry')
+      } catch (err: any) {
+        configCleanupWarning = `OpenClaw config cleanup skipped for ${agent.name}: ${err?.message || 'unknown error'}`
+        logger.warn({ err, agent: agent.name }, 'Failed to remove OpenClaw agent config entry')
+      }
     }
 
     db.prepare('DELETE FROM agents WHERE id = ? AND workspace_id = ?').run(agent.id, workspaceId)
@@ -276,7 +290,9 @@ export async function DELETE(
       success: true,
       deleted: agent.name,
       remove_workspace: removeWorkspace,
-      ...(configCleanupWarning ? { warning: configCleanupWarning } : {}),
+      ...(configCleanupWarning || warnings.length > 0
+        ? { warning: [configCleanupWarning, ...warnings].filter(Boolean).join(' | ') }
+        : {}),
     })
   } catch (error) {
     logger.error({ err: error }, 'DELETE /api/agents/[id] error')

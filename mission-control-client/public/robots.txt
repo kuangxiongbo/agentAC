@@ -1,4 +1,4 @@
-# Mission Control — AI Agent Orchestration Dashboard
+# E-AgentCenter — AI Agent Orchestration Dashboard
 # https://github.com/builderz-labs/mission-control
 
 User-agent: *

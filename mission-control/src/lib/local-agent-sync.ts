@@ -17,6 +17,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { getDatabase, logAuditEvent } from './db'
 import { logger } from './logger'
+import { config } from './config'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -223,6 +224,7 @@ function scanLocalAgents(): DiskAgent[] {
 // ---------------------------------------------------------------------------
 
 export async function syncLocalAgents(): Promise<{ ok: boolean; message: string }> {
+  if (config.centralMode) return { ok: true, message: 'Skipped: Central Mode active' }
   try {
     const db = getDatabase()
     const diskAgents = scanLocalAgents()

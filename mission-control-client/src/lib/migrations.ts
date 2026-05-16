@@ -1423,6 +1423,48 @@ const migrations: Migration[] = [
       }
       db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_remote_id ON tasks(remote_id)`)
     }
+  },
+  {
+    id: '050_message_sync',
+    up: (db) => {
+      const msgCols = db.prepare(`PRAGMA table_info(messages)`).all() as Array<{ name: string }>
+      if (!msgCols.some(c => c.name === 'synced')) {
+        db.exec(`ALTER TABLE messages ADD COLUMN synced INTEGER NOT NULL DEFAULT 0`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_synced ON messages(synced)`)
+    }
+  },
+  {
+    id: '051_agent_node_id',
+    up: (db) => {
+      const agentCols = db.prepare(`PRAGMA table_info(agents)`).all() as Array<{ name: string }>
+      if (!agentCols.some(c => (c as any).name === 'node_id')) {
+        db.exec(`ALTER TABLE agents ADD COLUMN node_id TEXT`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_node_id ON agents(node_id)`)
+    }
+  },
+  {
+    id: '052_agent_framework',
+    up: (db) => {
+      // Add framework column to distinguish agent types (OpenClaw, Claude, Cursor, etc.)
+      const agentCols = db.prepare(`PRAGMA table_info(agents)`).all() as Array<{ name: string }>
+      if (!agentCols.some(c => (c as any).name === 'framework')) {
+        db.exec(`ALTER TABLE agents ADD COLUMN framework TEXT DEFAULT 'openclaw'`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_framework ON agents(framework)`)
+    }
+  },
+  {
+    id: '053_agent_hierarchy',
+    up: (db) => {
+      // Add parent_id for hierarchical agents (sub-agents)
+      const agentCols = db.prepare(`PRAGMA table_info(agents)`).all() as Array<{ name: string }>
+      if (!agentCols.some(c => (c as any).name === 'parent_id')) {
+        db.exec(`ALTER TABLE agents ADD COLUMN parent_id INTEGER`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_parent_id ON agents(parent_id)`)
+    }
   }
 ]
 

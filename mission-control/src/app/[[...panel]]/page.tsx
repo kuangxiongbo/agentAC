@@ -56,7 +56,7 @@ import { completeNavigationTiming } from '@/lib/navigation-metrics'
 import { panelHref, useNavigateToPanel } from '@/lib/navigation'
 import { clearOnboardingDismissedThisSession, clearOnboardingReplayFromStart, getOnboardingSessionDecision, markOnboardingReplayFromStart, readOnboardingDismissedThisSession } from '@/lib/onboarding-session'
 import { Button } from '@/components/ui/button'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 
 interface GatewaySummary {
   id: number
@@ -88,7 +88,7 @@ export default function Home() {
   const tb = useTranslations('boot')
   const tp = useTranslations('page')
   const tc = useTranslations('common')
-  const { activeTab, setActiveTab, setCurrentUser, setDashboardMode, setGatewayAvailable, setLocalSessionsAvailable, setCapabilitiesChecked, setSubscription, setDefaultOrgName, setUpdateAvailable, setOpenclawUpdate, showOnboarding, setShowOnboarding, liveFeedOpen, toggleLiveFeed, showProjectManagerModal, setShowProjectManagerModal, fetchProjects, setChatPanelOpen, bootComplete, setBootComplete, setAgents, setSessions, setProjects, setInterfaceMode, setMemoryGraphAgents, setSkillsData } = useMissionControl()
+  const { activeTab, setActiveTab, setCurrentUser, setDashboardMode, setGatewayAvailable, setLocalSessionsAvailable, setCapabilitiesChecked, setSubscription, setDefaultOrgName, setCentralMode, setUpdateAvailable, setOpenclawUpdate, showOnboarding, setShowOnboarding, liveFeedOpen, toggleLiveFeed, showProjectManagerModal, setShowProjectManagerModal, fetchProjects, setChatPanelOpen, bootComplete, setBootComplete, setAgents, setSessions, setProjects, setInterfaceMode, setMemoryGraphAgents, setSkillsData } = useAgentCenterStore()
 
   // Sync URL → Zustand activeTab
   const pathname = usePathname()
@@ -217,16 +217,29 @@ export default function Home() {
       }
     }
 
-    // Fetch current user
-    fetch('/api/auth/me')
+    // Fetch current user — 401 时用整页跳转，避免 SPA 内 router.replace 与会话 Cookie 竞态导致「已登录仍回登录」
+    fetch('/api/auth/me', { credentials: 'include', cache: 'no-store' })
       .then(async (res) => {
-        if (res.ok) return res.json()
-        if (res.status === 401) {
-          router.replace(`/login?next=${encodeURIComponent(pathname)}`)
-        }
-        return null
+        if (res.ok) return { kind: 'ok' as const, data: await res.json() }
+        if (res.status === 401) return { kind: 'unauth' as const }
+        return { kind: 'other' as const }
       })
-      .then(data => { if (data?.user) setCurrentUser(data.user); markStep('auth') })
+      .then((result) => {
+        if (result.kind === 'unauth') {
+          const nextPath =
+            typeof pathname === 'string' && pathname.startsWith('/') && !pathname.startsWith('/login')
+              ? pathname
+              : '/'
+          window.location.replace(
+            `${window.location.origin}/login?next=${encodeURIComponent(nextPath)}`
+          )
+          return
+        }
+        if (result.kind === 'ok' && result.data?.user) {
+          setCurrentUser(result.data.user)
+        }
+        markStep('auth')
+      })
       .catch(() => { markStep('auth') })
 
     // Check for available updates
@@ -274,6 +287,10 @@ export default function Home() {
         if (data?.interfaceMode === 'essential' || data?.interfaceMode === 'full') {
           setInterfaceMode(data.interfaceMode)
         }
+        if (data?.centralMode) {
+          setCentralMode(true)
+          setLocalSessionsAvailable(false)
+        }
         if (data && data.gateway === false) {
           setDashboardMode('local')
           setGatewayAvailable(false)
@@ -287,7 +304,7 @@ export default function Home() {
           setDashboardMode('full')
           setGatewayAvailable(true)
         }
-        if (data?.claudeHome) {
+        if (data?.claudeHome && !data?.centralMode) {
           setLocalSessionsAvailable(true)
         }
         setCapabilitiesChecked(true)
@@ -366,7 +383,7 @@ export default function Home() {
     ]).catch(() => { /* panels will lazy-load as fallback */ })
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- boot once on mount, not on every pathname change
-  }, [connect, router, setCurrentUser, setDashboardMode, setGatewayAvailable, setLocalSessionsAvailable, setCapabilitiesChecked, setSubscription, setUpdateAvailable, setShowOnboarding, setAgents, setSessions, setProjects, setInterfaceMode, setMemoryGraphAgents, setSkillsData])
+  }, [connect, setCurrentUser, setDashboardMode, setGatewayAvailable, setLocalSessionsAvailable, setCapabilitiesChecked, setSubscription, setCentralMode, setUpdateAvailable, setShowOnboarding, setAgents, setSessions, setProjects, setInterfaceMode, setMemoryGraphAgents, setSkillsData])
 
   if (!isClient || !bootComplete) {
     return <Loader variant="page" steps={isClient ? initSteps : undefined} />
@@ -456,9 +473,10 @@ const ESSENTIAL_PANELS = new Set([
 
 function ContentRouter({ tab }: { tab: string }) {
   const tp = useTranslations('page')
-  const { dashboardMode, interfaceMode, setInterfaceMode } = useMissionControl()
+  const { dashboardMode, interfaceMode, setInterfaceMode, centralMode } = useAgentCenterStore()
   const navigateToPanel = useNavigateToPanel()
   const isLocal = dashboardMode === 'local'
+  const showLocalAgentsDoc = isLocal && !centralMode
   const panelName = tab.replace(/-/g, ' ')
 
   // Guard: show nudge for non-essential panels in essential mode
@@ -509,7 +527,7 @@ function ContentRouter({ tab }: { tab: string }) {
       return (
         <>
           <OrchestrationBar />
-          {isLocal && <LocalAgentsDocPanel />}
+          {showLocalAgentsDoc && <LocalAgentsDocPanel />}
           <AgentSquadPanelPhase3 />
         </>
       )

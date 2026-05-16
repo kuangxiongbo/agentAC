@@ -1,11 +1,15 @@
 import crypto from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { config } from './config'
-import { runCommand, runOpenClaw } from './command'
+import { runCommand } from './command'
 import { isHermesInstalled, isHermesGatewayRunning, clearHermesDetectionCache } from './hermes-sessions'
 import { logger } from './logger'
+import {
+  getMainAgentRuntimeMeta,
+  type MainAgentRuntimeId,
+} from './runtime-agents'
 
-export type RuntimeId = 'openclaw' | 'hermes' | 'claude' | 'codex'
+export type RuntimeId = MainAgentRuntimeId
 export type DeploymentMode = 'local' | 'docker'
 
 export interface RuntimeStatus {
@@ -18,6 +22,7 @@ export interface RuntimeStatus {
   authRequired: boolean
   authHint: string
   authenticated: boolean
+  installSupported: boolean
 }
 
 export interface InstallJob {
@@ -36,6 +41,7 @@ export interface RuntimeMeta {
   description: string
   authRequired: boolean
   authHint: string
+  installSupported: boolean
 }
 
 const RUNTIME_META: Record<RuntimeId, RuntimeMeta> = {
@@ -44,24 +50,42 @@ const RUNTIME_META: Record<RuntimeId, RuntimeMeta> = {
     description: 'Multi-agent orchestration with gateway, sessions, and memory.',
     authRequired: false,
     authHint: '',
+    installSupported: true,
   },
   hermes: {
     name: 'Hermes Agent',
     description: 'Self-improving AI agent with learning loop, skills, and multi-platform messaging.',
     authRequired: false,
     authHint: '',
+    installSupported: true,
   },
   claude: {
     name: 'Claude Code',
     description: 'Anthropic CLI agent for software engineering tasks.',
     authRequired: true,
     authHint: 'Run "claude login" after install to authenticate.',
+    installSupported: true,
   },
   codex: {
     name: 'Codex CLI',
     description: 'OpenAI CLI agent for code generation and editing.',
     authRequired: true,
     authHint: 'Run "codex auth" after install to authenticate.',
+    installSupported: true,
+  },
+  cursor: {
+    name: 'Cursor',
+    description: 'Cursor IDE runtime for AI-assisted coding and local sessions.',
+    authRequired: false,
+    authHint: '',
+    installSupported: true,
+  },
+  opencode: {
+    name: 'OpenCode',
+    description: 'OpenCode runtime for local coding and agent workflows.',
+    authRequired: false,
+    authHint: '',
+    installSupported: true,
   },
 }
 
@@ -213,16 +237,74 @@ function detectCodex(): RuntimeStatus {
   return { id: 'codex', ...meta, installed, version, running: false, authenticated }
 }
 
+function detectCursor(): RuntimeStatus {
+  const meta = RUNTIME_META.cursor
+  const { installed: binaryInstalled, version } = detectBinary(['cursor'])
+  let installed = binaryInstalled
+
+  if (!installed) {
+    try {
+      const homedir = require('node:os').homedir()
+      const path = require('node:path')
+      installed = [
+        '/Applications/Cursor.app',
+        path.join(homedir, 'Applications', 'Cursor.app'),
+        path.join(homedir, 'Library', 'Application Support', 'Cursor'),
+        path.join(homedir, '.cursor'),
+      ].some((candidate) => existsSync(candidate))
+    } catch {
+      // ignore
+    }
+  }
+
+  return { id: 'cursor', ...meta, installed, version, running: false, authenticated: installed }
+}
+
+function detectOpenCode(): RuntimeStatus {
+  const meta = RUNTIME_META.opencode
+  const { installed: binaryInstalled, version } = detectBinary(['opencode'])
+  let installed = binaryInstalled
+
+  if (!installed) {
+    try {
+      const homedir = require('node:os').homedir()
+      const path = require('node:path')
+      installed = [
+        path.join(homedir, '.opencode'),
+        path.join(homedir, '.config', 'opencode'),
+        path.join(homedir, 'Library', 'Application Support', 'OpenCode'),
+      ].some((candidate) => existsSync(candidate))
+    } catch {
+      // ignore
+    }
+  }
+
+  return { id: 'opencode', ...meta, installed, version, running: false, authenticated: installed }
+}
+
 const DETECTORS: Record<RuntimeId, () => RuntimeStatus> = {
   openclaw: detectOpenClaw,
   hermes: detectHermes,
   claude: detectClaude,
   codex: detectCodex,
+  cursor: detectCursor,
+  opencode: detectOpenCode,
 }
 
 export function detectRuntime(id: RuntimeId): RuntimeStatus {
   const detector = DETECTORS[id]
-  return detector ? detector() : { id, name: id, description: '', installed: false, version: null, running: false, authRequired: false, authHint: '', authenticated: false }
+  return detector ? detector() : {
+    id,
+    name: id,
+    description: '',
+    installed: false,
+    version: null,
+    running: false,
+    authRequired: false,
+    authHint: '',
+    authenticated: false,
+    installSupported: false,
+  }
 }
 
 export function detectAllRuntimes(): RuntimeStatus[] {
@@ -235,6 +317,10 @@ export function detectAllRuntimes(): RuntimeStatus[] {
 
 export function startInstall(runtime: RuntimeId, mode: DeploymentMode): InstallJob {
   pruneJobs()
+  const runtimeMeta = getMainAgentRuntimeMeta(runtime)
+  if (!runtimeMeta?.installSupported) {
+    throw new Error(`${runtime} does not support automatic installation in this environment`)
+  }
 
   const job: InstallJob = {
     id: crypto.randomUUID(),
@@ -263,6 +349,8 @@ export function startInstall(runtime: RuntimeId, mode: DeploymentMode): InstallJ
     hermes: installHermesLocal,
     claude: installClaudeLocal,
     codex: installCodexLocal,
+    cursor: installCursorLocal,
+    opencode: installOpenCodeLocal,
   }
   const installFn = INSTALL_FNS[runtime] || installOpenClawLocal
   installFn(job).catch((err) => {
@@ -400,6 +488,51 @@ async function installCodexLocal(job: InstallJob): Promise<void> {
   job.finishedAt = Date.now()
 }
 
+async function runShellInstall(job: InstallJob, label: string, command: string, successMessage: string): Promise<void> {
+  job.output += `> ${label}\n`
+  const env = getInstallEnv()
+  try {
+    const result = await runCommand('bash', ['-lc', command], { timeoutMs: 600_000, env })
+    if (result.stdout) job.output += result.stdout + '\n'
+    if (result.stderr) job.output += result.stderr + '\n'
+    if (result.code === 0) {
+      job.status = 'success'
+      job.output += `\n> ${successMessage}\n`
+    } else {
+      job.status = 'failed'
+      job.error = `Installer exited with code ${result.code}`
+      job.output += `\n> Install failed (exit code ${result.code}).\n`
+    }
+  } catch (err: any) {
+    job.status = 'failed'
+    job.error = err?.message || 'Unknown error'
+    job.output += `\n> Error: ${job.error}\n`
+  }
+  job.finishedAt = Date.now()
+}
+
+async function installCursorLocal(job: InstallJob): Promise<void> {
+  const override = process.env.MC_INSTALL_CURSOR_CMD?.trim()
+  const command = override || 'brew install --cask cursor'
+  await runShellInstall(
+    job,
+    'Installing Cursor...',
+    command,
+    'Cursor install command completed. Refresh detection to verify installation.'
+  )
+}
+
+async function installOpenCodeLocal(job: InstallJob): Promise<void> {
+  const override = process.env.MC_INSTALL_OPENCODE_CMD?.trim()
+  const command = override || 'npm install -g opencode'
+  await runShellInstall(
+    job,
+    'Installing OpenCode...',
+    command,
+    'OpenCode install command completed. Refresh detection to verify installation.'
+  )
+}
+
 export function getInstallJob(id: string): InstallJob | null {
   return installJobs.get(id) ?? null
 }
@@ -429,6 +562,11 @@ export function generateDockerSidecar(runtime: RuntimeId): string {
 
 # Add to volumes section:
 #   openclaw-data:`
+  }
+
+  if (runtime === 'cursor' || runtime === 'opencode' || runtime === 'claude' || runtime === 'codex') {
+    return `# ${RUNTIME_META[runtime].name} runs locally and does not have a bundled sidecar template.
+# Use the local install flow or provide a custom install command via environment settings.`
   }
 
   return `  # Hermes Agent sidecar

@@ -1,5 +1,5 @@
 /**
- * GitHub API client for Mission Control issue sync.
+ * GitHub API client for E-Agent-Client issue sync.
  * Resolves GITHUB_TOKEN from the OpenClaw integration env file first,
  * then falls back to process.env for deployments that export it directly.
  */
@@ -50,7 +50,7 @@ export async function githubFetch(
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github.v3+json',
-    'User-Agent': 'MissionControl/1.0',
+    'User-Agent': 'E-Agent-Client/1.0',
     ...(options.headers as Record<string, string> || {}),
   }
 

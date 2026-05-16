@@ -1,4 +1,4 @@
-# Mission Control
+# E-AgentCenter
 
 Open-source dashboard for AI agent orchestration. Manage agent fleets, track tasks, monitor costs, and orchestrate workflows.
 
@@ -74,7 +74,7 @@ Database path: `MISSION_CONTROL_DB_PATH` (defaults to `.data/mission-control.db`
 
 ## Agent Control Interfaces
 
-Mission Control provides three interfaces for autonomous agents:
+E-AgentCenter provides three interfaces for autonomous agents:
 
 ### MCP Server (recommended for agents)
 ```bash

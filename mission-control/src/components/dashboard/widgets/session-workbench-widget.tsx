@@ -1,14 +1,16 @@
 'use client'
 
+import { useTranslations } from 'next-intl'
 import type { DashboardData } from '../widget-primitives'
 
 export function SessionWorkbenchWidget({ data }: { data: DashboardData }) {
+  const t = useTranslations('dashboardOverview')
   const { isLocal, sessions, isSessionsLoading, openSession } = data
 
   return (
     <div className="panel">
       <div className="panel-header">
-        <h3 className="text-sm font-semibold">{isLocal ? 'Session Workbench' : 'Session Router'}</h3>
+        <h3 className="text-sm font-semibold">{isLocal ? t('sessionWorkbenchTitle') : t('sessionRouterTitle')}</h3>
         <span className="text-2xs text-muted-foreground font-mono-tight">{sessions.length}</span>
       </div>
       <div className="divide-y divide-border/50 max-h-80 overflow-y-auto">
@@ -16,15 +18,15 @@ export function SessionWorkbenchWidget({ data }: { data: DashboardData }) {
           <div className="px-4 py-8 text-center">
             <p className="text-xs text-muted-foreground">
               {isSessionsLoading
-                ? 'Loading sessions...'
+                ? t('loadingSessions')
                 : isLocal
-                  ? 'No active sessions'
-                  : 'No gateway sessions'}
+                  ? t('noActiveSessions')
+                  : t('noGatewaySessions')}
             </p>
             <p className="text-2xs text-muted-foreground/60 mt-1">
               {isLocal
-                ? 'Start a Claude or Codex session to see it here.'
-                : 'Sessions appear when gateway agents connect.'}
+                ? t('startLocalSessionHint')
+                : t('gatewaySessionHint')}
             </p>
           </div>
         ) : (
@@ -39,7 +41,7 @@ export function SessionWorkbenchWidget({ data }: { data: DashboardData }) {
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-medium truncate font-mono-tight">{session.key || session.id}</div>
                   <div className="text-2xs text-muted-foreground">
-                    {session.kind === 'codex-cli' ? 'Codex' : session.kind === 'claude-code' ? 'Claude' : session.kind === 'hermes' ? 'Hermes' : session.kind} · {session.model?.split('/').pop() || 'unknown'}
+                    {session.kind === 'codex-cli' ? t('sessionKindCodex') : session.kind === 'claude-code' ? t('sessionKindClaude') : session.kind === 'hermes' ? t('sessionKindHermes') : session.kind} · {session.model?.split('/').pop() || t('unknown')}
                   </div>
                 </div>
                 <div className="text-right shrink-0">

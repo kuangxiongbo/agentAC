@@ -346,7 +346,20 @@ function handleStatus(workspaceId: number) {
 async function handleGitHubStats() {
   const token = await getGitHubToken()
   if (!token) {
-    return NextResponse.json({ error: 'GITHUB_TOKEN not configured' }, { status: 400 })
+    return NextResponse.json({
+      configured: false,
+      user: null,
+      repos: {
+        total: 0,
+        public: 0,
+        private: 0,
+        total_stars: 0,
+        total_forks: 0,
+        total_open_issues: 0,
+      },
+      topLanguages: [],
+      recentRepos: [],
+    })
   }
 
   // Fetch user profile
@@ -401,6 +414,7 @@ async function handleGitHubStats() {
   }))
 
   return NextResponse.json({
+    configured: true,
     user: {
       login: user.login,
       name: user.name,

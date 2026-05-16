@@ -227,6 +227,11 @@ function mapAgentToMC(agent: OpenClawAgent): {
 
 /** Sync agents from openclaw.json into the MC database */
 export async function syncAgentsFromConfig(actor: string = 'system'): Promise<SyncResult> {
+  const configPath = getConfigPath()
+  if (!configPath || !existsSync(configPath)) {
+    return { synced: 0, created: 0, updated: 0, agents: [] }
+  }
+
   let agents: OpenClawAgent[]
   try {
     agents = await readOpenClawAgents()

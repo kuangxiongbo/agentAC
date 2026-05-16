@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 
 interface Activity {
@@ -214,7 +214,7 @@ function TimelineRow({ activity }: { activity: Activity }) {
 // ── Main Component ──────────────────────────────
 export function ActivityFeedPanel() {
   const t = useTranslations('activityFeed')
-  const { agents } = useMissionControl()
+  const { agents } = useAgentCenterStore()
 
   const [activities, setActivities] = useState<Activity[]>([])
   const [sessions, setSessions] = useState<SessionInfo[]>([])

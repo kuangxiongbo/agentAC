@@ -2,7 +2,7 @@
 
 import Image from 'next/image'
 import { useEffect, useState } from 'react'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { useNavigateToPanel } from '@/lib/navigation'
 import { createClientLogger } from '@/lib/client-logger'
 import { Button } from '@/components/ui/button'
@@ -64,7 +64,7 @@ const menuItems: MenuItem[] = [
 ]
 
 export function Sidebar() {
-  const { activeTab, connection, sessions } = useMissionControl()
+  const { activeTab, connection, sessions } = useAgentCenterStore()
   const navigateToPanel = useNavigateToPanel()
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null)
 
@@ -87,15 +87,15 @@ export function Sidebar() {
         <div className="flex items-center space-x-2">
           <div className="w-8 h-8 rounded-lg overflow-hidden bg-background border border-border/50 flex items-center justify-center">
             <Image
-              src="/brand/mc-logo-128.png"
-              alt="Mission Control logo"
+              src="/brand/app-logo.png"
+              alt="E-Agent-Center logo"
               width={32}
               height={32}
-              className="w-full h-full object-cover"
+              className="w-full h-full object-contain"
             />
           </div>
           <div>
-            <h2 className="font-bold text-foreground">Mission Control</h2>
+            <h2 className="font-bold text-foreground">E-Agent-Center</h2>
             <p className="text-xs text-muted-foreground">ClawdBot Orchestration</p>
           </div>
         </div>

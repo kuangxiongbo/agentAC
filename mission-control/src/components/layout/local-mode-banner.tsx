@@ -1,17 +1,17 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { useNavigateToPanel } from '@/lib/navigation'
 import { Button } from '@/components/ui/button'
 
 export function LocalModeBanner() {
-  const { dashboardMode, bannerDismissed, capabilitiesChecked, dismissBanner } = useMissionControl()
+  const { dashboardMode, bannerDismissed, capabilitiesChecked, dismissBanner, centralMode } = useAgentCenterStore()
   const navigateToPanel = useNavigateToPanel()
   const t = useTranslations('localModeBanner')
   const tc = useTranslations('common')
 
-  if (!capabilitiesChecked || dashboardMode === 'full' || bannerDismissed) return null
+  if (!capabilitiesChecked || dashboardMode === 'full' || bannerDismissed || centralMode) return null
 
   return (
     <div className="mx-4 mt-3 mb-0 flex items-center gap-3 px-4 py-2.5 rounded-lg bg-void-cyan/5 border border-void-cyan/15 text-sm">

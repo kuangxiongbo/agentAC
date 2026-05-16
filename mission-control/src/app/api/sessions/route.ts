@@ -8,6 +8,8 @@ import { requireRole } from '@/lib/auth'
 import { callOpenClawGateway } from '@/lib/openclaw-gateway'
 import { mutationLimiter } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
+import { config } from '@/lib/config'
+import { listSyncedSessions } from '@/lib/sync-sessions'
 
 const LOCAL_SESSION_ACTIVE_WINDOW_MS = 90 * 60 * 1000
 
@@ -19,12 +21,17 @@ export async function GET(request: NextRequest) {
     const gatewaySessions = getAllGatewaySessions()
     const mappedGatewaySessions = mapGatewaySessions(gatewaySessions)
 
-    // Always include local sessions alongside gateway sessions
+    if (config.centralMode) {
+      const syncedSessions = listSyncedSessions()
+      return NextResponse.json({ sessions: dedupeAndSortSessions([...mappedGatewaySessions, ...syncedSessions]) })
+    }
+
+    let localMerged: ReturnType<typeof mergeLocalSessions> = []
     await syncClaudeSessions()
     const claudeSessions = getLocalClaudeSessions()
     const codexSessions = getLocalCodexSessions()
     const hermesSessions = getLocalHermesSessions()
-    const localMerged = mergeLocalSessions(claudeSessions, codexSessions, hermesSessions)
+    localMerged = mergeLocalSessions(claudeSessions, codexSessions, hermesSessions)
 
     if (mappedGatewaySessions.length === 0 && localMerged.length === 0) {
       return NextResponse.json({ sessions: [] })
@@ -191,6 +198,8 @@ function mapGatewaySessions(gatewaySessions: ReturnType<typeof getAllGatewaySess
       startTime: s.updatedAt,
       lastActivity: s.updatedAt,
       source: 'gateway' as const,
+      nodeId: 'default',
+      nodeLabel: 'Local',
     }
   })
 }
@@ -231,6 +240,8 @@ function getLocalClaudeSessions() {
         estimatedCost: s.estimated_cost || 0,
         lastUserPrompt: s.last_user_prompt || null,
         workingDir: s.project_path || null,
+        nodeId: 'default',
+        nodeLabel: 'Local',
       }
     })
   } catch (err) {
@@ -269,6 +280,8 @@ function getLocalCodexSessions() {
         lastUserPrompt: null,
         totalTokens: total,
         workingDir: s.projectPath || null,
+        nodeId: 'default',
+        nodeLabel: 'Local',
       }
     })
   } catch (err) {
@@ -307,6 +320,8 @@ function getLocalHermesSessions() {
         lastUserPrompt: s.title || null,
         totalTokens: total,
         workingDir: null,
+        nodeId: 'default',
+        nodeLabel: 'Local',
       }
     })
   } catch (err) {

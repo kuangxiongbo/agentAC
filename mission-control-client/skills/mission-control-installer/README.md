@@ -1,11 +1,11 @@
-# Mission Control Installer Skill
+# E-AgentCenter Installer Skill
 
-Install and configure Mission Control on any Linux or macOS system.
+Install and configure E-AgentCenter on any Linux or macOS system.
 
 ## What This Skill Does
 
 1. Detects the target OS and available runtimes (Docker or Node.js 20+)
-2. Clones or updates the Mission Control repository
+2. Clones or updates the E-AgentCenter repository
 3. Generates a secure `.env` with random credentials
 4. Starts the dashboard via Docker Compose or local Node.js
 5. Runs an OpenClaw fleet health check (cleans stale PIDs, old logs, validates gateway)

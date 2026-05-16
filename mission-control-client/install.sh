@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mission Control — One-Command Installer
+# E-AgentCenter — One-Command Installer
 # The mothership for your OpenClaw fleet.
 #
 # Usage:
@@ -7,7 +7,7 @@
 #   # or
 #   bash install.sh [--docker|--local] [--port PORT] [--data-dir DIR]
 #
-# Installs Mission Control and optionally repairs/configures OpenClaw.
+# Installs E-AgentCenter and optionally repairs/configures OpenClaw.
 
 set -euo pipefail
 
@@ -128,7 +128,7 @@ fetch_source() {
       ok "Updated to latest main"
     fi
   else
-    info "Cloning Mission Control..."
+    info "Cloning E-AgentCenter..."
     if command_exists git; then
       git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
       cd "$INSTALL_DIR"
@@ -207,14 +207,14 @@ deploy_docker() {
   docker compose up -d --build
 
   # Wait for healthy
-  info "Waiting for Mission Control to become healthy..."
+  info "Waiting for E-AgentCenter to become healthy..."
   local retries=30
   while [[ $retries -gt 0 ]]; do
     if docker compose ps --format json 2>/dev/null | grep -q '"Health":"healthy"'; then
       break
     fi
     # Fallback: try HTTP check
-    if curl -sf "http://localhost:$MC_PORT/login" &>/dev/null; then
+    if curl -sf "http://localhost:$MC_PORT/" &>/dev/null; then
       break
     fi
     sleep 2
@@ -225,7 +225,7 @@ deploy_docker() {
     warn "Timeout waiting for health check — container may still be starting"
     docker compose logs --tail 20
   else
-    ok "Mission Control is running in Docker"
+    ok "E-AgentCenter is running in Docker"
   fi
 }
 
@@ -238,7 +238,7 @@ deploy_local() {
   pnpm rebuild better-sqlite3 2>/dev/null || true
   ok "Dependencies installed"
 
-  info "Building Mission Control..."
+  info "Building E-AgentCenter..."
   pnpm build
   ok "Build complete"
 
@@ -247,14 +247,14 @@ deploy_local() {
     setup_systemd
   fi
 
-  info "Starting Mission Control..."
+  info "Starting E-AgentCenter..."
   PORT="$MC_PORT" nohup pnpm start > "$INSTALL_DIR/.data/mc.log" 2>&1 &
   local pid=$!
   echo "$pid" > "$INSTALL_DIR/.data/mc.pid"
 
   sleep 3
   if kill -0 "$pid" 2>/dev/null; then
-    ok "Mission Control running (PID $pid)"
+    ok "E-AgentCenter running (PID $pid)"
   else
     err "Failed to start. Check logs: $INSTALL_DIR/.data/mc.log"
     exit 1
@@ -277,7 +277,7 @@ setup_systemd() {
 
   cat > /tmp/mission-control.service <<UNIT
 [Unit]
-Description=Mission Control - OpenClaw Agent Dashboard
+Description=E-AgentCenter - OpenClaw Agent Dashboard
 After=network.target
 
 [Service]
@@ -344,7 +344,7 @@ check_openclaw() {
       ok "Config found: $oc_config"
     else
       warn "No openclaw.json found at $oc_config"
-      info "Mission Control will create a default config on first gateway connection"
+      info "E-AgentCenter will create a default config on first gateway connection"
     fi
 
     # Check for stale PID files
@@ -409,7 +409,7 @@ check_openclaw() {
 main() {
   echo ""
   echo "  ╔══════════════════════════════════════╗"
-  echo "  ║   Mission Control Installer          ║"
+  echo "  ║   E-AgentCenter Installer          ║"
   echo "  ║   The mothership for your fleet      ║"
   echo "  ╚══════════════════════════════════════╝"
   echo ""

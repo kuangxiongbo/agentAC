@@ -1,6 +1,6 @@
-# Contributing to Mission Control
+# Contributing to E-AgentCenter
 
-Thank you for your interest in contributing to Mission Control.
+Thank you for your interest in contributing to E-AgentCenter.
 
 ## Getting Started
 

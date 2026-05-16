@@ -3,6 +3,10 @@ import { getDatabase, db_helpers } from '@/lib/db'
 import { runOpenClaw } from '@/lib/command'
 import { requireRole } from '@/lib/auth'
 import { logger } from '@/lib/logger'
+import {
+  executeBoundLocalAgentPrompt,
+  getLocalSessionKindForFramework,
+} from '@/lib/local-session-executor'
 
 export async function POST(
   request: NextRequest,
@@ -42,23 +46,41 @@ export async function POST(
     }
 
     const agents = db
-      .prepare('SELECT name, session_key FROM agents WHERE workspace_id = ? AND name IN (' + Array.from(subscribers).map(() => '?').join(',') + ')')
-      .all(workspaceId, ...Array.from(subscribers)) as Array<{ name: string; session_key?: string }>
+      .prepare('SELECT name, session_key, framework, workspace_path, config FROM agents WHERE workspace_id = ? AND name IN (' + Array.from(subscribers).map(() => '?').join(',') + ')')
+      .all(workspaceId, ...Array.from(subscribers)) as Array<{
+        name: string
+        session_key?: string | null
+        id?: number | null
+        framework?: string | null
+        workspace_path?: string | null
+        config?: string | null
+      }>
 
     const results = await Promise.allSettled(
       agents.map(async (agent) => {
-        if (!agent.session_key) return 'skipped'
-        await runOpenClaw(
-          [
-            'gateway',
-            'sessions_send',
-            '--session',
-            agent.session_key,
-            '--message',
-            `[Task ${task.id}] ${task.title}\nFrom ${author}: ${message}`
-          ],
-          { timeoutMs: 10000 }
-        )
+        const localSessionKind = getLocalSessionKindForFramework(agent.framework)
+        if (!agent.session_key && !localSessionKind) return 'skipped'
+        const prompt = `[Task ${task.id}] ${task.title}\nFrom ${author}: ${message}`
+        if (localSessionKind) {
+          await executeBoundLocalAgentPrompt(
+            agent,
+            prompt,
+          )
+        } else {
+          const sessionKey = agent.session_key
+          if (!sessionKey) return 'skipped'
+          await runOpenClaw(
+            [
+              'gateway',
+              'sessions_send',
+              '--session',
+              sessionKey,
+              '--message',
+              prompt
+            ],
+            { timeoutMs: 10000 }
+          )
+        }
         db_helpers.createNotification(
           agent.name,
           'message',

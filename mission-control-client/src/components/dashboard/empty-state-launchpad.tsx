@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 
 interface RuntimeStatus {
@@ -16,6 +17,7 @@ interface Props {
 }
 
 export function EmptyStateLaunchpad({ agentCount, taskCount, onNavigate }: Props) {
+  const t = useTranslations('dashboardOverview')
   const [runtimes, setRuntimes] = useState<RuntimeStatus[]>([])
   const [loaded, setLoaded] = useState(false)
 
@@ -58,75 +60,69 @@ export function EmptyStateLaunchpad({ agentCount, taskCount, onNavigate }: Props
   return (
     <div className="rounded-xl border border-border bg-card p-6">
       <div className="text-center mb-6">
-        <h2 className="text-lg font-semibold text-foreground mb-1">Launch Sequence</h2>
-        <p className="text-sm text-muted-foreground">
-          Complete each step to bring your station online.
-        </p>
+        <h2 className="text-lg font-semibold text-foreground mb-1">{t('launchTitle')}</h2>
+        <p className="text-sm text-muted-foreground">{t('launchDescription')}</p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Step 1: Runtimes */}
         <StepCard
           step={1}
-          title="Agent Runtimes"
+          title={t('stepRuntimes')}
           done={hasRuntimes}
           active={!hasRuntimes}
           doneContent={
             <div className="space-y-1">
-              {installed.map(r => (
-                <div key={r.id} className="flex items-center gap-1.5 text-xs text-emerald-400/80">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                  {r.name}
-                </div>
-              ))}
-              <p className="text-2xs text-muted-foreground/50 mt-1">Installed and ready</p>
-            </div>
-          }
-          pendingContent={
-            <>
-              <p className="text-xs text-muted-foreground mb-3">
-                Install a runtime to run agents on this machine.
-              </p>
-              <Button
+                {installed.map(r => (
+                  <div key={r.id} className="flex items-center gap-1.5 text-xs text-emerald-400/80">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                    {r.name}
+                  </div>
+                ))}
+                <p className="text-2xs text-muted-foreground/50 mt-1">{t('installedReady')}</p>
+              </div>
+            }
+            pendingContent={
+              <>
+                <p className="text-xs text-muted-foreground mb-3">{t('installRuntimeHint')}</p>
+                <Button
                 size="sm"
                 className="text-xs w-full bg-void-amber/20 text-void-amber border border-void-amber/30 hover:bg-void-amber/30"
                 onClick={() => onNavigate('settings')}
-              >
-                Install Runtimes
-              </Button>
-            </>
-          }
+                >
+                  {t('installRuntimes')}
+                </Button>
+              </>
+            }
         />
 
         {/* Step 2: Agent */}
         <StepCard
           step={2}
-          title="Dock an Agent"
+          title={t('stepAgent')}
           done={hasAgents}
           active={hasRuntimes && !hasAgents}
           doneContent={
             <>
-              <p className="text-xs text-emerald-400/80 mb-1">Agent registered</p>
+              <p className="text-xs text-emerald-400/80 mb-1">{t('agentRegistered')}</p>
               <button
                 className="text-2xs text-muted-foreground hover:text-foreground"
                 onClick={() => onNavigate('agents')}
               >
-                View fleet →
+                {t('viewFleet')}
               </button>
             </>
           }
           pendingContent={
             <>
-              <p className="text-xs text-muted-foreground mb-3">
-                Register your first agent. Choose a template and configure its capabilities.
-              </p>
+              <p className="text-xs text-muted-foreground mb-3">{t('registerAgentHint')}</p>
               <Button
                 size="sm"
                 className="text-xs w-full bg-void-amber/20 text-void-amber border border-void-amber/30 hover:bg-void-amber/30"
                 disabled={!hasRuntimes}
                 onClick={() => onNavigate('agents')}
               >
-                Create Agent
+                {t('createAgent')}
               </Button>
             </>
           }
@@ -135,32 +131,30 @@ export function EmptyStateLaunchpad({ agentCount, taskCount, onNavigate }: Props
         {/* Step 3: Task */}
         <StepCard
           step={3}
-          title="Dispatch a Task"
+          title={t('stepTask')}
           done={hasTasks}
           active={hasAgents && !hasTasks}
           doneContent={
             <>
-              <p className="text-xs text-emerald-400/80 mb-1">Tasks in queue</p>
+              <p className="text-xs text-emerald-400/80 mb-1">{t('tasksQueued')}</p>
               <button
                 className="text-2xs text-muted-foreground hover:text-foreground"
                 onClick={() => onNavigate('tasks')}
               >
-                Open task board →
+                {t('openTaskBoard')}
               </button>
             </>
           }
           pendingContent={
             <>
-              <p className="text-xs text-muted-foreground mb-3">
-                Create a task and assign it to your agent.
-              </p>
+              <p className="text-xs text-muted-foreground mb-3">{t('createTaskHint')}</p>
               <Button
                 size="sm"
                 className="text-xs w-full bg-void-cyan/20 text-void-cyan border border-void-cyan/30 hover:bg-void-cyan/30"
                 disabled={!hasAgents}
                 onClick={() => onNavigate('tasks')}
               >
-                Create Task
+                {t('createTask')}
               </Button>
             </>
           }

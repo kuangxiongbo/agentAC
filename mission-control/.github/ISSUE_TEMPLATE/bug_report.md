@@ -1,6 +1,6 @@
 ---
 name: Bug Report
-about: Report a bug in Mission Control
+about: Report a bug in E-AgentCenter
 title: '[Bug] '
 labels: bug
 assignees: ''
@@ -23,4 +23,4 @@ If applicable, add screenshots.
 ## Environment
 - OS: [e.g. macOS 14]
 - Browser: [e.g. Chrome 120]
-- Mission Control Version: [e.g. 1.0.0]
+- E-AgentCenter Version: [e.g. 1.0.0]

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 
 interface AgentActivity {
@@ -54,7 +54,7 @@ const typeIcons: Record<string, string> = {
 
 export function AgentHistoryPanel() {
   const t = useTranslations('agentHistory')
-  const { agents } = useMissionControl()
+  const { agents } = useAgentCenterStore()
   const [selectedAgent, setSelectedAgent] = useState<string>('')
   const [activities, setActivities] = useState<AgentActivity[]>([])
   const [sessions, setSessions] = useState<SessionInfo[]>([])

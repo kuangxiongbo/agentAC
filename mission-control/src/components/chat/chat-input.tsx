@@ -2,7 +2,8 @@
 
 import Image from 'next/image'
 import { useRef, useEffect, useState, useCallback } from 'react'
-import { useMissionControl, type ChatAttachment } from '@/store'
+import { useTranslations } from 'next-intl'
+import { useAgentCenterStore, type ChatAttachment } from '@/store'
 import { Button } from '@/components/ui/button'
 
 interface ChatInputProps {
@@ -14,7 +15,8 @@ interface ChatInputProps {
 }
 
 export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating }: ChatInputProps) {
-  const { chatInput, setChatInput, isSendingMessage } = useMissionControl()
+  const t = useTranslations('chat')
+  const { chatInput, setChatInput, isSendingMessage } = useAgentCenterStore()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [showMentions, setShowMentions] = useState(false)
@@ -259,7 +261,7 @@ export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating
       {/* Drag overlay hint */}
       {isDragOver && (
         <div className="absolute inset-0 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary/40 rounded-lg z-20 pointer-events-none">
-          <span className="text-sm text-primary font-medium">Drop files here</span>
+          <span className="text-sm text-primary font-medium">{t('dropFilesHere')}</span>
         </div>
       )}
 
@@ -271,7 +273,7 @@ export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating
           variant="ghost"
           size="icon-sm"
           className="rounded-lg flex-shrink-0"
-          title="Attach file"
+          title={t('attachFile')}
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M13.5 7.5l-5.8 5.8a3.2 3.2 0 01-4.5-4.5l5.8-5.8a2.1 2.1 0 013 3l-5.8 5.7a1 1 0 01-1.4-1.4l5.1-5.2" />
@@ -294,7 +296,7 @@ export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder={disabled ? 'Select a conversation...' : 'Message... (@ to mention, Enter to send)'}
+          placeholder={disabled ? t('selectConversationPlaceholder') : t('messagePlaceholder')}
           disabled={disabled || isSendingMessage}
           rows={1}
           className="flex-1 resize-none bg-surface-1 rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50 disabled:opacity-40 transition-all"
@@ -307,7 +309,7 @@ export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating
             variant="ghost"
             size="icon-sm"
             className="rounded-lg flex-shrink-0 text-red-400 hover:text-red-300 hover:bg-red-500/10"
-            title="Stop generation"
+            title={t('stopGeneration')}
           >
             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
               <rect x="3" y="3" width="10" height="10" rx="1.5" />
@@ -319,7 +321,7 @@ export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating
             disabled={(!chatInput.trim() && attachments.length === 0) || disabled || isSendingMessage}
             size="icon-sm"
             className="rounded-lg flex-shrink-0"
-            title="Send message"
+            title={t('sendMessage')}
           >
             {isSendingMessage ? (
               <span className="inline-block w-3.5 h-3.5 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />

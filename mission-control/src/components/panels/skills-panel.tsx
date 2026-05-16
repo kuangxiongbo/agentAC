@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { Button } from '@/components/ui/button'
 
 interface SkillSummary {
@@ -70,7 +70,7 @@ function getSourceLabel(source: string): string {
 
 export function SkillsPanel() {
   const t = useTranslations('skills')
-  const { dashboardMode, skillsList, skillGroups, skillsTotal, setSkillsData } = useMissionControl()
+  const { dashboardMode, skillsList, skillGroups, skillsTotal, setSkillsData, centralMode } = useAgentCenterStore()
   const [loading, setLoading] = useState(skillsList === null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -114,6 +114,106 @@ export function SkillsPanel() {
   useEffect(() => {
     setIsMounted(true)
   }, [])
+
+  const [remoteClients, setRemoteClients] = useState<Array<{
+    client_id: string
+    client_name: string
+    total: number
+    groups: SkillGroup[]
+    skills: SkillSummary[]
+  }>>([])
+  const [selectedClientId, setSelectedClientId] = useState<string>('')
+
+  const loadRemoteSkills = useCallback(async () => {
+    const res = await fetch('/api/skills/sync', { cache: 'no-store' })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body?.error || 'Failed to load remote skills')
+    const clients = Array.isArray(body?.clients) ? body.clients : []
+    setRemoteClients(clients)
+    setSelectedClientId((current) => current || clients[0]?.client_id || '')
+  }, [])
+
+  useEffect(() => {
+    if (!centralMode) return
+    loadRemoteSkills().catch((err: any) => setError(err?.message || 'Failed to load remote skills'))
+  }, [centralMode, loadRemoteSkills])
+
+  if (centralMode) {
+    const selectedClient = remoteClients.find((client) => client.client_id === selectedClientId) || remoteClients[0] || null
+    return (
+      <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">{t('title')}</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">{t('remoteSkillsReadOnly')}</p>
+        </div>
+
+        {remoteClients.length > 0 ? (
+          <>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-muted-foreground">{t('selectClientNode')}</span>
+              <select
+                value={selectedClient?.client_id || ''}
+                onChange={(e) => setSelectedClientId(e.target.value)}
+                className="h-9 rounded-md border border-border bg-secondary/50 px-3 text-sm text-foreground"
+              >
+                {remoteClients.map((client) => (
+                  <option key={client.client_id} value={client.client_id}>
+                    {client.client_name}
+                  </option>
+                ))}
+              </select>
+              <span className="text-2xs text-muted-foreground">{selectedClient ? t('skillsAtNode', { count: selectedClient.total }) : ''}</span>
+            </div>
+
+            {selectedClient && (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {selectedClient.groups.map((group) => (
+                    <div key={group.source} className="rounded-lg border border-border bg-card p-3">
+                      <div className="text-xs font-medium text-muted-foreground">{getSourceLabel(group.source)}</div>
+                      <div className="mt-1 text-lg font-semibold text-foreground">{group.skills.length}</div>
+                      <div className="mt-1 text-2xs text-muted-foreground truncate">{group.path}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-lg border border-border bg-card overflow-hidden">
+                  <div className="px-4 py-3 border-b border-border text-xs text-muted-foreground">
+                    {t('skillCount', { count: selectedClient.skills.length, total: selectedClient.total })}
+                  </div>
+                  <div className="divide-y divide-border">
+                    {selectedClient.skills.map((skill) => (
+                      <div key={skill.id} className="px-4 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2">
+                            <div className="font-medium text-sm text-foreground">{skill.name}</div>
+                            {skill.registry_slug && (
+                              <span className="text-2xs rounded-full bg-violet-500/15 text-violet-300 border border-violet-500/30 px-1.5 py-0.5">
+                                registry
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-2xs rounded-full border px-2 py-0.5 border-border text-muted-foreground">
+                            {getSourceLabel(skill.source)}
+                          </span>
+                        </div>
+                        {skill.description && <p className="mt-1 text-xs text-muted-foreground">{skill.description}</p>}
+                        <p className="mt-1 text-2xs text-muted-foreground/70 break-all">{skill.path}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </>
+        ) : (
+          <div className="rounded-lg border border-border bg-card px-4 py-6 text-sm text-muted-foreground">
+            {t('noClientNodes')}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   const loadSkills = useCallback(async (opts?: { initial?: boolean }) => {
     if (opts?.initial) setLoading(true)

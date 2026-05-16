@@ -3,7 +3,7 @@
 import { useTranslations } from 'next-intl'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 
 import { createClientLogger } from '@/lib/client-logger'
@@ -386,7 +386,7 @@ interface SpawnFormData {
 export function TaskBoardPanel() {
   const t = useTranslations('taskBoard')
   const statusColumns = STATUS_COLUMN_KEYS.map(col => ({ ...col, title: t(col.titleKey as any) }))
-  const { tasks: storeTasks, setTasks: storeSetTasks, selectedTask, setSelectedTask, activeProject, availableModels, spawnRequests, addSpawnRequest, updateSpawnRequest, dashboardMode } = useMissionControl()
+  const { tasks: storeTasks, setTasks: storeSetTasks, selectedTask, setSelectedTask, activeProject, availableModels, spawnRequests, addSpawnRequest, updateSpawnRequest, dashboardMode } = useAgentCenterStore()
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -449,17 +449,26 @@ export function TaskBoardPanel() {
       }
       const tasksUrl = tasksQuery.toString() ? `/api/tasks?${tasksQuery.toString()}` : '/api/tasks'
 
-      const tasksResponse = await fetch(tasksUrl)
+      const [tasksResponse, agentsResponse, projectsResponse] = await Promise.all([
+        fetch(tasksUrl),
+        fetch('/api/agents'),
+        fetch('/api/projects')
+      ])
 
-      if (!tasksResponse.ok) {
-        throw new Error('Failed to fetch tasks')
+      if (!tasksResponse.ok || !agentsResponse.ok || !projectsResponse.ok) {
+        throw new Error('Failed to fetch data')
       }
 
       const tasksData = await tasksResponse.json()
+      const agentsData = await agentsResponse.json()
+      const projectsData = await projectsResponse.json()
+
       const tasksList = tasksData.tasks || []
       const taskIds = tasksList.map((task: Task) => task.id)
 
       storeSetTasks(tasksList)
+      setAgents(agentsData.agents || [])
+      setProjects(projectsData.projects || [])
 
       if (taskIds.length > 0) {
         fetch(`/api/quality-review?taskIds=${taskIds.join(',')}`)
@@ -575,7 +584,7 @@ export function TaskBoardPanel() {
     e.preventDefault()
   }
 
-  const { updateTask } = useMissionControl()
+  const { updateTask } = useAgentCenterStore()
 
   const handleDrop = async (e: React.DragEvent, newStatus: string) => {
     e.preventDefault()
@@ -804,17 +813,6 @@ export function TaskBoardPanel() {
           </div>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setShowProjectManager(true)}>
-            {t('projects')}
-          </Button>
-          {!isLocal && (
-            <Button variant="outline" onClick={() => setShowSpawnForm(!showSpawnForm)}>
-              {showSpawnForm ? t('close') : t('spawnSubAgent')}
-            </Button>
-          )}
-          <Button onClick={() => setShowCreateModal(true)}>
-            {t('newTask')}
-          </Button>
           <Button variant="ghost" size="icon-sm" onClick={fetchData} title={t('refresh')}>
             <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M1.5 8a6.5 6.5 0 0 1 11.25-4.5M14.5 8a6.5 6.5 0 0 1-11.25 4.5" />
@@ -1193,7 +1191,7 @@ function TaskDetailModal({
 }) {
   const t = useTranslations('taskBoard')
   const router = useRouter()
-  const { currentUser } = useMissionControl()
+  const { currentUser } = useAgentCenterStore()
   const commentAuthor = currentUser?.username || 'system'
   const resolvedProjectName =
     task.project_name ||
@@ -1398,30 +1396,6 @@ function TaskDetailModal({
             <div className="flex gap-2">
               <Button variant="ghost" size="sm" onClick={() => onEdit(task)} className="text-primary hover:bg-primary/20">
                 {t('edit')}
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={async () => {
-                  if (!confirm(t('deleteTaskConfirm', { title: task.title }))) return
-                  try {
-                    const res = await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' })
-                    if (!res.ok) {
-                      const errorData = await res.json().catch(() => ({ error: 'Failed to delete task' }))
-                      throw new Error(errorData.error || 'Failed to delete task')
-                    }
-                    // Close modal immediately on successful deletion
-                    // SSE will handle the task.deleted event and remove the task from the UI
-                    onClose()
-                  } catch (error) {
-                    // Show error to user
-                    const errorMessage = error instanceof Error ? error.message : 'Failed to delete task'
-                    alert(errorMessage)
-                    // Don't close modal on error
-                  }
-                }}
-              >
-                {t('delete')}
               </Button>
               <Button
                 variant="ghost"

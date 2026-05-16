@@ -50,6 +50,7 @@ const endpoints: Endpoint[] = [
 
   // ── Sessions ──────────────────────────────────────
   { path: '/api/sessions', methods: ['GET'], description: 'List gateway sessions', tag: 'Sessions', auth: 'viewer' },
+  { path: '/api/sessions/sync', methods: ['POST'], description: 'Sync client-side session snapshots to server', tag: 'Sessions', auth: 'viewer' },
   { path: '/api/sessions/:id/control', methods: ['POST'], description: 'Session control (stop, message)', tag: 'Sessions', auth: 'operator' },
   { path: '/api/sessions/continue', methods: ['POST'], description: 'Continue a local Claude/Codex session with a prompt', tag: 'Sessions', auth: 'operator' },
   { path: '/api/sessions/transcript', methods: ['GET'], description: 'Read local Claude/Codex session transcript snippets', tag: 'Sessions', auth: 'viewer' },
@@ -85,6 +86,9 @@ const endpoints: Endpoint[] = [
   { path: '/api/auth/me', methods: ['GET'], description: 'Current user info', tag: 'Auth', auth: 'authenticated' },
   { path: '/api/auth/users', methods: ['GET', 'POST', 'PATCH', 'DELETE'], description: 'User management', tag: 'Auth', auth: 'admin' },
   { path: '/api/auth/google', methods: ['POST'], description: 'Google OAuth callback', tag: 'Auth', auth: 'public' },
+  { path: '/api/auth/sso', methods: ['GET'], description: 'SSO: Zitadel ready, unified mode, registerUrl, oidcEntryOrigin, hasMcSession (valid session cookie)', tag: 'Auth', auth: 'public' },
+  { path: '/api/auth/zitadel', methods: ['GET'], description: 'Start Zitadel OIDC login (PKCE)', tag: 'Auth', auth: 'public' },
+  { path: '/api/auth/callback', methods: ['GET'], description: 'Zitadel OIDC 回调：①IdP 换票验签 ②若配置 USER_CENTER_API_URL 则 tenant-context 校验租户与角色 ③本地 users + 会话；可选 MC_ZITADEL_REQUIRE_USERCENTER=1 强制第②步', tag: 'Auth', auth: 'public' },
   { path: '/api/auth/access-requests', methods: ['GET', 'PATCH'], description: 'Access request approvals', tag: 'Auth', auth: 'admin' },
 
   // ── Tokens & Costs ────────────────────────────────
@@ -118,6 +122,10 @@ const endpoints: Endpoint[] = [
   { path: '/api/gateways/health', methods: ['GET'], description: 'Gateway health check', tag: 'Gateway', auth: 'viewer' },
   { path: '/api/gateway-config', methods: ['GET', 'PATCH'], description: 'Gateway configuration', tag: 'Gateway', auth: 'admin' },
   { path: '/api/connect', methods: ['POST'], description: 'WebSocket connection info', tag: 'Gateway', auth: 'operator' },
+  { path: '/api/bridge/info', methods: ['GET'], description: 'Service/bridge discovery info for edge nodes and clients', tag: 'Gateway', auth: 'public' },
+  { path: '/api/server-bridge', methods: ['GET', 'POST'], description: 'Remote bridge lifecycle and status', tag: 'Gateway', auth: 'viewer/admin' },
+  { path: '/api/server-sync/heartbeat', methods: ['POST'], description: 'Client heartbeat for pure server-side sync registry', tag: 'Gateway', auth: 'viewer' },
+  { path: '/api/server-sync/status', methods: ['GET'], description: 'Upstream sync diagnostics and bridge discovery', tag: 'Gateway', auth: 'viewer' },
 
   // ── GitHub ────────────────────────────────────────
   { path: '/api/github', methods: ['GET', 'POST'], description: 'GitHub issue sync', tag: 'GitHub', auth: 'viewer/operator' },

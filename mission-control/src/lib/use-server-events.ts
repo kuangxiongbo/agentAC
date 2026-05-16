@@ -1,8 +1,13 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { createClientLogger } from '@/lib/client-logger'
+import {
+  SESSION_LIST_UPDATED_EVENT,
+  SESSION_TRANSCRIPT_UPDATED_EVENT,
+  type SessionRealtimePayload,
+} from '@/lib/session-realtime-events'
 
 const log = createClientLogger('SSE')
 
@@ -38,7 +43,7 @@ export function useServerEvents() {
     addChatMessage,
     addNotification,
     addActivity,
-  } = useMissionControl()
+  } = useAgentCenterStore()
 
   useEffect(() => {
     let mounted = true
@@ -96,6 +101,13 @@ export function useServerEvents() {
       switch (event.type) {
         case 'connected':
           // Initial connection ack, nothing to do
+          break
+
+        case 'session.list.updated':
+          window.dispatchEvent(new CustomEvent<SessionRealtimePayload>(SESSION_LIST_UPDATED_EVENT, { detail: event.data }))
+          break
+        case 'session.transcript.updated':
+          window.dispatchEvent(new CustomEvent<SessionRealtimePayload>(SESSION_TRANSCRIPT_UPDATED_EVENT, { detail: event.data }))
           break
 
         // Task events

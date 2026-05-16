@@ -1,15 +1,23 @@
 'use client'
 
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { useMissionControl, Conversation } from '@/store'
+import { useTranslations } from 'next-intl'
+import { useAgentCenterStore, Conversation } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 import { createClientLogger } from '@/lib/client-logger'
 import { Button } from '@/components/ui/button'
+import { SESSION_LIST_UPDATED_EVENT } from '@/lib/session-realtime-events'
 import { SessionKindAvatar, SessionKindPill } from './session-kind-brand'
+import {
+  getMainAgentRuntimeFromSessionKind,
+  getMainAgentRuntimeMeta,
+  MAIN_AGENT_RUNTIME_ORDER,
+} from '@/lib/runtime-agents'
 
 const log = createClientLogger('ConversationList')
 
 type SessionKind = 'claude-code' | 'codex-cli' | 'hermes' | 'gateway'
+type RuntimeGroup = 'claude' | 'codex' | 'openclaw' | 'cursor' | 'opencode' | 'hermes' | 'other'
 
 type SessionRecord = {
   id: string
@@ -25,6 +33,10 @@ type SessionRecord = {
   lastActivity?: number
   workingDir?: string | null
   lastUserPrompt?: string | null
+  sessionId?: string
+  nodeId?: string
+  nodeLabel?: string
+  runtimeGroup?: string
 }
 
 type SessionPrefs = Record<string, { name?: string; color?: string }>
@@ -80,6 +92,9 @@ function readSessions(payload: unknown): SessionRecord[] {
       lastActivity: readNumber(session?.lastActivity),
       workingDir: typeof session?.workingDir === 'string' || session?.workingDir === null ? session.workingDir : undefined,
       lastUserPrompt: typeof session?.lastUserPrompt === 'string' || session?.lastUserPrompt === null ? session.lastUserPrompt : undefined,
+      sessionId: readString(session?.sessionId),
+      nodeId: readString(session?.nodeId),
+      nodeLabel: readString(session?.nodeLabel),
     }]
   })
 }
@@ -96,10 +111,10 @@ const COLOR_OPTIONS = [
   { value: 'teal', label: 'Teal' },
 ] as const
 
-function timeAgo(timestamp: number): string {
+function timeAgo(timestamp: number, nowLabel: string): string {
   const diff = Math.floor(Date.now() / 1000) - timestamp
-  if (diff <= 0) return 'now'
-  if (diff < 60) return 'now'
+  if (diff <= 0) return nowLabel
+  if (diff < 60) return nowLabel
   if (diff < 3600) return `${Math.floor(diff / 60)}m`
   if (diff < 86400) return `${Math.floor(diff / 3600)}h`
   return `${Math.floor(diff / 86400)}d`
@@ -121,20 +136,23 @@ const TAG_COLORS: Record<string, string> = {
   pink: 'bg-pink-500',
   teal: 'bg-teal-500',
 }
+const SESSION_LIST_FALLBACK_POLL_MS = 60000
 
 interface ConversationListProps {
   onNewConversation: (agentName: string) => void
 }
 
 export function ConversationList({ onNewConversation: _onNewConversation }: ConversationListProps) {
+  const t = useTranslations('chat')
   const {
     conversations,
     setConversations,
     activeConversation,
     setActiveConversation,
     markConversationRead,
-  } = useMissionControl()
+  } = useAgentCenterStore()
   const [search, setSearch] = useState('')
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
 
   // Context menu state
   const [ctxMenu, setCtxMenu] = useState<{ convId: string; x: number; y: number } | null>(null)
@@ -142,6 +160,17 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
   const [editName, setEditName] = useState('')
   const ctxMenuRef = useRef<HTMLDivElement>(null)
   const editInputRef = useRef<HTMLInputElement>(null)
+  const colorOptions = [
+    { value: '', label: t('colorNone') },
+    { value: 'slate', label: t('colorSlate') },
+    { value: 'blue', label: t('colorBlue') },
+    { value: 'green', label: t('colorGreen') },
+    { value: 'amber', label: t('colorAmber') },
+    { value: 'red', label: t('colorRed') },
+    { value: 'purple', label: t('colorPurple') },
+    { value: 'pink', label: t('colorPink') },
+    { value: 'teal', label: t('colorTeal') },
+  ] as const
 
   // Close context menu on outside click / Escape
   useEffect(() => {
@@ -264,18 +293,15 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
           const sessionKind: SessionKind = s.kind === 'claude-code' || s.kind === 'codex-cli' || s.kind === 'hermes'
             ? s.kind
             : 'gateway'
-          const kindLabel = sessionKind === 'codex-cli'
-            ? 'Codex'
-            : sessionKind === 'claude-code'
-              ? 'Claude'
-              : sessionKind === 'hermes'
-                ? 'Hermes'
-                : 'Gateway'
+          const runtimeGroup = (s.runtimeGroup as RuntimeGroup | undefined) || getMainAgentRuntimeFromSessionKind(sessionKind)
+          const runtimeMeta = runtimeGroup === 'other' ? null : getMainAgentRuntimeMeta(runtimeGroup)
+          const kindLabel = runtimeMeta?.label || (sessionKind === 'gateway' ? 'Gateway' : 'Other')
           const prefKey = `${sessionKind}:${s.id}`
           const pref = prefs[prefKey] || {}
+          const nodeLabel = s.nodeLabel || (s.source === 'client' ? s.agent : undefined)
           const defaultName = s.source === 'local'
             ? `${kindLabel} • ${s.key || s.id}`
-            : `${s.agent || 'Gateway'} • ${s.key || s.id}`
+            : `${s.agent || kindLabel} • ${s.key || s.id}`
           const sessionName = pref.name || defaultName
 
           return {
@@ -285,10 +311,13 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
             source: 'session' as const,
             session: {
               prefKey,
-              sessionId: String(s.id),
+              sessionId: s.sessionId || String(s.id),
               sessionKey: s.key || undefined,
               sessionKind,
+              runtimeGroup,
               agent: s.agent || undefined,
+              nodeId: s.nodeId || undefined,
+              nodeLabel: nodeLabel || undefined,
               displayName: sessionName,
               colorTag: typeof pref.color === 'string' ? pref.color : undefined,
               model: s.model,
@@ -321,7 +350,17 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
     }
   }, [setConversations])
 
-  useSmartPoll(loadConversations, 30000, { pauseWhenSseConnected: true })
+  useEffect(() => {
+    const handleSessionListUpdated = () => {
+      void loadConversations()
+    }
+
+    window.addEventListener(SESSION_LIST_UPDATED_EVENT, handleSessionListUpdated)
+    return () => window.removeEventListener(SESSION_LIST_UPDATED_EVENT, handleSessionListUpdated)
+  }, [loadConversations])
+
+  // Low-frequency fallback in case the OS drops a file notification.
+  useSmartPoll(loadConversations, SESSION_LIST_FALLBACK_POLL_MS)
 
   const handleSelect = (convId: string) => {
     setActiveConversation(convId)
@@ -338,13 +377,69 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
       c.lastMessage?.content.toLowerCase().includes(s)
     )
   })
+  const nodeGroups = Array.from(new Map(
+    filteredConversations
+      .filter((conversation) => conversation.source === 'session')
+      .map((conversation) => {
+        const nodeKey = conversation.session?.nodeId || 'default'
+        const nodeLabel = conversation.session?.nodeLabel || t('sessions')
+        return [nodeKey, nodeLabel] as const
+      })
+  ).entries()).map(([nodeKey, nodeLabel]) => {
+    const rows = filteredConversations.filter((conversation) => {
+      if (conversation.source !== 'session') return false
+      return (conversation.session?.nodeId || 'default') === nodeKey
+    })
+    const runtimeGroups = MAIN_AGENT_RUNTIME_ORDER
+      .map((groupKey: typeof MAIN_AGENT_RUNTIME_ORDER[number]) => {
+        const groupRows = rows.filter((conversation) => {
+          const runtimeGroup = conversation.session?.runtimeGroup || getMainAgentRuntimeFromSessionKind(conversation.session?.sessionKind || '')
+          return runtimeGroup === groupKey
+        })
+        if (groupRows.length === 0) return null
+        return {
+          key: groupKey as RuntimeGroup,
+          meta: getMainAgentRuntimeMeta(groupKey),
+          active: groupRows.filter((conversation) => conversation.session?.active),
+          recent: groupRows.filter((conversation) => !conversation.session?.active),
+        }
+      })
+      .filter((group: {
+        key: RuntimeGroup
+        meta: ReturnType<typeof getMainAgentRuntimeMeta>
+        active: Conversation[]
+        recent: Conversation[]
+      } | null): group is {
+        key: RuntimeGroup
+        meta: NonNullable<ReturnType<typeof getMainAgentRuntimeMeta>>
+        active: Conversation[]
+        recent: Conversation[]
+      } => Boolean(group?.meta))
 
-  const gatewayRows = filteredConversations.filter((c) => c.source === 'session' && c.session?.sessionKind === 'gateway')
-  const activeGatewayRows = gatewayRows.filter((c) => c.session?.active)
-  const inactiveGatewayRows = gatewayRows.filter((c) => !c.session?.active)
-  const localRows = filteredConversations.filter((c) => c.source === 'session' && (c.session?.sessionKind === 'claude-code' || c.session?.sessionKind === 'codex-cli' || c.session?.sessionKind === 'hermes'))
-  const activeLocalRows = localRows.filter((c) => c.session?.active)
-  const inactiveLocalRows = localRows.filter((c) => !c.session?.active)
+    return { nodeKey, nodeLabel, runtimeGroups }
+  })
+
+  useEffect(() => {
+    if (nodeGroups.length === 0) return
+    setCollapsedGroups((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const nodeGroup of nodeGroups) {
+        for (const group of nodeGroup.runtimeGroups) {
+          const key = `${nodeGroup.nodeKey}:${group.key}`
+          if (!(key in next)) {
+            next[key] = true
+            changed = true
+          }
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [nodeGroups])
+
+  const toggleGroup = useCallback((groupKey: string) => {
+    setCollapsedGroups((prev) => ({ ...prev, [groupKey]: !(prev[groupKey] ?? true) }))
+  }, [])
 
   function renderConversationItem(conv: Conversation) {
     const displayName = conv.name || conv.id.replace('agent_', '')
@@ -416,14 +511,14 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
                   </span>
                 )}
                 <span className="text-[10px] text-muted-foreground/40">
-                  {conv.updatedAt ? timeAgo(conv.updatedAt) : ''}
+                  {conv.updatedAt ? timeAgo(conv.updatedAt, t('timeNow')) : ''}
                 </span>
               </div>
             </div>
             {conv.lastMessage && !isEditing && (
               <p className="text-[11px] text-muted-foreground/60 truncate mt-0.5">
                 {conv.lastMessage.from_agent === 'human'
-                  ? `You: ${conv.lastMessage.content}`
+                  ? `${t('youPrefix')}: ${conv.lastMessage.content}`
                   : conv.lastMessage.content}
               </p>
             )}
@@ -438,7 +533,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
       {/* Header */}
       <div className="p-3 border-b border-border flex-shrink-0">
         <div className="mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-      Sessions
+          {t('sessionsTitle')}
         </div>
         <div className="relative">
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/50">
@@ -449,7 +544,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search..."
+            placeholder={t('searchPlaceholder')}
             className="w-full bg-surface-1 rounded-md pl-7 pr-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/30"
           />
         </div>
@@ -459,44 +554,64 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
       <div className="flex-1 overflow-y-auto">
         {filteredConversations.length === 0 ? (
           <div className="p-4 text-center text-xs text-muted-foreground/50">
-            No conversations yet
+            {t('noConversations')}
           </div>
         ) : (
           <>
-            {activeGatewayRows.length > 0 && (
-              <div>
-                <div className="px-3 pt-2 py-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-green-400/70">
-                  <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
-                  Active
+            {nodeGroups.map((nodeGroup) => (
+              <div key={nodeGroup.nodeKey}>
+                <div className="px-3 pt-2 py-1 text-[10px] uppercase tracking-wider text-blue-300/70">
+                  {nodeGroup.nodeLabel}
                 </div>
-                {activeGatewayRows.map(renderConversationItem)}
+                {nodeGroup.runtimeGroups.map((group: {
+                  key: RuntimeGroup
+                  meta: NonNullable<ReturnType<typeof getMainAgentRuntimeMeta>>
+                  active: Conversation[]
+                  recent: Conversation[]
+                }) => {
+                  const groupKey = `${nodeGroup.nodeKey}:${group.key}`
+                  const isCollapsed = collapsedGroups[groupKey] ?? true
+                  return (
+                    <div key={groupKey}>
+                      <button
+                        type="button"
+                        onClick={() => toggleGroup(groupKey)}
+                        className="w-full px-3 pt-2 py-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-muted-foreground/50 hover:text-foreground transition-colors"
+                      >
+                        <span className="flex items-center gap-2">
+                          <span>{isCollapsed ? '▸' : '▾'}</span>
+                          <span>{group.meta.label}</span>
+                        </span>
+                        <span className="text-[10px] font-mono text-muted-foreground/60">
+                          ({group.active.length}/{group.active.length + group.recent.length})
+                        </span>
+                      </button>
+                      {!isCollapsed && (
+                        <>
+                          {group.active.length > 0 && (
+                            <div>
+                              <div className="px-3 py-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-green-400/70">
+                                <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+                                {t('activeLabel')}
+                              </div>
+                              {group.active.map(renderConversationItem)}
+                            </div>
+                          )}
+                          {group.recent.length > 0 && (
+                            <div>
+                              <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground/40">
+                                {t('recentLabel')}
+                              </div>
+                              {group.recent.map(renderConversationItem)}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
-            )}
-            {activeLocalRows.length > 0 && (
-              <div>
-                <div className="px-3 pt-2 py-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-green-400/70">
-                  <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
-                  Active Local
-                </div>
-                {activeLocalRows.map(renderConversationItem)}
-              </div>
-            )}
-            {inactiveGatewayRows.length > 0 && (
-              <div>
-                <div className="px-3 pt-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground/40">
-                  Recent
-                </div>
-                {inactiveGatewayRows.map(renderConversationItem)}
-              </div>
-            )}
-            {inactiveLocalRows.length > 0 && (
-              <div>
-                <div className="px-3 pt-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground/40">
-                  Recent Local
-                </div>
-                {inactiveLocalRows.map(renderConversationItem)}
-              </div>
-            )}
+            ))}
           </>
         )}
       </div>
@@ -518,13 +633,13 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
               <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z" />
               </svg>
-              Rename
+              {t('rename')}
             </button>
             <div className="my-1 border-t border-border/50" />
             <div className="px-2.5 py-1.5">
-              <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/60">Color</div>
+              <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/60">{t('color')}</div>
               <div className="flex flex-wrap gap-1.5">
-                {COLOR_OPTIONS.map((opt) => {
+                {colorOptions.map((opt) => {
                   const isCurrentColor = (conv.session?.colorTag || '') === opt.value
                   return (
                     <button

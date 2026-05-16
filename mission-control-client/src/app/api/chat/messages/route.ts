@@ -8,6 +8,10 @@ import { logger } from '@/lib/logger'
 import { scanForInjection, sanitizeForPrompt } from '@/lib/injection-guard'
 import { callOpenClawGateway } from '@/lib/openclaw-gateway'
 import { resolveCoordinatorDeliveryTarget } from '@/lib/coordinator-routing'
+import {
+  executeBoundLocalAgentPrompt,
+  getLocalSessionKindForFramework,
+} from '@/lib/local-session-executor'
 
 type ForwardInfo = {
   attempted: boolean
@@ -419,6 +423,8 @@ export async function POST(request: NextRequest) {
         const explicitSessionKey = typeof body.sessionKey === 'string' && body.sessionKey
           ? body.sessionKey
           : null
+        const localSessionKind = getLocalSessionKindForFramework(agent?.framework)
+        const localSessionKey = explicitSessionKey || (typeof agent?.session_key === 'string' && agent.session_key ? agent.session_key : null)
         const sessions = getAllGatewaySessions()
         const isCoordinatorSend = String(to).toLowerCase() === COORDINATOR_AGENT.toLowerCase()
         const allAgents = isCoordinatorSend
@@ -465,7 +471,7 @@ export async function POST(request: NextRequest) {
         // Prefer configured openclawId when present, fallback to normalized name
         let openclawAgentId: string | null = coordinatorResolution.openclawAgentId
 
-        if (!sessionKey && !openclawAgentId) {
+        if (!sessionKey && !openclawAgentId && !localSessionKind) {
           forwardInfo.reason = 'no_active_session'
 
           // For coordinator messages, emit an immediate visible status reply
@@ -486,10 +492,28 @@ export async function POST(request: NextRequest) {
             }
           }
         } else {
+          let localReplyText: string | null = null
           try {
             const idempotencyKey = `mc-${messageId}-${Date.now()}`
 
-            if (sessionKey) {
+            if (localSessionKind && localSessionKey) {
+              const localResult = await executeBoundLocalAgentPrompt(
+                agent || { framework: agent?.framework || null, session_key: localSessionKey },
+                `Message from ${from}: ${content}`,
+                { overrideSessionKey: explicitSessionKey || undefined },
+              )
+              forwardInfo.delivered = true
+              forwardInfo.session = localResult.sessionId || undefined
+              localReplyText = localResult.reply
+            } else if (localSessionKind) {
+              const localResult = await executeBoundLocalAgentPrompt(
+                agent || { framework: agent?.framework || null, session_key: null },
+                `Message from ${from}: ${content}`,
+              )
+              forwardInfo.delivered = true
+              forwardInfo.session = localResult.sessionId || undefined
+              localReplyText = localResult.reply
+            } else if (sessionKey) {
               const acceptedPayload = await callOpenClawGateway<any>(
                 'chat.send',
                 {
@@ -567,11 +591,24 @@ export async function POST(request: NextRequest) {
                   logger.error({ err: e }, 'Failed to create gateway failure status reply')
                 }
               }
+              }
             }
-          }
 
-          // Coordinator mode should always show visible coordinator feedback in thread.
-          if (
+            if (localReplyText) {
+              createChatReply(
+                db,
+                workspaceId,
+                conversation_id,
+                String(to),
+                from,
+                localReplyText,
+                'text',
+                { status: 'completed', session: forwardInfo.session || null }
+              )
+            }
+
+            // Coordinator mode should always show visible coordinator feedback in thread.
+            if (
             typeof conversation_id === 'string' &&
             conversation_id.startsWith('coord:') &&
             forwardInfo.delivered

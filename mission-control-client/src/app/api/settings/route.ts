@@ -28,6 +28,9 @@ const settingDefinitions: Record<string, { category: string; description: string
   // Gateway
   'gateway.host': { category: 'gateway', description: 'Gateway hostname', default: config.gatewayHost },
   'gateway.port': { category: 'gateway', description: 'Gateway port number', default: String(config.gatewayPort) },
+  'gateway.server_url': { category: 'gateway', description: 'Remote E-Agent-Client server HTTP base URL for sync (e.g. http://localhost:5000)', default: '' },
+  'gateway.client_name': { category: 'gateway', description: 'Client prefix used when syncing local agents to the remote server', default: 'LocalClient' },
+  'gateway.token': { category: 'gateway', description: 'API key used for upstream E-Agent-Client sync', default: '' },
 
   // Chat
   'chat.coordinator_target_agent': {
@@ -37,10 +40,11 @@ const settingDefinitions: Record<string, { category: string; description: string
   },
 
   // General
-  'general.site_name': { category: 'general', description: 'Mission Control display name', default: 'Mission Control' },
+  'general.site_name': { category: 'general', description: 'E-Agent-Client display name', default: 'E-Agent-Client' },
   'general.auto_cleanup': { category: 'general', description: 'Enable automatic data cleanup', default: 'false' },
   'general.auto_backup': { category: 'general', description: 'Enable automatic daily backups', default: 'false' },
   'general.backup_retention_count': { category: 'general', description: 'Number of backup files to keep', default: '10' },
+  'general.server_gateway_sync': { category: 'general', description: 'Enable periodic upstream E-Agent-Client sync', default: 'true' },
 
   // Subscription overrides
   'subscription.plan_override': { category: 'general', description: 'Override auto-detected subscription plan (e.g. max, max_5x, pro)', default: '' },

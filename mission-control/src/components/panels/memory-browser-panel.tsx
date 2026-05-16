@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { createClientLogger } from '@/lib/client-logger'
 import { MemoryGraph } from './memory-graph'
 
@@ -106,12 +106,13 @@ export function MemoryBrowserPanel() {
     memoryFileLinks,
     memoryHealth,
     dashboardMode,
+    centralMode,
     setMemoryFiles,
     setSelectedMemoryFile,
     setMemoryContent,
     setMemoryFileLinks,
     setMemoryHealth
-  } = useMissionControl()
+  } = useAgentCenterStore()
   const isLocal = dashboardMode === 'local'
 
   const [isLoading, setIsLoading] = useState(false)
@@ -139,10 +140,34 @@ export function MemoryBrowserPanel() {
   const [isRunningPipeline, setIsRunningPipeline] = useState(false)
   const [isHydratingTree, setIsHydratingTree] = useState(false)
   const memoryFilesRef = useRef(memoryFiles)
+  const [remoteClients, setRemoteClients] = useState<Array<{
+    client_id: string
+    client_name: string
+    totalAgents: number
+    totalFiles: number
+    totalChunks: number
+    totalSize: number
+    agents: Array<{ name: string; dbSize: number; totalChunks: number; totalFiles: number; files: Array<{ path: string; chunks: number; textSize: number }> }>
+  }>>([])
+  const [selectedClientId, setSelectedClientId] = useState<string>('')
 
   useEffect(() => {
     memoryFilesRef.current = memoryFiles
   }, [memoryFiles])
+
+  const loadRemoteMemory = useCallback(async () => {
+    const res = await fetch('/api/memory/sync', { cache: 'no-store' })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(body?.error || 'Failed to load remote memory')
+    const clients = Array.isArray(body?.clients) ? body.clients : []
+    setRemoteClients(clients)
+    setSelectedClientId((current) => current || clients[0]?.client_id || '')
+  }, [])
+
+  useEffect(() => {
+    if (!centralMode) return
+    loadRemoteMemory().catch((error) => log.error('Failed to load remote memory:', error))
+  }, [centralMode, loadRemoteMemory])
 
   const fetchTree = useCallback(async (options?: { path?: string; depth?: number }) => {
     const params = new URLSearchParams({ action: 'tree' })
@@ -531,6 +556,86 @@ export function MemoryBrowserPanel() {
   }
 
   const viewTabs = ['files', ...(!isLocal ? ['graph'] : []), 'health', 'pipeline', ...(hermesInstalled ? ['hermes'] : [])] as const
+
+  if (centralMode) {
+    const selectedClient = remoteClients.find((client) => client.client_id === selectedClientId) || remoteClients[0] || null
+    return (
+      <div className="h-[calc(100vh-3.5rem)] flex flex-col overflow-hidden p-4 md:p-6 space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">{t('title')}</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">{t('remoteMemoryReadOnly')}</p>
+        </div>
+
+        {remoteClients.length > 0 ? (
+          <>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-muted-foreground">{t('selectClientNode')}</span>
+              <select
+                value={selectedClient?.client_id || ''}
+                onChange={(e) => setSelectedClientId(e.target.value)}
+                className="h-9 rounded-md border border-border bg-secondary/50 px-3 text-sm text-foreground"
+              >
+                {remoteClients.map((client) => (
+                  <option key={client.client_id} value={client.client_id}>
+                    {client.client_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {selectedClient && (
+              <>
+                <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
+                  {t('remoteMemoryStats', {
+                    agents: selectedClient.totalAgents,
+                    files: selectedClient.totalFiles,
+                    chunks: selectedClient.totalChunks,
+                    size: formatFileSize(selectedClient.totalSize),
+                  })}
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {selectedClient.agents.map((agent) => (
+                    <div key={agent.name} className="rounded-lg border border-border bg-card p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-medium text-foreground">{agent.name}</div>
+                          <div className="text-2xs text-muted-foreground">
+                            {t('remoteMemoryStats', {
+                              agents: 1,
+                              files: agent.totalFiles,
+                              chunks: agent.totalChunks,
+                              size: formatFileSize(agent.dbSize),
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                      {agent.files.length > 0 && (
+                        <div>
+                          <div className="text-2xs text-muted-foreground/70 mb-2">{t('remoteTopFiles')}</div>
+                          <div className="space-y-1">
+                            {agent.files.slice(0, 8).map((file) => (
+                              <div key={file.path} className="flex items-center justify-between gap-3 text-2xs">
+                                <span className="truncate text-foreground/80">{file.path}</span>
+                                <span className="shrink-0 text-muted-foreground">{file.chunks}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </>
+        ) : (
+          <div className="rounded-lg border border-border bg-card px-4 py-6 text-sm text-muted-foreground">
+            {t('noClientNodes')}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="h-[calc(100vh-3.5rem)] flex flex-col overflow-hidden">

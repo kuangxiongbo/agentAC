@@ -41,7 +41,17 @@ export async function GET(request: Request) {
   } catch (error) {
     const { detail, code } = getCommandDetail(error)
     if (isMissingOpenClaw(detail)) {
-      return NextResponse.json({ error: 'OpenClaw is not installed or not reachable' }, { status: 400 })
+      return NextResponse.json({
+        level: 'healthy',
+        category: 'general',
+        healthy: true,
+        summary: 'OpenClaw is not installed or not reachable.',
+        issues: [],
+        canFix: false,
+        raw: detail || 'OpenClaw is not installed or not reachable',
+      }, {
+        headers: { 'Cache-Control': 'no-store' },
+      })
     }
 
     return NextResponse.json(parseOpenClawDoctorOutput(detail, code ?? 1, {

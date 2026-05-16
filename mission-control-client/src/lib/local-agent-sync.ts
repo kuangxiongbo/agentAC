@@ -17,6 +17,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { getDatabase, logAuditEvent } from './db'
 import { logger } from './logger'
+import type { MainAgentRuntimeId } from './runtime-agents'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,6 +27,7 @@ interface DiskAgent {
   name: string
   dir: string
   role: string
+  framework: MainAgentRuntimeId | 'generic' | 'unknown'
   soulContent: string | null
   configContent: string | null
   contentHash: string
@@ -41,6 +43,7 @@ interface AgentRow {
   content_hash: string | null
   workspace_path: string | null
   config: string | null
+  framework: string | null
 }
 
 // Detection files — order matters: first found wins for role extraction
@@ -55,6 +58,9 @@ interface AgentFrontmatter {
   model?: string
   color?: string
   tools?: string[]
+  framework?: string
+  runtime?: string
+  provider?: string
 }
 
 function parseYamlFrontmatter(content: string): { frontmatter: AgentFrontmatter; body: string } {
@@ -72,6 +78,9 @@ function parseYamlFrontmatter(content: string): { frontmatter: AgentFrontmatter;
     else if (key === 'description') fm.description = cleaned
     else if (key === 'model') fm.model = cleaned
     else if (key === 'color') fm.color = cleaned
+    else if (key === 'framework') fm.framework = cleaned
+    else if (key === 'runtime') fm.runtime = cleaned
+    else if (key === 'provider') fm.provider = cleaned
     else if (key === 'tools') {
       try { fm.tools = JSON.parse(val) } catch { /* ignore */ }
     }
@@ -97,14 +106,97 @@ function extractRole(content: string): string {
   return 'agent'
 }
 
-function getLocalAgentRoots(): string[] {
+function getLocalAgentRoots(): Array<{ path: string; framework: MainAgentRuntimeId | 'generic' }> {
   const home = homedir()
   return [
-    join(home, '.agents'),
-    join(home, '.codex', 'agents'),
-    join(home, '.claude', 'agents'),
-    join(home, '.hermes', 'skills'),
+    { path: join(home, '.agents'), framework: 'generic' },
+    { path: join(home, '.codex', 'agents'), framework: 'codex' },
+    { path: join(home, '.claude', 'agents'), framework: 'claude' },
+    { path: join(home, '.hermes', 'skills'), framework: 'hermes' },
   ]
+}
+
+function normalizeFramework(value: unknown): MainAgentRuntimeId | 'generic' | 'unknown' | null {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) return null
+  if (normalized === 'claude' || normalized === 'claude-code' || normalized === 'claude-sdk') return 'claude'
+  if (normalized === 'codex' || normalized === 'codex-cli' || normalized === 'openai') return 'codex'
+  if (normalized === 'openclaw' || normalized === 'clawdbot' || normalized === 'gateway') return 'openclaw'
+  if (normalized === 'cursor') return 'cursor'
+  if (normalized === 'opencode' || normalized === 'open-code') return 'opencode'
+  if (normalized === 'hermes' || normalized === 'hermes-agent') return 'hermes'
+  if (normalized === 'generic') return 'generic'
+  if (normalized === 'unknown') return 'unknown'
+  return null
+}
+
+function inferFrameworkFromModel(model: unknown): MainAgentRuntimeId | null {
+  if (typeof model !== 'string') return null
+  const normalized = model.trim().toLowerCase()
+  if (!normalized) return null
+  if (normalized.includes('claude') || normalized.startsWith('anthropic/')) return 'claude'
+  if (normalized.includes('codex') || normalized.startsWith('openai/')) return 'codex'
+  if (normalized.includes('hermes')) return 'hermes'
+  if (normalized.includes('opencode') || normalized.includes('open-code')) return 'opencode'
+  if (normalized.includes('cursor')) return 'cursor'
+  if (normalized.includes('openclaw') || normalized.includes('clawdbot')) return 'openclaw'
+  return null
+}
+
+function parseJsonRecord(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
+function inferDiskAgentFramework(
+  rootFramework: MainAgentRuntimeId | 'generic',
+  frontmatter?: AgentFrontmatter,
+  configContent?: string | null,
+): MainAgentRuntimeId | 'generic' | 'unknown' {
+  if (rootFramework !== 'generic') return rootFramework
+
+  const configObj = parseJsonRecord(configContent || null)
+  const candidates = [
+    frontmatter?.framework,
+    frontmatter?.runtime,
+    frontmatter?.provider,
+    configObj?.framework,
+    configObj?.runtime,
+    configObj?.main_runtime,
+    configObj?.provider,
+  ]
+
+  for (const candidate of candidates) {
+    const normalized = normalizeFramework(candidate)
+    if (normalized && normalized !== 'generic' && normalized !== 'unknown') {
+      return normalized
+    }
+  }
+
+  const modelCandidates = [
+    frontmatter?.model,
+    configObj?.model,
+  ]
+  for (const candidate of modelCandidates) {
+    const inferred = inferFrameworkFromModel(candidate)
+    if (inferred) return inferred
+  }
+
+  const nestedModel = configObj && typeof configObj.model === 'object' && configObj.model !== null
+    ? (configObj.model as Record<string, unknown>).primary
+    : null
+  const inferredNestedModel = inferFrameworkFromModel(nestedModel)
+  if (inferredNestedModel) return inferredNestedModel
+
+  return 'unknown'
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +207,8 @@ function scanLocalAgents(): DiskAgent[] {
   const agents: DiskAgent[] = []
   const seen = new Set<string>()
 
-  for (const root of getLocalAgentRoots()) {
+  for (const rootEntry of getLocalAgentRoots()) {
+    const root = rootEntry.path
     if (!existsSync(root)) continue
     let entries: string[]
     try {
@@ -150,12 +243,15 @@ function scanLocalAgents(): DiskAgent[] {
           if (frontmatter.color) configObj.color = frontmatter.color
           if (frontmatter.tools) configObj.tools = frontmatter.tools
           if (frontmatter.description) configObj.description = frontmatter.description
+          if (frontmatter.framework) configObj.framework = frontmatter.framework
+          if (frontmatter.runtime) configObj.runtime = frontmatter.runtime
           const configJson = Object.keys(configObj).length > 0 ? JSON.stringify(configObj) : null
 
           agents.push({
             name: agentName,
             dir: fullPath,
             role: frontmatter.description ? 'agent' : 'agent',
+            framework: inferDiskAgentFramework(rootEntry.framework, frontmatter, configJson),
             soulContent: body.trim() || null,
             configContent: configJson,
             contentHash: sha256(content),
@@ -208,6 +304,7 @@ function scanLocalAgents(): DiskAgent[] {
         name: entry,
         dir: fullPath,
         role,
+        framework: inferDiskAgentFramework(rootEntry.framework, undefined, configContent),
         soulContent,
         configContent,
         contentHash: sha256(hashInput),
@@ -235,7 +332,7 @@ export async function syncLocalAgents(): Promise<{ ok: boolean; message: string 
 
     // Fetch DB agents with source='local'
     const dbRows = db.prepare(
-      `SELECT id, name, role, soul_content, status, source, content_hash, workspace_path, config FROM agents WHERE source = 'local'`
+      `SELECT id, name, role, soul_content, status, source, content_hash, workspace_path, config, framework FROM agents WHERE source = 'local'`
     ).all() as AgentRow[]
 
     const dbMap = new Map<string, AgentRow>()
@@ -248,11 +345,11 @@ export async function syncLocalAgents(): Promise<{ ok: boolean; message: string 
     let removed = 0
 
     const insertStmt = db.prepare(`
-      INSERT INTO agents (name, role, soul_content, status, source, content_hash, workspace_path, config, created_at, updated_at)
-      VALUES (?, ?, ?, 'offline', 'local', ?, ?, ?, ?, ?)
+      INSERT INTO agents (name, role, soul_content, status, source, content_hash, workspace_path, config, created_at, updated_at, framework)
+      VALUES (?, ?, ?, 'offline', 'local', ?, ?, ?, ?, ?, ?)
     `)
     const updateStmt = db.prepare(`
-      UPDATE agents SET role = ?, soul_content = ?, content_hash = ?, workspace_path = ?, config = ?, updated_at = ?
+      UPDATE agents SET role = ?, soul_content = ?, content_hash = ?, workspace_path = ?, config = ?, updated_at = ?, framework = ?
       WHERE id = ?
     `)
     const markRemovedStmt = db.prepare(`
@@ -266,10 +363,10 @@ export async function syncLocalAgents(): Promise<{ ok: boolean; message: string 
         const configJson = disk.configContent ? disk.configContent : null
 
         if (!existing) {
-          insertStmt.run(name, disk.role, disk.soulContent, disk.contentHash, disk.dir, configJson, now, now)
+          insertStmt.run(name, disk.role, disk.soulContent, disk.contentHash, disk.dir, configJson, now, now, disk.framework)
           created++
-        } else if (existing.content_hash !== disk.contentHash) {
-          updateStmt.run(disk.role, disk.soulContent, disk.contentHash, disk.dir, configJson, now, existing.id)
+        } else if (existing.content_hash !== disk.contentHash || existing.framework !== disk.framework) {
+          updateStmt.run(disk.role, disk.soulContent, disk.contentHash, disk.dir, configJson, now, disk.framework, existing.id)
           updated++
         }
       }

@@ -6,7 +6,7 @@ import { useTranslations } from 'next-intl'
 import Image from 'next/image'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
-import { useMissionControl, Agent } from '@/store'
+import { useAgentCenterStore, Agent } from '@/store'
 import { buildOfficeLayout } from '@/lib/office-layout'
 
 type ViewMode = 'office' | 'org-chart'
@@ -469,7 +469,7 @@ function pointAlongPath(path: Array<{ x: number; y: number }>, pathLengths: numb
 
 export function OfficePanel() {
   const t = useTranslations('office')
-  const { agents, dashboardMode, currentUser } = useMissionControl()
+  const { agents, dashboardMode, currentUser } = useAgentCenterStore()
   const isLocalMode = dashboardMode === 'local'
   const [localAgents, setLocalAgents] = useState<Agent[]>([])
   const [sessionAgents, setSessionAgents] = useState<Agent[]>([])

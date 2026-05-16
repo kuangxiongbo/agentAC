@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { needsFirstTimeSetup } from '@/lib/db'
-import { createUser, createSession } from '@/lib/auth'
+import { createUser, createSession, publicAuthUserFields } from '@/lib/auth'
 import { logAuditEvent } from '@/lib/db'
 import { getMcSessionCookieName, getMcSessionCookieOptions, isRequestSecure } from '@/lib/session-cookie'
 import { logger } from '@/lib/logger'
@@ -91,10 +91,7 @@ export async function POST(request: Request) {
 
     const response = NextResponse.json({
       user: {
-        id: user.id,
-        username: user.username,
-        display_name: user.display_name,
-        role: user.role,
+        ...publicAuthUserFields(user),
       },
     })
 

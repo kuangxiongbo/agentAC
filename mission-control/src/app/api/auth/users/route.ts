@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getUserFromRequest, getAllUsers, createUser, updateUser, deleteUser, getUserById, requireRole } from '@/lib/auth'
+import { getUserFromRequest, getAllUsers, createUser, updateUser, deleteUser, getUserById, requireRole, publicAuthUserFields } from '@/lib/auth'
 import { logAuditEvent } from '@/lib/db'
 import { validateBody, createUserSchema } from '@/lib/validation'
 import { mutationLimiter } from '@/lib/rate-limit'
@@ -19,7 +19,8 @@ export async function GET(request: NextRequest) {
 
   const users = getAllUsers()
   const workspaceId = user.workspace_id ?? 1
-  return NextResponse.json({ users: users.filter((u) => (u.workspace_id ?? 1) === workspaceId) })
+  const filtered = users.filter((u) => (u.workspace_id ?? 1) === workspaceId)
+  return NextResponse.json({ users: filtered.map((u) => publicAuthUserFields(u)) })
 }
 
 /**
@@ -54,18 +55,7 @@ export async function POST(request: NextRequest) {
     })
 
     return NextResponse.json({
-      user: {
-        id: newUser.id,
-        username: newUser.username,
-        display_name: newUser.display_name,
-        role: newUser.role,
-        provider: newUser.provider || 'local',
-        email: newUser.email || null,
-        avatar_url: newUser.avatar_url || null,
-        is_approved: newUser.is_approved ?? 1,
-        workspace_id: newUser.workspace_id ?? 1,
-        tenant_id: newUser.tenant_id ?? 1,
-      }
+      user: publicAuthUserFields(newUser),
     }, { status: 201 })
   } catch (error: any) {
     if (error.message?.includes('UNIQUE constraint failed')) {
@@ -121,18 +111,7 @@ export async function PUT(request: NextRequest) {
     })
 
     return NextResponse.json({
-      user: {
-        id: updated.id,
-        username: updated.username,
-        display_name: updated.display_name,
-        role: updated.role,
-        provider: updated.provider || 'local',
-        email: updated.email || null,
-        avatar_url: updated.avatar_url || null,
-        is_approved: updated.is_approved ?? 1,
-        workspace_id: updated.workspace_id ?? 1,
-        tenant_id: updated.tenant_id ?? 1,
-      }
+      user: publicAuthUserFields(updated),
     })
   } catch (error) {
     logger.error({ err: error }, 'PUT /api/auth/users error')

@@ -27,6 +27,7 @@ export async function GET(request: NextRequest) {
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   const db = getDatabase()
+  const reveal = request.nextUrl.searchParams.get('reveal') === 'true'
 
   // Check for DB-stored override first
   const row = db.prepare(
@@ -36,6 +37,7 @@ export async function GET(request: NextRequest) {
   if (row) {
     return NextResponse.json({
       masked_key: maskApiKey(row.value),
+      key: reveal ? row.value : undefined,
       source: 'database',
       last_rotated_at: row.updated_at,
       last_rotated_by: row.updated_by,
@@ -47,6 +49,7 @@ export async function GET(request: NextRequest) {
   if (envKey) {
     return NextResponse.json({
       masked_key: maskApiKey(envKey),
+      key: reveal ? envKey : undefined,
       source: 'environment',
       last_rotated_at: null,
       last_rotated_by: null,

@@ -1,30 +1,11 @@
 import { randomBytes } from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
-import { createSession } from '@/lib/auth'
+import { createSession, createUser, updateUser, publicAuthUserFields } from '@/lib/auth'
 import { getDatabase, logAuditEvent } from '@/lib/db'
 import { verifyGoogleIdToken } from '@/lib/google-auth'
 import { getMcSessionCookieName, getMcSessionCookieOptions, isRequestSecure } from '@/lib/session-cookie'
 import { loginLimiter } from '@/lib/rate-limit'
-
-function upsertAccessRequest(input: {
-  email: string
-  providerUserId: string
-  displayName: string
-  avatarUrl?: string
-}) {
-  const db = getDatabase()
-  db.prepare(`
-    INSERT INTO access_requests (provider, email, provider_user_id, display_name, avatar_url, status, attempt_count, requested_at, last_attempt_at)
-    VALUES ('google', ?, ?, ?, ?, 'pending', 1, (unixepoch()), (unixepoch()))
-    ON CONFLICT(email, provider) DO UPDATE SET
-      provider_user_id = excluded.provider_user_id,
-      display_name = excluded.display_name,
-      avatar_url = excluded.avatar_url,
-      status = 'pending',
-      attempt_count = access_requests.attempt_count + 1,
-      last_attempt_at = (unixepoch())
-  `).run(input.email.toLowerCase(), input.providerUserId, input.displayName, input.avatarUrl || null)
-}
+import { deriveZitadelLocalUsername } from '@/lib/usercenter-provision-local'
 
 export async function POST(request: NextRequest) {
   const rateCheck = loginLimiter(request)
@@ -41,63 +22,78 @@ export async function POST(request: NextRequest) {
     const displayName = String(profile.name || email.split('@')[0] || 'Google User').trim()
     const avatar = profile.picture ? String(profile.picture) : null
 
-    const row = db.prepare(`
+    const lookupSql = `
       SELECT u.id, u.username, u.display_name, u.role, u.provider, u.email, u.avatar_url, u.is_approved,
+             u.portal_tenant_role,
              u.created_at, u.updated_at, u.last_login_at, u.workspace_id, COALESCE(w.tenant_id, 1) as tenant_id
       FROM users u
       LEFT JOIN workspaces w ON w.id = u.workspace_id
-      WHERE (provider = 'google' AND provider_user_id = ?) OR lower(email) = ?
-      ORDER BY id ASC
+      WHERE (u.provider = 'google' AND u.provider_user_id = ?) OR lower(u.email) = ?
+      ORDER BY u.id ASC
       LIMIT 1
-    `).get(sub, email) as any
+    `
+
+    let row = db.prepare(lookupSql).get(sub, email) as any
 
     const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
     const userAgent = request.headers.get('user-agent') || undefined
 
-    if (!row || Number(row.is_approved ?? 1) !== 1) {
-      upsertAccessRequest({
-        email,
-        providerUserId: sub,
-        displayName,
-        avatarUrl: avatar || undefined,
-      })
-
+    if (!row) {
+      const password = randomBytes(32).toString('hex')
+      const base = deriveZitadelLocalUsername(email, sub)
+      try {
+        createUser(base, password, displayName, 'operator', {
+          provider: 'google',
+          provider_user_id: sub,
+          email,
+          avatar_url: avatar,
+          is_approved: 1,
+        })
+      } catch {
+        createUser(`${base.slice(0, 48)}_${randomBytes(3).toString('hex')}`, password, displayName, 'operator', {
+          provider: 'google',
+          provider_user_id: sub,
+          email,
+          avatar_url: avatar,
+          is_approved: 1,
+        })
+      }
+      row = db.prepare(lookupSql).get(sub, email) as any
+      if (!row) {
+        return NextResponse.json({ error: 'Failed to create local user for Google login' }, { status: 500 })
+      }
       logAuditEvent({
-        action: 'google_login_pending_approval',
+        action: 'google_auto_created_user',
         actor: email,
+        detail: { sub, userId: row.id },
+        ip_address: ipAddress,
+        user_agent: userAgent,
+      })
+    } else if (Number(row.is_approved ?? 1) !== 1) {
+      updateUser(row.id, { is_approved: 1 })
+      row = { ...row, is_approved: 1 }
+      logAuditEvent({
+        action: 'google_auto_approved_user',
+        actor: row.username,
+        actor_id: row.id,
         detail: { email, sub },
         ip_address: ipAddress,
         user_agent: userAgent,
       })
-
-      return NextResponse.json(
-        { error: 'Access request pending admin approval', code: 'PENDING_APPROVAL' },
-        { status: 403 }
-      )
     }
 
     db.prepare(`
       UPDATE users
-      SET provider = 'google', provider_user_id = ?, email = ?, avatar_url = COALESCE(?, avatar_url), updated_at = (unixepoch())
+      SET provider = 'google', provider_user_id = ?, email = ?, display_name = ?, avatar_url = COALESCE(?, avatar_url), updated_at = (unixepoch())
       WHERE id = ?
-    `).run(sub, email, avatar, row.id)
+    `).run(sub, email, displayName, avatar, row.id)
 
     const { token, expiresAt } = createSession(row.id, ipAddress, userAgent, row.workspace_id ?? 1)
 
     logAuditEvent({ action: 'login_google', actor: row.username, actor_id: row.id, ip_address: ipAddress, user_agent: userAgent })
 
     const response = NextResponse.json({
-      user: {
-        id: row.id,
-        username: row.username,
-        display_name: row.display_name,
-        role: row.role,
-        provider: 'google',
-        email,
-        avatar_url: avatar,
-        workspace_id: row.workspace_id ?? 1,
-        tenant_id: row.tenant_id ?? 1,
-      },
+      user: publicAuthUserFields(row),
     })
 
     const isSecureRequest = isRequestSecure(request)

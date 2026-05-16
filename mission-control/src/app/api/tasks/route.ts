@@ -76,6 +76,7 @@ export async function GET(request: NextRequest) {
     const assigned_to = searchParams.get('assigned_to');
     const priority = searchParams.get('priority');
     const projectIdParam = Number.parseInt(searchParams.get('project_id') || '', 10);
+    const clientId = searchParams.get('client_id');
     const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 200);
     const offset = parseInt(searchParams.get('offset') || '0');
     
@@ -85,9 +86,22 @@ export async function GET(request: NextRequest) {
       FROM tasks t
       LEFT JOIN projects p
         ON p.id = t.project_id AND p.workspace_id = t.workspace_id
-      WHERE t.workspace_id = ?
     `;
+    
+    if (clientId) {
+      query += `
+        INNER JOIN agents a 
+          ON a.name = t.assigned_to AND a.workspace_id = t.workspace_id
+      `;
+    }
+    
+    query += ' WHERE t.workspace_id = ?';
     const params: any[] = [workspaceId];
+
+    if (clientId) {
+      query += ' AND a.node_id = ?';
+      params.push(clientId);
+    }
     
     if (status) {
       query += ' AND t.status = ?';
@@ -119,22 +133,31 @@ export async function GET(request: NextRequest) {
     const tasksWithParsedData = tasks.map(mapTaskRow);
     
     // Get total count for pagination
-    let countQuery = 'SELECT COUNT(*) as total FROM tasks WHERE workspace_id = ?';
+    let countQuery = 'SELECT COUNT(*) as total FROM tasks t';
+    if (clientId) {
+      countQuery += ' INNER JOIN agents a ON a.name = t.assigned_to AND a.workspace_id = t.workspace_id';
+    }
+    countQuery += ' WHERE t.workspace_id = ?';
+    
     const countParams: any[] = [workspaceId];
+    if (clientId) {
+      countQuery += ' AND a.node_id = ?';
+      countParams.push(clientId);
+    }
     if (status) {
-      countQuery += ' AND status = ?';
+      countQuery += ' AND t.status = ?';
       countParams.push(status);
     }
     if (assigned_to) {
-      countQuery += ' AND assigned_to = ?';
+      countQuery += ' AND t.assigned_to = ?';
       countParams.push(assigned_to);
     }
     if (priority) {
-      countQuery += ' AND priority = ?';
+      countQuery += ' AND t.priority = ?';
       countParams.push(priority);
     }
     if (Number.isFinite(projectIdParam)) {
-      countQuery += ' AND project_id = ?';
+      countQuery += ' AND t.project_id = ?';
       countParams.push(projectIdParam);
     }
     const countRow = db.prepare(countQuery).get(...countParams) as { total: number };

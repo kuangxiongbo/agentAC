@@ -30,7 +30,7 @@
     "moreIssues": "+ ещё {count} {count, plural, one {проблема} few {проблемы} other {проблем}}"
   },
   "auth": {
-    "missionControl": "Mission Control",
+    "missionControl": "E-Agent-Client",
     "signInToContinue": "Войдите, чтобы продолжить",
     "username": "Имя пользователя",
     "password": "Пароль",
@@ -48,10 +48,10 @@
     "accessRequestDescription": "Ваш запрос отправлен администратору на рассмотрение. Вы сможете войти после одобрения.",
     "tryAgain": "Попробовать снова",
     "noAdminAccount": "Учётная запись администратора ещё не создана",
-    "noAdminDescription": "Настройте учётную запись администратора, чтобы начать работу с Mission Control.",
+    "noAdminDescription": "Настройте учётную запись администратора, чтобы начать работу с E-Agent-Client.",
     "createAdminAccount": "Создать учётную запись администратора",
-    "welcomeToMC": "Добро пожаловать в Mission Control",
-    "settingUpMC": "Настройка Mission Control",
+    "welcomeToMC": "Добро пожаловать в E-Agent-Client",
+    "settingUpMC": "Настройка E-Agent-Client",
     "createAdminToStart": "Создайте учётную запись администратора, чтобы начать",
     "creatingAdmin": "Создание учётной записи администратора...",
     "displayName": "Отображаемое имя",
@@ -116,7 +116,7 @@
     "chatSettings": "Чат",
     "gatewaySettings": "Шлюз",
     "title": "Настройки",
-    "description": "Настройте поведение Mission Control и политики хранения данных",
+    "description": "Настройте поведение E-Agent-Client и политики хранения данных",
     "discard": "Отменить",
     "save": "Сохранить",
     "saving": "Сохранение...",
@@ -139,7 +139,7 @@
     "resetting": "Сброс..."
   },
   "boot": {
-    "missionControl": "Mission Control",
+    "missionControl": "E-Agent-Client",
     "agentOrchestration": "Оркестрация агентов",
     "authenticatingOperator": "Аутентификация оператора",
     "detectingStationMode": "Определение режима станции",
@@ -226,7 +226,7 @@
     "updating": "Обновление...",
     "restartingServer": "Перезапуск сервера...",
     "updateAvailable": "Доступно обновление: v{version}",
-    "newerVersionAvailable": " — доступна более новая версия Mission Control.",
+    "newerVersionAvailable": " — доступна более новая версия E-Agent-Client.",
     "updateFailed": "Ошибка обновления",
     "networkError": "Ошибка сети — не удалось связаться с сервером."
   },
@@ -285,7 +285,7 @@
     "stationOnline": "Станция онлайн",
     "stationReady": "Ваша станция готова к приёму агентов.",
     "welcome": {
-      "title": "Добро пожаловать в Mission Control",
+      "title": "Добро пожаловать в E-Agent-Client",
       "description": "Ваша станция для ИИ-агентов. Когда агенты стыкуются здесь, они получают постоянную память, управление задачами, координированные рабочие процессы и полную наблюдаемость. Мы просканировали вашу конфигурацию — вот что онлайн.",
       "availableModes": "Доступные режимы",
       "localMode": "Локальный режим",
@@ -304,7 +304,7 @@
       "localModeNoGateway": "Локальный режим — без шлюза",
       "agentsRegistered": "{count, plural, one {{count} агент зарегистрирован} few {{count} агента зарегистрировано} other {{count} агентов зарегистрировано}}",
       "noAgentsYet": "Пока нет агентов",
-      "gatewayRegistered": "Шлюз: Mission Control зарегистрирован",
+      "gatewayRegistered": "Шлюз: E-Agent-Client зарегистрирован",
       "gatewayRegistrationPending": "Регистрация шлюза ожидается",
       "skipSetup": "Пропустить настройку",
       "getStarted": "Начать"
@@ -325,9 +325,9 @@
     },
     "gatewayLink": {
       "title": "Связь со шлюзом",
-      "description": "Mission Control регистрирует свой источник в шлюзе OpenClaw для подключения через WebSocket и удалённого управления агентами.",
+      "description": "E-Agent-Client регистрирует свой источник в шлюзе OpenClaw для подключения через WebSocket и удалённого управления агентами.",
       "originRegistered": "Источник шлюза зарегистрирован",
-      "originAdded": "Источник Mission Control добавлен в allowedOrigins шлюза",
+      "originAdded": "Источник E-Agent-Client добавлен в allowedOrigins шлюза",
       "registrationPending": "Регистрация ожидается — будет настроена при следующей проверке возможностей",
       "deviceAuthConfigured": "Аутентификация устройства настроена",
       "deviceAuthDisabled": "Аутентификация устройства отключена — MC аутентифицируется через токен шлюза",
@@ -1189,7 +1189,7 @@
     "openingFlightDeck": "Открывается Flight Deck...",
     "flightDeckCompanion": "Приватное/профессиональное приложение для глубокого анализа сессий",
     "flightDeckRequired": "Требуется Flight Deck",
-    "flightDeckDescription": "Flight Deck — приватное/профессиональное приложение-компаньон для Mission Control.",
+    "flightDeckDescription": "Flight Deck — приватное/профессиональное приложение-компаньон для E-Agent-Client.",
     "flightDeckNotInstalled": "Похоже, Flight Deck не установлен на этом компьютере. Установите его для открытия сессий агентов с расширенными элементами управления и диагностикой.",
     "maybeLater": "Позже",
     "downloadFlightDeck": "Скачать Flight Deck",
@@ -1202,7 +1202,7 @@
   },
   "githubSync": {
     "title": "Синхронизация Issues GitHub",
-    "subtitle": "Импортируйте Issues GitHub как задачи Mission Control",
+    "subtitle": "Импортируйте Issues GitHub как задачи E-Agent-Client",
     "loading": "Загрузка синхронизации GitHub...",
     "connectedAs": "GitHub: {user}",
     "notConfigured": "GitHub: не настроен",

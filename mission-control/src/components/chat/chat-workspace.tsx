@@ -1,9 +1,15 @@
 'use client'
 
 import { useEffect, useCallback, useState, useRef } from 'react'
-import { useMissionControl, type Conversation, type ChatAttachment } from '@/store'
+import { useTranslations } from 'next-intl'
+import { useAgentCenterStore, type Conversation, type ChatAttachment } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 import { createClientLogger } from '@/lib/client-logger'
+import {
+  SESSION_TRANSCRIPT_UPDATED_EVENT,
+  sessionKindFromSource,
+  type SessionRealtimePayload,
+} from '@/lib/session-realtime-events'
 import { ConversationList } from './conversation-list'
 import { MessageList } from './message-list'
 import { ChatInput } from './chat-input'
@@ -12,6 +18,8 @@ import { SessionMessage, shouldShowTimestamp, type SessionTranscriptMessage } fr
 import { getSessionKindLabel, SessionKindAvatar } from './session-kind-brand'
 
 const log = createClientLogger('ChatWorkspace')
+const ACTIVE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS = 15000
+const IDLE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS = 30000
 
 declare global {
   interface Window {
@@ -25,6 +33,7 @@ interface ChatWorkspaceProps {
 }
 
 export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps) {
+  const t = useTranslations('chat')
   const {
     activeConversation,
     setActiveConversation,
@@ -37,9 +46,10 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
     conversations,
     setAgents,
     notifications,
-  } = useMissionControl()
+  } = useAgentCenterStore()
 
   const pendingIdRef = useRef(-1)
+  const sessionTranscriptRequestIdRef = useRef(0)
 
   const [showConversations, setShowConversations] = useState(true)
   const [isMobile, setIsMobile] = useState(false)
@@ -60,6 +70,12 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
     check()
     window.addEventListener('resize', check)
     return () => window.removeEventListener('resize', check)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      sessionTranscriptRequestIdRef.current += 1
+    }
   }, [])
 
   // On mobile, hide conversations when a conversation is selected
@@ -223,48 +239,71 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
     !!activeConversation &&
     !activeConversation.startsWith('session:')
 
-  useEffect(() => {
+  const loadSessionTranscript = useCallback(async () => {
     const sessionMeta = selectedSession
     if (!sessionMeta) {
+      sessionTranscriptRequestIdRef.current += 1
       setSessionTranscript([])
       setSessionTranscriptError(null)
+      setSessionTranscriptLoading(false)
       return
     }
 
-    let cancelled = false
+    const requestId = sessionTranscriptRequestIdRef.current + 1
+    sessionTranscriptRequestIdRef.current = requestId
     setSessionTranscriptLoading(true)
     setSessionTranscriptError(null)
 
     // Gateway sessions use the gateway transcript API
     const url = sessionMeta.sessionKind === 'gateway'
       ? `/api/sessions/transcript/gateway?key=${encodeURIComponent(sessionMeta.sessionKey || sessionMeta.sessionId)}&limit=50`
-      : `/api/sessions/transcript?kind=${encodeURIComponent(sessionMeta.sessionKind)}&id=${encodeURIComponent(sessionMeta.sessionId)}&limit=40`
+      : `/api/sessions/transcript?kind=${encodeURIComponent(sessionMeta.sessionKind)}&id=${encodeURIComponent(sessionMeta.sessionId)}&limit=40${sessionMeta.nodeId ? `&client_id=${encodeURIComponent(sessionMeta.nodeId)}` : ''}`
 
-    fetch(url)
-      .then(async (res) => {
-        if (!res.ok) {
-          const payload = await res.json().catch(() => ({}))
-          throw new Error(payload?.error || 'Failed to load transcript')
-        }
-        return res.json()
-      })
-      .then((data) => {
-        if (cancelled) return
-        setSessionTranscript(Array.isArray(data?.messages) ? data.messages : [])
-      })
-      .catch((err) => {
-        if (cancelled) return
-        setSessionTranscript([])
-        setSessionTranscriptError(err instanceof Error ? err.message : 'Failed to load transcript')
-      })
-      .finally(() => {
-        if (!cancelled) setSessionTranscriptLoading(false)
-      })
+    try {
+      const res = await fetch(url)
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}))
+        throw new Error(payload?.error || 'Failed to load transcript')
+      }
 
-    return () => {
-      cancelled = true
+      const data = await res.json()
+      if (sessionTranscriptRequestIdRef.current !== requestId) return
+      setSessionTranscript(Array.isArray(data?.messages) ? data.messages : [])
+    } catch (err) {
+      if (sessionTranscriptRequestIdRef.current !== requestId) return
+      setSessionTranscript([])
+      setSessionTranscriptError(err instanceof Error ? err.message : 'Failed to load transcript')
+    } finally {
+      if (sessionTranscriptRequestIdRef.current === requestId) {
+        setSessionTranscriptLoading(false)
+      }
     }
   }, [selectedSession, sessionReloadNonce])
+
+  useEffect(() => {
+    void loadSessionTranscript()
+  }, [loadSessionTranscript])
+
+  useEffect(() => {
+    if (!selectedSession) return
+
+    const handleTranscriptUpdated = (rawEvent: Event) => {
+      const detail = (rawEvent as CustomEvent<SessionRealtimePayload | undefined>).detail
+      if (!shouldRefreshSelectedSession(selectedSession, detail)) return
+      void loadSessionTranscript()
+    }
+
+    window.addEventListener(SESSION_TRANSCRIPT_UPDATED_EVENT, handleTranscriptUpdated)
+    return () => window.removeEventListener(SESSION_TRANSCRIPT_UPDATED_EVENT, handleTranscriptUpdated)
+  }, [selectedSession, loadSessionTranscript])
+
+  useSmartPoll(
+    loadSessionTranscript,
+    selectedSession?.active ? ACTIVE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS : IDLE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS,
+    {
+      enabled: !!selectedSession,
+    }
+  )
 
   const refreshSessionTranscript = useCallback(() => {
     setSessionReloadNonce((v) => v + 1)
@@ -409,7 +448,15 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
                     {(selectedConversation?.name || activeConversation).replace('agent_', '')}
                   </div>
                   <div className="text-[10px] text-muted-foreground">
-                    {getConversationStatus(agents, activeConversation)}
+                    {getConversationStatus(agents, activeConversation, {
+                      localClaude: t('conversationStatusLocalClaude'),
+                      localCodex: t('conversationStatusLocalCodex'),
+                      localHermes: t('conversationStatusLocalHermes'),
+                      gateway: t('conversationStatusGateway'),
+                      unknown: t('conversationStatusUnknown'),
+                      online: t('conversationStatusOnline'),
+                      offline: t('conversationStatusOffline'),
+                    })}
                   </div>
                 </div>
               </div>
@@ -427,7 +474,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
             ) : (
               <>
                 <MessageList />
-                <ChatIndicators notifications={notifications} />
+                <ChatIndicators notifications={notifications} compactionLabel={t('contextCompaction')} fallbackLabel={t('modelFallback')} />
                 <ChatInput
                   onSend={handleSend}
                   onAbort={handleAbort}
@@ -459,6 +506,7 @@ function SessionConversationView({
   onRefreshTranscript: () => void
   onSavePreferences: (payload: { prefKey: string; displayName?: string; colorTag?: string }) => Promise<void>
 }) {
+  const t = useTranslations('chat')
   const isGatewaySession = session.sessionKind === 'gateway'
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null)
   const [continuePrompt, setContinuePrompt] = useState('')
@@ -513,11 +561,11 @@ function SessionConversationView({
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
-          throw new Error(data?.error || 'Failed to send message')
+          throw new Error(data?.error || t('failedToSendMessage'))
         }
         const fwd = data?.forward || data?.message?.metadata?.forwardInfo
         if (fwd?.attempted && !fwd?.delivered) {
-          setContinueError(`Message saved but not delivered: ${fwd.reason || 'unknown'}`)
+          setContinueError(t('messageSavedNotDelivered', { reason: fwd.reason || t('reasonUnknown') }))
         }
         setContinuePrompt('')
         // Refresh transcript after a short delay to capture the response
@@ -534,7 +582,7 @@ function SessionConversationView({
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
-          throw new Error(data?.error || 'Failed to continue session')
+          throw new Error(data?.error || t('failedToContinueSession'))
         }
         setContinuePrompt('')
         if (typeof data?.reply === 'string' && data.reply.trim()) {
@@ -543,7 +591,7 @@ function SessionConversationView({
         onRefreshTranscript()
       }
     } catch (err) {
-      setContinueError(err instanceof Error ? err.message : 'Failed to continue session')
+      setContinueError(err instanceof Error ? err.message : t('failedToContinueSession'))
     } finally {
       setContinueBusy(false)
     }
@@ -560,7 +608,7 @@ function SessionConversationView({
         colorTag: colorDraft || undefined,
       })
     } catch (err) {
-      setPrefError(err instanceof Error ? err.message : 'Failed to save preferences')
+      setPrefError(err instanceof Error ? err.message : t('failedToSavePreferences'))
     } finally {
       setPrefBusy(false)
     }
@@ -579,26 +627,26 @@ function SessionConversationView({
             />
           )}
           <span className={`rounded-full px-2 py-0.5 text-[10px] ${session.active ? 'bg-green-500/20 text-green-300' : 'bg-muted text-muted-foreground'}`}>
-            {session.active ? 'active' : 'idle'}
+            {session.active ? t('sessionActive') : t('sessionIdle')}
           </span>
           <span className="font-mono-tight">{getSessionKindLabel(session.sessionKind)}</span>
           {session.model && <span className="text-muted-foreground/60">{session.model}</span>}
           {session.tokens && <span className="text-muted-foreground/60">{session.tokens}</span>}
           {session.workingDir && <span className="hidden truncate text-muted-foreground/50 sm:inline max-w-[200px]">{session.workingDir}</span>}
-          {session.age && <span className="text-muted-foreground/40">{session.age} ago</span>}
+          {session.age && <span className="text-muted-foreground/40">{t('ageAgo', { age: session.age })}</span>}
         </div>
 
         {/* Collapsible settings */}
         {!isGatewaySession && (
           <details className="mt-2">
             <summary className="cursor-pointer select-none text-[10px] uppercase tracking-wider text-muted-foreground/60 hover:text-muted-foreground/80">
-              Settings
+              {t('sessionSettings')}
             </summary>
             <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_120px_auto]">
               <input
                 value={nameDraft}
                 onChange={(e) => setNameDraft(e.target.value)}
-                placeholder="Rename session"
+                placeholder={t('renameSession')}
                 maxLength={80}
                 className="h-7 rounded border border-border/60 bg-surface-1 px-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
               />
@@ -607,15 +655,15 @@ function SessionConversationView({
                 onChange={(e) => setColorDraft(e.target.value)}
                 className="h-7 rounded border border-border/60 bg-surface-1 px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/30"
               >
-                <option value="">No color</option>
-                <option value="slate">Slate</option>
-                <option value="blue">Blue</option>
-                <option value="green">Green</option>
-                <option value="amber">Amber</option>
-                <option value="red">Red</option>
-                <option value="purple">Purple</option>
-                <option value="pink">Pink</option>
-                <option value="teal">Teal</option>
+                <option value="">{t('noColor')}</option>
+                <option value="slate">{t('colorSlate')}</option>
+                <option value="blue">{t('colorBlue')}</option>
+                <option value="green">{t('colorGreen')}</option>
+                <option value="amber">{t('colorAmber')}</option>
+                <option value="red">{t('colorRed')}</option>
+                <option value="purple">{t('colorPurple')}</option>
+                <option value="pink">{t('colorPink')}</option>
+                <option value="teal">{t('colorTeal')}</option>
               </select>
               <Button
                 onClick={handleSavePrefs}
@@ -624,7 +672,7 @@ function SessionConversationView({
                 disabled={prefBusy || !session.prefKey || !hasPrefChanges}
                 className="h-7 px-3 text-xs"
               >
-                {prefBusy ? 'Saving...' : 'Save'}
+                {prefBusy ? t('saving') : t('save')}
               </Button>
             </div>
             {prefError && <div className="mt-2 text-xs text-red-400">{prefError}</div>}
@@ -634,23 +682,7 @@ function SessionConversationView({
 
       {/* Transcript */}
       <div ref={transcriptScrollRef} className="flex-1 overflow-y-auto font-mono-tight py-2">
-        {loading && (
-          <div className="space-y-2 px-4">
-            <div className="h-4 w-3/4 animate-pulse rounded bg-surface-1/60" />
-            <div className="h-4 w-1/2 animate-pulse rounded bg-surface-1/60" />
-            <div className="h-4 w-2/3 animate-pulse rounded bg-surface-1/60" />
-            <div className="text-xs text-muted-foreground/50">Loading transcript...</div>
-          </div>
-        )}
-        {!loading && error && (
-          <div className="px-4 text-xs text-red-400">{error}</div>
-        )}
-        {!loading && !error && messages.length === 0 && (
-          <div className="px-4 text-xs text-muted-foreground">
-            {isGatewaySession ? 'No messages loaded for this gateway session.' : 'No transcript snippets found for this session.'}
-          </div>
-        )}
-        {!loading && !error && messages.length > 0 && (
+        {messages.length > 0 && (
           <div className="space-y-0">
             {messages.map((msg, idx) => (
               <SessionMessage
@@ -659,6 +691,28 @@ function SessionConversationView({
                 showTimestamp={shouldShowTimestamp(msg, messages[idx - 1])}
               />
             ))}
+          </div>
+        )}
+
+        {loading && messages.length === 0 && (
+          <div className="space-y-2 px-4">
+            <div className="h-4 w-3/4 animate-pulse rounded bg-surface-1/60" />
+            <div className="h-4 w-1/2 animate-pulse rounded bg-surface-1/60" />
+            <div className="h-4 w-2/3 animate-pulse rounded bg-surface-1/60" />
+            <div className="text-xs text-muted-foreground/50">{t('loadingTranscript')}</div>
+          </div>
+        )}
+        {error && messages.length === 0 && (
+          <div className="px-4 text-xs text-red-400">{error}</div>
+        )}
+        {error && messages.length > 0 && (
+          <div className="px-4 py-1 text-[10px] text-red-400/70 border-t border-red-500/10 bg-red-500/5 mt-2">
+            {t('failedToUpdateTranscript')}: {error}
+          </div>
+        )}
+        {!loading && !error && messages.length === 0 && (
+          <div className="px-4 text-xs text-muted-foreground">
+            {isGatewaySession ? t('noGatewayMessages') : t('noTranscriptSnippets')}
           </div>
         )}
       </div>
@@ -676,7 +730,7 @@ function SessionConversationView({
                 void handleContinueSession()
               }
             }}
-            placeholder={isGatewaySession ? 'Send message to this agent session...' : 'Send prompt to this local session...'}
+            placeholder={isGatewaySession ? t('sendMessageToSession') : t('sendPromptToLocalSession')}
             className="h-7 flex-1 rounded border border-border/40 bg-surface-1 px-2 font-mono-tight text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/30"
           />
           <Button
@@ -686,7 +740,7 @@ function SessionConversationView({
             disabled={continueBusy || !continuePrompt.trim()}
             className="h-7 px-3 text-xs"
           >
-            {continueBusy ? '...' : 'Send'}
+            {continueBusy ? '...' : t('send')}
           </Button>
         </div>
         {continueError && <div className="mt-1 text-xs text-red-400">{continueError}</div>}
@@ -701,7 +755,7 @@ function SessionConversationView({
 }
 
 /** Inline toast indicators for compaction and model fallback events */
-function ChatIndicators({ notifications }: { notifications: Array<{ id: number; type: string; title: string; message: string; created_at: number }> }) {
+function ChatIndicators({ notifications, compactionLabel, fallbackLabel }: { notifications: Array<{ id: number; type: string; title: string; message: string; created_at: number }>; compactionLabel: string; fallbackLabel: string }) {
   const TOAST_DURATION_MS = 8000
   const now = Math.floor(Date.now() / 1000)
 
@@ -730,7 +784,7 @@ function ChatIndicators({ notifications }: { notifications: Array<{ id: number; 
                 : 'bg-surface-1 text-muted-foreground border border-border/30'
             }`}
           >
-            <span className="font-medium">{toast.title}</span>
+            <span className="font-medium">{isCompaction ? compactionLabel : isFallback ? fallbackLabel : toast.title}</span>
             <span className="text-current/70 truncate">{toast.message}</span>
           </div>
         )
@@ -760,15 +814,44 @@ function AgentAvatar({ name, size = 'md' }: { name: string; size?: 'sm' | 'md' }
   )
 }
 
-function getConversationStatus(agents: Array<{ name: string; status: string }>, conversationId: string): string {
+function getConversationStatus(agents: Array<{ name: string; status: string }>, conversationId: string, labels: {
+  localClaude: string
+  localCodex: string
+  localHermes: string
+  gateway: string
+  unknown: string
+  online: string
+  offline: string
+}): string {
   if (conversationId.startsWith('session:')) {
-    if (conversationId.includes('claude-code')) return 'Local Claude session'
-    if (conversationId.includes('codex-cli')) return 'Local Codex session'
-    if (conversationId.includes('hermes')) return 'Local Hermes session'
-    return 'Gateway session'
+    if (conversationId.includes('claude-code')) return labels.localClaude
+    if (conversationId.includes('codex-cli')) return labels.localCodex
+    if (conversationId.includes('hermes')) return labels.localHermes
+    return labels.gateway
   }
   const name = conversationId.replace('agent_', '')
   const agent = agents.find(a => a.name.toLowerCase() === name.toLowerCase())
-  if (!agent) return 'Unknown'
-  return agent.status === 'idle' || agent.status === 'busy' ? 'Online' : 'Offline'
+  if (!agent) return labels.unknown
+  return agent.status === 'idle' || agent.status === 'busy' ? labels.online : labels.offline
+}
+
+function shouldRefreshSelectedSession(
+  session: NonNullable<Conversation['session']>,
+  detail?: SessionRealtimePayload
+): boolean {
+  if (!detail) return true
+
+  if (detail.sessionKind && detail.sessionKind !== session.sessionKind) return false
+
+  const inferredKind = sessionKindFromSource(detail.source)
+  if (!detail.sessionKind && inferredKind && inferredKind !== session.sessionKind) return false
+
+  if (detail.sessionKey && session.sessionKey && detail.sessionKey !== session.sessionKey) return false
+
+  // Gateway and Codex session IDs are stable enough to filter precisely.
+  if ((detail.source === 'gateway' || detail.source === 'codex') && detail.sessionId && detail.sessionId !== session.sessionId) {
+    return false
+  }
+
+  return true
 }

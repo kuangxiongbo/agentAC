@@ -1,7 +1,7 @@
 {
   "name": "mission-control",
   "version": "2.0.1",
-  "description": "OpenClaw Mission Control — open-source agent orchestration dashboard",
+  "description": "OpenClaw E-AgentCenter — open-source agent orchestration dashboard",
   "scripts": {
     "verify:node": "node scripts/check-node-version.mjs",
     "api:parity": "node scripts/check-api-contract-parity.mjs --root . --openapi openapi.json --ignore-file scripts/api-contract-parity.ignore",

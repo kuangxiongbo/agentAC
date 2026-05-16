@@ -85,6 +85,13 @@ function initializeSchema() {
         }).catch(() => {
           // Silent - scheduler is optional
         });
+
+        // Start remote server bridge to sync with master central server
+        import('./remote-server-bridge').then(({ startRemoteBridge }) => {
+          startRemoteBridge();
+        }).catch(() => {
+          // Silent
+        });
       }
     }
 
@@ -226,6 +233,9 @@ export interface Agent {
   created_at: number;
   updated_at: number;
   config?: string; // JSON string
+  node_id?: string;
+  framework?: string;
+  parent_id?: number;
 }
 
 export interface Comment {

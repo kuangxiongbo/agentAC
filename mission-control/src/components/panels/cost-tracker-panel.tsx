@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { createClientLogger } from '@/lib/client-logger'
 import {
   PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -91,7 +91,7 @@ type Timeframe = 'hour' | 'day' | 'week' | 'month'
 
 export function CostTrackerPanel() {
   const t = useTranslations('costTracker')
-  const { sessions } = useMissionControl()
+  const { sessions } = useAgentCenterStore()
 
   const [view, setView] = useState<View>('overview')
   const [timeframe, setTimeframe] = useState<Timeframe>('day')

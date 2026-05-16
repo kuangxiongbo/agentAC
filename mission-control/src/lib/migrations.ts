@@ -1410,7 +1410,164 @@ const migrations: Migration[] = [
         )
       `)
     }
-  }
+  },
+  {
+    id: '049_remote_task_sync',
+    up: (db) => {
+      const taskCols = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name: string }>
+      if (!taskCols.some(c => c.name === 'remote_id')) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN remote_id TEXT`)
+      }
+      if (!taskCols.some(c => c.name === 'remote_notified')) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN remote_notified INTEGER`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_remote_id ON tasks(remote_id)`)
+    }
+  },
+  {
+    id: '050_message_sync',
+    up: (db) => {
+      const msgCols = db.prepare(`PRAGMA table_info(messages)`).all() as Array<{ name: string }>
+      if (!msgCols.some(c => c.name === 'synced')) {
+        db.exec(`ALTER TABLE messages ADD COLUMN synced INTEGER NOT NULL DEFAULT 0`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_synced ON messages(synced)`)
+    }
+  },
+  {
+    id: '051_agent_node_id',
+    up: (db) => {
+      const agentCols = db.prepare(`PRAGMA table_info(agents)`).all() as Array<{ name: string }>
+      if (!agentCols.some(c => (c as any).name === 'node_id')) {
+        db.exec(`ALTER TABLE agents ADD COLUMN node_id TEXT`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_node_id ON agents(node_id)`)
+    }
+  },
+  {
+    id: '052_agent_framework',
+    up: (db) => {
+      // Add framework column to distinguish agent types (OpenClaw, Claude, Cursor, etc.)
+      const agentCols = db.prepare(`PRAGMA table_info(agents)`).all() as Array<{ name: string }>
+      if (!agentCols.some(c => (c as any).name === 'framework')) {
+        db.exec(`ALTER TABLE agents ADD COLUMN framework TEXT DEFAULT 'openclaw'`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_framework ON agents(framework)`)
+    }
+  },
+  {
+    id: '053_agent_hierarchy',
+    up: (db) => {
+      // Add parent_id for hierarchical agents (sub-agents)
+      const agentCols = db.prepare(`PRAGMA table_info(agents)`).all() as Array<{ name: string }>
+      if (!agentCols.some(c => (c as any).name === 'parent_id')) {
+        db.exec(`ALTER TABLE agents ADD COLUMN parent_id INTEGER`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_agents_parent_id ON agents(parent_id)`)
+    }
+  },
+  {
+    id: '054_sync_clients',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sync_clients (
+          client_id TEXT PRIMARY KEY,
+          client_name TEXT NOT NULL,
+          agent_count INTEGER NOT NULL DEFAULT 0,
+          last_seen INTEGER NOT NULL DEFAULT (unixepoch()),
+          last_sync_source TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_clients_last_seen ON sync_clients(last_seen)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_clients_name ON sync_clients(client_name)`)
+    }
+  },
+  {
+    id: '055_sync_sessions',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sync_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          client_id TEXT NOT NULL,
+          client_name TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          session_key TEXT,
+          session_kind TEXT NOT NULL,
+          runtime_group TEXT,
+          agent TEXT,
+          model TEXT,
+          tokens TEXT,
+          age TEXT,
+          active INTEGER NOT NULL DEFAULT 0,
+          start_time INTEGER,
+          last_activity INTEGER,
+          working_dir TEXT,
+          last_user_prompt TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          UNIQUE(client_id, session_kind, session_id)
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_sessions_client_id ON sync_sessions(client_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_sessions_last_activity ON sync_sessions(last_activity)`)
+    }
+  },
+  {
+    id: '056_sync_skills',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sync_skills (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          client_id TEXT NOT NULL,
+          client_name TEXT NOT NULL,
+          name TEXT NOT NULL,
+          source TEXT NOT NULL,
+          path TEXT NOT NULL,
+          description TEXT,
+          registry_slug TEXT,
+          security_status TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          UNIQUE(client_id, source, name)
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_skills_client_id ON sync_skills(client_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_skills_source ON sync_skills(source)`)
+    }
+  },
+  {
+    id: '057_sync_memory_agents',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sync_memory_agents (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          client_id TEXT NOT NULL,
+          client_name TEXT NOT NULL,
+          agent_name TEXT NOT NULL,
+          db_size INTEGER NOT NULL DEFAULT 0,
+          total_chunks INTEGER NOT NULL DEFAULT 0,
+          total_files INTEGER NOT NULL DEFAULT 0,
+          files_json TEXT NOT NULL DEFAULT '[]',
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          UNIQUE(client_id, agent_name)
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_memory_agents_client_id ON sync_memory_agents(client_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_memory_agents_agent_name ON sync_memory_agents(agent_name)`)
+    }
+  },
+  {
+    id: '058_users_portal_tenant_role',
+    up(db: Database.Database) {
+      const cols = db.prepare(`PRAGMA table_info(users)`).all() as Array<{ name: string }>
+      if (!cols.some((c) => c.name === 'portal_tenant_role')) {
+        db.exec(`ALTER TABLE users ADD COLUMN portal_tenant_role TEXT`)
+      }
+    },
+  },
 ]
 
 export function runMigrations(db: Database.Database) {

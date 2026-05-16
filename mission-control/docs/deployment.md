@@ -81,7 +81,27 @@ docker compose up          # with gateway connectivity
 docker compose --profile standalone up   # without gateway (standalone mode)
 ```
 
-Or build and run manually:
+### 1Panel / 私有镜像编排
+
+仓库提供 **`deploy/docker-compose.1panel.yml`** 与 **`deploy/.env.1panel.example`**（说明见 **`deploy/README.md`**）：适合推镜像到云仓库后在 1Panel 用 Compose 部署，已包含数据卷、健康检查与 `host.docker.internal`。
+
+### Multi-architecture image (amd64 + arm64)
+
+To publish one tag that works on **Intel/AMD (linux/amd64)** and **ARM64 (linux/arm64)** servers, use **Docker Buildx** from the `mission-control/` directory:
+
+```bash
+docker login ghcr.io   # or your registry
+export MC_IMAGE=ghcr.io/your-org/agentcenter:$(node -p "require('./package.json').version")
+export MC_IMAGE_LATEST=ghcr.io/your-org/agentcenter:latest   # optional
+export MC_DOCKER_PUSH=1
+bash scripts/docker-buildx-multiarch.sh
+```
+
+The script creates a `docker-container` builder (with QEMU) if missing, then builds `--platform linux/amd64,linux/arm64` and **pushes** a manifest list. `pnpm docker:multiarch` runs the same script (set the `MC_*` env vars first).
+
+For a **single** platform loaded into the local Docker engine (faster local smoke test), set `MC_DOCKER_LOAD=1` and `MC_DOCKER_PLATFORM=linux/amd64` (or `linux/arm64`) — multi-platform cannot use `--load`.
+
+Or build and run manually (single-arch image on the machine that built it):
 
 ```bash
 docker build -t mission-control .
@@ -97,7 +117,7 @@ docker run -p 3000:3000 \
 
 The Docker image:
 - Builds from `node:22-slim` with multi-stage build
-- Compiles `better-sqlite3` natively inside the container (Linux x64)
+- Compiles `better-sqlite3` natively inside the container for each target architecture (amd64 / arm64 when using the multi-arch build script)
 - Uses Next.js standalone output for minimal image size
 - Runs as non-root user `nextjs`
 - Exposes port 3000 (override with `-e PORT=8080`)
@@ -150,7 +170,7 @@ See `.env.example` for the full list. Key variables:
 
 ## Kubernetes Sidecar Deployment
 
-When running Mission Control alongside a gateway as containers in the same pod (sidecar pattern), agents are not discovered via the filesystem. Instead, use the gateway's agent registration API.
+When running E-AgentCenter alongside a gateway as containers in the same pod (sidecar pattern), agents are not discovered via the filesystem. Instead, use the gateway's agent registration API.
 
 ### Architecture
 
@@ -304,7 +324,7 @@ Ensure only one instance is running against the same `.data/` directory. SQLite 
 
 ### "Gateway error: origin not allowed"
 
-Your gateway is rejecting the Mission Control browser origin. Add the Control UI origin
+Your gateway is rejecting the E-AgentCenter browser origin. Add the Control UI origin
 to your gateway config allowlist, for example:
 
 ```json
@@ -317,12 +337,12 @@ to your gateway config allowlist, for example:
 }
 ```
 
-Then restart the gateway and reconnect from Mission Control.
+Then restart the gateway and reconnect from E-AgentCenter.
 
 ### "Gateway error: device identity required"
 
 Device identity signing uses WebCrypto and requires a secure browser context.
-Open Mission Control over HTTPS (or localhost), then reconnect.
+Open E-AgentCenter over HTTPS (or localhost), then reconnect.
 
 ### "Gateway shows offline on VPS deployment"
 
@@ -334,7 +354,7 @@ Quick option:
 NEXT_PUBLIC_GATEWAY_OPTIONAL=true
 ```
 
-This runs Mission Control in standalone mode (core features available, live gateway streams unavailable).
+This runs E-AgentCenter in standalone mode (core features available, live gateway streams unavailable).
 
 Production option: reverse-proxy gateway WebSocket over 443.
 
@@ -357,7 +377,7 @@ Then point UI to:
 NEXT_PUBLIC_GATEWAY_URL=wss://your-domain.com/gateway-ws
 ```
 
-Mission Control now retries common reverse-proxy websocket paths (`/gateway-ws`, `/gw`) automatically when root-path handshake fails, but setting `NEXT_PUBLIC_GATEWAY_URL` is still recommended for deterministic production behavior.
+E-AgentCenter now retries common reverse-proxy websocket paths (`/gateway-ws`, `/gw`) automatically when root-path handshake fails, but setting `NEXT_PUBLIC_GATEWAY_URL` is still recommended for deterministic production behavior.
 
 ## Next Steps
 

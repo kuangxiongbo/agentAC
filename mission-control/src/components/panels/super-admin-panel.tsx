@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 
 type SuperTab = 'tenants' | 'jobs' | 'events'
 
@@ -84,7 +84,7 @@ const JOB_PAGE_SIZE = 8
 
 export function SuperAdminPanel() {
   const t = useTranslations('superAdmin')
-  const { currentUser, dashboardMode } = useMissionControl()
+  const { currentUser, dashboardMode } = useAgentCenterStore()
   const isLocal = dashboardMode === 'local'
 
   const [tenants, setTenants] = useState<TenantRow[]>([])
@@ -170,7 +170,7 @@ export function SuperAdminPanel() {
           tenantRows = [{
             id: -1,
             slug: 'local-system',
-            display_name: 'Local Mission Control',
+            display_name: 'Local E-Agent-Center',
             linux_user: currentUser?.username || 'local',
             created_by: 'local',
             owner_gateway: primaryGateway?.name || 'local',
@@ -214,7 +214,7 @@ export function SuperAdminPanel() {
               id,
               tenant_id: -1,
               tenant_slug: 'local-system',
-              tenant_display_name: 'Local Mission Control',
+              tenant_display_name: 'Local E-Agent-Center',
               job_type: 'automation',
               status,
               dry_run: 1,

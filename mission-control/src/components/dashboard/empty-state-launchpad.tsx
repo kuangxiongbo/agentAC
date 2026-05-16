@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 
 interface RuntimeStatus {
@@ -16,7 +17,9 @@ interface Props {
 }
 
 export function EmptyStateLaunchpad({ agentCount, taskCount, onNavigate }: Props) {
+  const t = useTranslations('dashboardOverview')
   const [runtimes, setRuntimes] = useState<RuntimeStatus[]>([])
+  const [centralMode, setCentralMode] = useState(false)
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
@@ -26,16 +29,19 @@ export function EmptyStateLaunchpad({ agentCount, taskCount, onNavigate }: Props
       .then(d => {
         if (d?.runtimes) {
           setRuntimes(d.runtimes)
+          setCentralMode(d.centralMode === true)
           return
         }
         // Fallback: use capabilities endpoint for detection
         return fetch('/api/status?action=capabilities')
           .then(r => r.ok ? r.json() : {})
           .then((caps: Record<string, unknown>) => {
+            const isCentralMode = caps.centralMode === true
+            setCentralMode(isCentralMode)
             const detected: RuntimeStatus[] = []
-            if (caps.openclawHome) detected.push({ id: 'openclaw', name: 'OpenClaw', installed: true })
-            if (caps.hermesInstalled) detected.push({ id: 'hermes', name: 'Hermes Agent', installed: true })
-            if (caps.claudeHome) detected.push({ id: 'claude', name: 'Claude Code', installed: true })
+            if (!isCentralMode && caps.openclawHome) detected.push({ id: 'openclaw', name: 'OpenClaw', installed: true })
+            if (!isCentralMode && caps.hermesInstalled) detected.push({ id: 'hermes', name: 'Hermes Agent', installed: true })
+            if (!isCentralMode && caps.claudeHome) detected.push({ id: 'claude', name: 'Claude Code', installed: true })
             setRuntimes(detected)
           })
       })
@@ -53,80 +59,76 @@ export function EmptyStateLaunchpad({ agentCount, taskCount, onNavigate }: Props
   // Don't flash before data loads
   if (!loaded) return null
 
-  const completedCount = (hasRuntimes ? 1 : 0) + (hasAgents ? 1 : 0) + (hasTasks ? 1 : 0)
+  const totalSteps = centralMode ? 2 : 3
+  const completedCount = (centralMode ? 0 : (hasRuntimes ? 1 : 0)) + (hasAgents ? 1 : 0) + (hasTasks ? 1 : 0)
 
   return (
     <div className="rounded-xl border border-border bg-card p-6">
       <div className="text-center mb-6">
-        <h2 className="text-lg font-semibold text-foreground mb-1">Launch Sequence</h2>
-        <p className="text-sm text-muted-foreground">
-          Complete each step to bring your station online.
-        </p>
+        <h2 className="text-lg font-semibold text-foreground mb-1">{t('launchTitle')}</h2>
+        <p className="text-sm text-muted-foreground">{t('launchDescription')}</p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Step 1: Runtimes */}
-        <StepCard
-          step={1}
-          title="Agent Runtimes"
-          done={hasRuntimes}
-          active={!hasRuntimes}
-          doneContent={
-            <div className="space-y-1">
-              {installed.map(r => (
-                <div key={r.id} className="flex items-center gap-1.5 text-xs text-emerald-400/80">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                  {r.name}
-                </div>
-              ))}
-              <p className="text-2xs text-muted-foreground/50 mt-1">Installed and ready</p>
-            </div>
-          }
-          pendingContent={
-            <>
-              <p className="text-xs text-muted-foreground mb-3">
-                Install a runtime to run agents on this machine.
-              </p>
-              <Button
-                size="sm"
-                className="text-xs w-full bg-void-amber/20 text-void-amber border border-void-amber/30 hover:bg-void-amber/30"
-                onClick={() => onNavigate('settings')}
-              >
-                Install Runtimes
-              </Button>
-            </>
-          }
-        />
+        {!centralMode && (
+          <StepCard
+            step={1}
+            title={t('stepRuntimes')}
+            done={hasRuntimes}
+            active={!hasRuntimes}
+            doneContent={
+              <div className="space-y-1">
+                {installed.map(r => (
+                  <div key={r.id} className="flex items-center gap-1.5 text-xs text-emerald-400/80">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                    {r.name}
+                  </div>
+                ))}
+                <p className="text-2xs text-muted-foreground/50 mt-1">{t('installedReady')}</p>
+              </div>
+            }
+            pendingContent={
+              <>
+                <p className="text-xs text-muted-foreground mb-3">{t('installRuntimeHint')}</p>
+                <Button
+                  size="sm"
+                  className="text-xs w-full bg-void-amber/20 text-void-amber border border-void-amber/30 hover:bg-void-amber/30"
+                  onClick={() => onNavigate('settings')}
+                >
+                  {t('installRuntimes')}
+                </Button>
+              </>
+            }
+          />
+        )}
 
         {/* Step 2: Agent */}
         <StepCard
-          step={2}
-          title="Dock an Agent"
+          step={centralMode ? 1 : 2}
+          title={t('stepAgent')}
           done={hasAgents}
-          active={hasRuntimes && !hasAgents}
+          active={(centralMode || hasRuntimes) && !hasAgents}
           doneContent={
             <>
-              <p className="text-xs text-emerald-400/80 mb-1">Agent registered</p>
+              <p className="text-xs text-emerald-400/80 mb-1">{t('agentRegistered')}</p>
               <button
                 className="text-2xs text-muted-foreground hover:text-foreground"
                 onClick={() => onNavigate('agents')}
               >
-                View fleet →
+                {t('viewFleet')}
               </button>
             </>
           }
           pendingContent={
             <>
-              <p className="text-xs text-muted-foreground mb-3">
-                Register your first agent. Choose a template and configure its capabilities.
-              </p>
+              <p className="text-xs text-muted-foreground mb-3">{t('registerAgentHint')}</p>
               <Button
                 size="sm"
                 className="text-xs w-full bg-void-amber/20 text-void-amber border border-void-amber/30 hover:bg-void-amber/30"
                 disabled={!hasRuntimes}
                 onClick={() => onNavigate('agents')}
               >
-                Create Agent
+                {t('createAgent')}
               </Button>
             </>
           }
@@ -134,33 +136,31 @@ export function EmptyStateLaunchpad({ agentCount, taskCount, onNavigate }: Props
 
         {/* Step 3: Task */}
         <StepCard
-          step={3}
-          title="Dispatch a Task"
+          step={centralMode ? 2 : 3}
+          title={t('stepTask')}
           done={hasTasks}
           active={hasAgents && !hasTasks}
           doneContent={
             <>
-              <p className="text-xs text-emerald-400/80 mb-1">Tasks in queue</p>
+              <p className="text-xs text-emerald-400/80 mb-1">{t('tasksQueued')}</p>
               <button
                 className="text-2xs text-muted-foreground hover:text-foreground"
                 onClick={() => onNavigate('tasks')}
               >
-                Open task board →
+                {t('openTaskBoard')}
               </button>
             </>
           }
           pendingContent={
             <>
-              <p className="text-xs text-muted-foreground mb-3">
-                Create a task and assign it to your agent.
-              </p>
+              <p className="text-xs text-muted-foreground mb-3">{t('createTaskHint')}</p>
               <Button
                 size="sm"
                 className="text-xs w-full bg-void-cyan/20 text-void-cyan border border-void-cyan/30 hover:bg-void-cyan/30"
                 disabled={!hasAgents}
                 onClick={() => onNavigate('tasks')}
               >
-                Create Task
+                {t('createTask')}
               </Button>
             </>
           }
@@ -170,14 +170,14 @@ export function EmptyStateLaunchpad({ agentCount, taskCount, onNavigate }: Props
       {/* Animated progress bar */}
       <div className="mt-5 flex items-center gap-3">
         <div className="flex-1 h-1.5 rounded-full bg-border/20 overflow-hidden relative">
-          {completedCount < 3 && (
+          {completedCount < totalSteps && (
             <div className="absolute inset-0 bg-gradient-to-r from-void-amber/10 to-void-cyan/10 animate-pulse" />
           )}
           <div
             className="h-full rounded-full relative overflow-hidden transition-all duration-1000 ease-out"
             style={{
-              width: `${(completedCount / 3) * 100}%`,
-              background: completedCount === 3
+              width: `${(completedCount / totalSteps) * 100}%`,
+              background: completedCount === totalSteps
                 ? 'linear-gradient(90deg, rgb(16 185 129) 0%, rgb(52 211 153) 100%)'
                 : 'linear-gradient(90deg, var(--void-amber) 0%, var(--void-cyan) 100%)',
             }}
@@ -186,9 +186,9 @@ export function EmptyStateLaunchpad({ agentCount, taskCount, onNavigate }: Props
           </div>
         </div>
         <span className={`text-2xs tabular-nums font-mono transition-colors duration-500 ${
-          completedCount === 3 ? 'text-emerald-400' : 'text-muted-foreground/60'
+          completedCount === totalSteps ? 'text-emerald-400' : 'text-muted-foreground/60'
         }`}>
-          {completedCount}/3
+          {completedCount}/{totalSteps}
         </span>
       </div>
     </div>

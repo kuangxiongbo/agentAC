@@ -1,7 +1,7 @@
 export interface DashboardWidget {
   id: string
-  label: string
-  description: string
+  labelKey: string
+  descriptionKey: string
   category: 'health' | 'sessions' | 'tasks' | 'metrics' | 'integrations' | 'events'
   modes: ('local' | 'full')[]
   defaultSize: 'sm' | 'md' | 'lg' | 'full'
@@ -11,8 +11,8 @@ export interface DashboardWidget {
 export const WIDGET_CATALOG: DashboardWidget[] = [
   {
     id: 'metric-cards',
-    label: 'Key Metrics',
-    description: 'Top-line stats — sessions, load, tokens, cost',
+    labelKey: 'catalogMetricCardsLabel',
+    descriptionKey: 'catalogMetricCardsDescription',
     category: 'metrics',
     modes: ['local', 'full'],
     defaultSize: 'full',
@@ -20,8 +20,8 @@ export const WIDGET_CATALOG: DashboardWidget[] = [
   },
   {
     id: 'runtime-health',
-    label: 'Runtime Health',
-    description: 'Local OS, Claude, Codex, and MC core health',
+    labelKey: 'catalogRuntimeHealthLabel',
+    descriptionKey: 'catalogRuntimeHealthDescription',
     category: 'health',
     modes: ['local'],
     defaultSize: 'md',
@@ -29,8 +29,8 @@ export const WIDGET_CATALOG: DashboardWidget[] = [
   },
   {
     id: 'gateway-health',
-    label: 'Gateway Health',
-    description: 'Gateway golden signals — traffic, errors, saturation',
+    labelKey: 'catalogGatewayHealthLabel',
+    descriptionKey: 'catalogGatewayHealthDescription',
     category: 'health',
     modes: ['full'],
     defaultSize: 'md',
@@ -38,8 +38,8 @@ export const WIDGET_CATALOG: DashboardWidget[] = [
   },
   {
     id: 'session-workbench',
-    label: 'Session Workbench',
-    description: 'Live session list with activity indicators',
+    labelKey: 'catalogSessionWorkbenchLabel',
+    descriptionKey: 'catalogSessionWorkbenchDescription',
     category: 'sessions',
     modes: ['local', 'full'],
     defaultSize: 'md',
@@ -47,8 +47,8 @@ export const WIDGET_CATALOG: DashboardWidget[] = [
   },
   {
     id: 'event-stream',
-    label: 'Event Stream',
-    description: 'Merged log stream from all sources',
+    labelKey: 'catalogEventStreamLabel',
+    descriptionKey: 'catalogEventStreamDescription',
     category: 'events',
     modes: ['local', 'full'],
     defaultSize: 'md',
@@ -56,8 +56,8 @@ export const WIDGET_CATALOG: DashboardWidget[] = [
   },
   {
     id: 'task-flow',
-    label: 'Task Flow',
-    description: 'Task status counts — inbox, assigned, in progress, review, done',
+    labelKey: 'catalogTaskFlowLabel',
+    descriptionKey: 'catalogTaskFlowDescription',
     category: 'tasks',
     modes: ['local', 'full'],
     defaultSize: 'sm',
@@ -65,8 +65,8 @@ export const WIDGET_CATALOG: DashboardWidget[] = [
   },
   {
     id: 'github-signal',
-    label: 'GitHub Signal',
-    description: 'GitHub repo stats — issues, stars, repos',
+    labelKey: 'catalogGithubSignalLabel',
+    descriptionKey: 'catalogGithubSignalDescription',
     category: 'integrations',
     modes: ['local'],
     defaultSize: 'sm',
@@ -74,8 +74,8 @@ export const WIDGET_CATALOG: DashboardWidget[] = [
   },
   {
     id: 'security-audit',
-    label: 'Security & Audit',
-    description: 'Audit events, login failures, notifications',
+    labelKey: 'catalogSecurityAuditLabel',
+    descriptionKey: 'catalogSecurityAuditDescription',
     category: 'events',
     modes: ['full'],
     defaultSize: 'sm',
@@ -83,8 +83,8 @@ export const WIDGET_CATALOG: DashboardWidget[] = [
   },
   {
     id: 'maintenance',
-    label: 'Maintenance & Backup',
-    description: 'Backup status, pipeline health',
+    labelKey: 'catalogMaintenanceLabel',
+    descriptionKey: 'catalogMaintenanceDescription',
     category: 'health',
     modes: ['full'],
     defaultSize: 'sm',
@@ -92,8 +92,8 @@ export const WIDGET_CATALOG: DashboardWidget[] = [
   },
   {
     id: 'quick-actions',
-    label: 'Quick Actions',
-    description: 'Navigation shortcuts to key panels',
+    labelKey: 'catalogQuickActionsLabel',
+    descriptionKey: 'catalogQuickActionsDescription',
     category: 'sessions',
     modes: ['local', 'full'],
     defaultSize: 'full',

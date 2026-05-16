@@ -1,8 +1,8 @@
-# Mission Control — Landing Page Handoff
+# E-AgentCenter — Landing Page Handoff
 
 > Last updated: 2026-03-07 | Version: 1.3.0 | Branch: `fix/refactor` (bb5029e)
 
-This document contains all copy, stats, features, and structure needed to build or update the Mission Control landing page. Everything below reflects the current state of the shipped product.
+This document contains all copy, stats, features, and structure needed to build or update the E-AgentCenter landing page. Everything below reflects the current state of the shipped product.
 
 ---
 

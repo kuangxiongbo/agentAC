@@ -66,6 +66,22 @@ const defaultMemoryDir = (() => {
 const resolvedGnapRepoPath =
   process.env.GNAP_REPO_PATH || path.join(configuredDataDir, '.gnap')
 
+// ---------------------------------------------------------------------------
+// Remote server bridge
+// MC_REMOTE_SERVER_URL  → Remote mission-control parent address.
+//                         Supports either:
+//                         - HTTP base URL, e.g. http://192.168.1.10:5000
+//                         - direct bridge WS URL, e.g. ws://192.168.1.10:5002
+// MC_REMOTE_SERVER_TOKEN → optional bearer token for authenticating to server
+// MC_REMOTE_RECONNECT_MS → reconnect delay (default: 5000ms)
+// ---------------------------------------------------------------------------
+export const REMOTE_SERVER_URL = (process.env.MC_REMOTE_SERVER_URL || '').trim()
+export const REMOTE_SERVER_TOKEN = (process.env.MC_REMOTE_SERVER_TOKEN || '').trim()
+export const REMOTE_RECONNECT_MS = Math.max(
+  1000,
+  parseInt(process.env.MC_REMOTE_RECONNECT_MS || '5000', 10) || 5000
+)
+
 export const config = {
   claudeHome:
     process.env.MC_CLAUDE_HOME ||
@@ -100,6 +116,12 @@ export const config = {
     autoSync: process.env.GNAP_AUTO_SYNC !== 'false',
     remoteUrl: process.env.GNAP_REMOTE_URL || '',
   },
+  // Central Server mode: only accepts remote data, disables all local monitoring and discovery
+  centralMode: process.env.MC_ENABLE_LOCAL_MONITORING === 'false',
+  // Enable local agent monitoring/heartbeat scanning (set MC_ENABLE_LOCAL_MONITORING=false for global server)
+  agentMonitoring: process.env.MC_ENABLE_LOCAL_MONITORING !== 'false',
+  // Disable authentication for local development or admin mode
+  authDisabled: process.env.MC_DISABLE_AUTH === 'true' || process.env.MISSION_CONTROL_DISABLE_AUTH === 'true',
   // Data retention (days). 0 = keep forever. Negative values are clamped to 0.
   retention: {
     activities: clampInt(Number(process.env.MC_RETAIN_ACTIVITIES_DAYS || '90'), 0, 3650, 90),

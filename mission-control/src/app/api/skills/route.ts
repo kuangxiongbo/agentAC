@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { requireRole } from '@/lib/auth'
 import { resolveWithin } from '@/lib/paths'
 import { checkSkillSecurity } from '@/lib/skill-registry'
+import { config } from '@/lib/config'
 
 interface SkillSummary {
   id: string
@@ -205,6 +206,10 @@ function getSkillsFromDB(): SkillSummary[] | null {
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+
+  if (config.centralMode) {
+    return NextResponse.json({ skills: [], groups: [], total: 0 })
+  }
 
   const roots = getSkillRoots()
   const { searchParams } = new URL(request.url)

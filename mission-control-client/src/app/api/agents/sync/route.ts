@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { syncAgentsFromConfig, previewSyncDiff } from '@/lib/agent-sync'
 import { syncLocalAgents } from '@/lib/local-agent-sync'
+import { syncRuntimeAgents } from '@/lib/runtime-agent-sync'
 import { logger } from '@/lib/logger'
 
 /**
@@ -18,8 +19,17 @@ export async function POST(request: NextRequest) {
 
   try {
     if (source === 'local') {
-      const result = await syncLocalAgents()
-      return NextResponse.json(result)
+      const [runtimeResult, localResult] = await Promise.all([
+        syncRuntimeAgents(auth.user.username),
+        syncLocalAgents(),
+      ])
+
+      return NextResponse.json({
+        ok: runtimeResult.created >= 0 && localResult.ok,
+        message: `${runtimeResult.message} | ${localResult.message}`,
+        runtime: runtimeResult,
+        local: localResult,
+      })
     }
 
     const result = await syncAgentsFromConfig(auth.user.username)

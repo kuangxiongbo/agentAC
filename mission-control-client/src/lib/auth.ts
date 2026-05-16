@@ -551,8 +551,8 @@ export function getUserFromRequest(request: Request): User | null {
   if (AUTH_DISABLED) {
     return {
       id: 1,
-      username: 'admin',
-      display_name: 'Administrator',
+      username: 'proxy-client',
+      display_name: 'Proxy Client',
       role: 'admin',
       workspace_id: 1,
       tenant_id: 1,
@@ -649,4 +649,3 @@ export function requireRole(
   }
   return { user }
 }
-

@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { createClientLogger } from '@/lib/client-logger'
 import { MemoryGraph } from './memory-graph'
 
@@ -111,7 +111,7 @@ export function MemoryBrowserPanel() {
     setMemoryContent,
     setMemoryFileLinks,
     setMemoryHealth
-  } = useMissionControl()
+  } = useAgentCenterStore()
   const isLocal = dashboardMode === 'local'
 
   const [isLoading, setIsLoading] = useState(false)

@@ -118,6 +118,7 @@ const endpoints: Endpoint[] = [
   { path: '/api/gateways/health', methods: ['GET'], description: 'Gateway health check', tag: 'Gateway', auth: 'viewer' },
   { path: '/api/gateway-config', methods: ['GET', 'PATCH'], description: 'Gateway configuration', tag: 'Gateway', auth: 'admin' },
   { path: '/api/connect', methods: ['POST'], description: 'WebSocket connection info', tag: 'Gateway', auth: 'operator' },
+  { path: '/api/server-sync/status', methods: ['GET'], description: 'Upstream sync diagnostics and bridge discovery', tag: 'Gateway', auth: 'viewer' },
 
   // ── GitHub ────────────────────────────────────────
   { path: '/api/github', methods: ['GET', 'POST'], description: 'GitHub issue sync', tag: 'GitHub', auth: 'viewer/operator' },

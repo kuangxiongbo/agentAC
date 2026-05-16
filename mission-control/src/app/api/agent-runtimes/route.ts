@@ -5,6 +5,7 @@ import { detectAllRuntimes, detectRuntime, startInstall, getInstallJob, getActiv
 import type { RuntimeId, DeploymentMode } from '@/lib/agent-runtimes'
 import { logAuditEvent } from '@/lib/db'
 import { logger } from '@/lib/logger'
+import { config } from '@/lib/config'
 
 const VALID_RUNTIMES = new Set<RuntimeId>(['openclaw', 'hermes', 'claude', 'codex'])
 const VALID_MODES = new Set<DeploymentMode>(['local', 'docker'])
@@ -13,11 +14,15 @@ export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
+  const isDocker = existsSync('/.dockerenv')
+  if (config.centralMode) {
+    return NextResponse.json({ runtimes: [], activeJobs: [], isDocker, centralMode: true })
+  }
+
   const runtimes = detectAllRuntimes()
   const activeJobs = getActiveJobs()
-  const isDocker = existsSync('/.dockerenv')
 
-  return NextResponse.json({ runtimes, activeJobs, isDocker })
+  return NextResponse.json({ runtimes, activeJobs, isDocker, centralMode: false })
 }
 
 export async function POST(request: NextRequest) {
@@ -29,6 +34,10 @@ export async function POST(request: NextRequest) {
     body = await request.json()
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+  }
+
+  if (config.centralMode) {
+    return NextResponse.json({ error: 'Agent runtime management is disabled in Central Mode' }, { status: 409 })
   }
 
   const { action } = body

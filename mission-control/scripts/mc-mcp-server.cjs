@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /*
- Mission Control MCP Server (stdio transport)
+ E-AgentCenter MCP Server (stdio transport)
  - Zero dependencies (Node.js built-ins only)
  - JSON-RPC 2.0 over stdin/stdout
- - Wraps Mission Control REST API as MCP tools
+ - Wraps E-AgentCenter REST API as MCP tools
  - Add with: claude mcp add mission-control -- node /path/to/mc-mcp-server.cjs
 
  Environment:
@@ -78,7 +78,7 @@ const TOOLS = [
   // --- Agents ---
   {
     name: 'mc_list_agents',
-    description: 'List all agents registered in Mission Control',
+    description: 'List all agents registered in E-AgentCenter',
     inputSchema: { type: 'object', properties: {}, required: [] },
     handler: async () => api('GET', '/api/agents'),
   },
@@ -298,7 +298,7 @@ const TOOLS = [
   // --- Tasks ---
   {
     name: 'mc_list_tasks',
-    description: 'List all tasks in Mission Control',
+    description: 'List all tasks in E-AgentCenter',
     inputSchema: { type: 'object', properties: {}, required: [] },
     handler: async () => api('GET', '/api/tasks'),
   },
@@ -560,13 +560,13 @@ const TOOLS = [
   // --- Status ---
   {
     name: 'mc_health',
-    description: 'Check Mission Control health status (no auth required)',
+    description: 'Check E-AgentCenter health status (no auth required)',
     inputSchema: { type: 'object', properties: {}, required: [] },
     handler: async () => api('GET', '/api/status?action=health'),
   },
   {
     name: 'mc_dashboard',
-    description: 'Get a dashboard summary of the entire Mission Control system (agents, tasks, sessions, costs)',
+    description: 'Get a dashboard summary of the entire E-AgentCenter system (agents, tasks, sessions, costs)',
     inputSchema: { type: 'object', properties: {}, required: [] },
     handler: async () => api('GET', '/api/status?action=dashboard'),
   },
@@ -612,7 +612,7 @@ const TOOLS = [
   },
   {
     name: 'mc_create_run',
-    description: 'Report a new agent run to Mission Control (agent-run protocol)',
+    description: 'Report a new agent run to E-AgentCenter (agent-run protocol)',
     inputSchema: {
       type: 'object',
       properties: {

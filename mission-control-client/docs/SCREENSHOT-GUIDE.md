@@ -23,7 +23,7 @@ Screenshots should be updated when:
 
 ### Prerequisites
 
-- Mission Control running locally (`pnpm dev` or Docker)
+- E-AgentCenter running locally (`pnpm dev` or Docker)
 - Browser with at least 1440×900 viewport recommended
 
 ### Steps

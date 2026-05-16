@@ -1,11 +1,11 @@
 ---
 name: mission-control
-description: "Interact with Mission Control — AI agent orchestration dashboard. Use when registering agents, managing tasks, syncing skills, or querying agent/task status via MC APIs."
+description: "Interact with E-AgentCenter — AI agent orchestration dashboard. Use when registering agents, managing tasks, syncing skills, or querying agent/task status via MC APIs."
 ---
 
-# Mission Control Agent Skill
+# E-AgentCenter Agent Skill
 
-Mission Control (MC) is an AI agent orchestration dashboard with real-time SSE/WebSocket, a skill registry, framework adapters, and RBAC. This skill teaches agents how to interact with MC APIs programmatically.
+E-AgentCenter (MC) is an AI agent orchestration dashboard with real-time SSE/WebSocket, a skill registry, framework adapters, and RBAC. This skill teaches agents how to interact with MC APIs programmatically.
 
 ## Quick Start
 

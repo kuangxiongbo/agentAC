@@ -1,0 +1,71 @@
+# Mission Control — 1Panel / 生产编排推荐
+# 用法：在宿主机准备 .env（可由 .env.1panel.example 复制改名），与本文件同目录后执行：
+#   docker compose -f docker-compose.1panel.yml up -d
+# 1Panel：「容器」→ Compose 模板 → 选择本文件，填写环境变量或挂载 .env。
+
+services:
+  mission-control:
+    image: ${MC_IMAGE:-agentcenter:local-build}
+    container_name: ${MC_CONTAINER_NAME:-agentcenter}
+    restart: unless-stopped
+
+    ports:
+      - "${MC_PUBLISH_PORT:-3000}:3000"
+
+    env_file:
+      - path: ${MC_ENV_FILE:-.env}
+        required: false
+
+    environment:
+      PORT: "3000"
+      NODE_ENV: production
+      HOSTNAME: "0.0.0.0"
+
+    volumes:
+      # 必须：SQLite、tokens、自动生成密钥等
+      - mc_1panel_data:/app/.data
+      # 可选：若网关/OpenClaw 状态在宿主机，取消下行注释并改主机路径
+      # - ${OPENCLAW_HOST_PATH:-/root/.openclaw}:/run/openclaw:ro
+
+    networks:
+      - mc_net
+
+    # 与仓库 Dockerfile HEALTHCHECK 一致；便于 1Panel 展示健康状态
+    healthcheck:
+      test: ["CMD", "node", "/app/healthcheck.js"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+    # MC 容器访问宿主机上的网关（Linux 需 extra_hosts）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # 可选加固：根文件系统只读 + 临时可写区（若启动失败可先注释 read_only 排查）
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+
+    deploy:
+      resources:
+        limits:
+          memory: ${MC_MEMORY_LIMIT:-768M}
+          cpus: "${MC_CPU_LIMIT:-1.0}"
+        reservations:
+          memory: 256M
+
+networks:
+  mc_net:
+    driver: bridge
+
+volumes:
+  mc_1panel_data:

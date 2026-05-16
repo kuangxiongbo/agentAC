@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import os from 'node:os'
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
-import { buildMissionControlCsp, buildNonceRequestHeaders } from '@/lib/csp'
+import { buildAgentCenterCsp, buildNonceRequestHeaders } from '@/lib/csp'
 import { MC_SESSION_COOKIE_NAME, LEGACY_MC_SESSION_COOKIE_NAME } from '@/lib/session-cookie'
 
 /** Constant-time string comparison using Node.js crypto. */
@@ -19,6 +19,19 @@ function envFlag(name: string): boolean {
   if (raw === undefined) return false
   const v = String(raw).trim().toLowerCase()
   return v === '1' || v === 'true' || v === 'yes' || v === 'on'
+}
+
+/** Optional absolute URL of the server-side Mission Control `/login` (Zitadel, etc.). */
+function resolveServerMcLoginUrl(): string | null {
+  const raw = String(process.env.NEXT_PUBLIC_MC_AUTH_LOGIN_URL || '').trim()
+  if (!raw) return null
+  try {
+    const u = new URL(raw)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+    return u.toString()
+  } catch {
+    return null
+  }
 }
 
 function normalizeHostname(raw: string): string {
@@ -87,10 +100,12 @@ function hostMatches(pattern: string, hostname: string): boolean {
 function nextResponseWithNonce(request: NextRequest): { response: NextResponse; nonce: string } {
   const nonce = crypto.randomBytes(16).toString('base64')
   const googleEnabled = !!(process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID)
+  const isDev = process.env.NODE_ENV !== 'production'
   const requestHeaders = buildNonceRequestHeaders({
     headers: request.headers,
     nonce,
     googleEnabled,
+    isDev,
   })
   const response = NextResponse.next({
     request: {
@@ -108,8 +123,9 @@ function addSecurityHeaders(response: NextResponse, _request: NextRequest, nonce
   response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
 
   const googleEnabled = !!(process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID)
+  const isDev = process.env.NODE_ENV !== 'production'
   const effectiveNonce = nonce || crypto.randomBytes(16).toString('base64')
-  response.headers.set('Content-Security-Policy', buildMissionControlCsp({ nonce: effectiveNonce, googleEnabled }))
+  response.headers.set('Content-Security-Policy', buildAgentCenterCsp({ nonce: effectiveNonce, googleEnabled, isDev }))
 
   return response
 }
@@ -171,9 +187,14 @@ export function proxy(request: NextRequest) {
     }
   }
 
-  // Forbid login page in minimalist mode
+  // Client does not host login/registration — redirect /login to dashboard or server MC login.
   if (pathname === '/login') {
-    return addSecurityHeaders(NextResponse.redirect(new URL('/', request.url)), request)
+    const serverLogin = resolveServerMcLoginUrl()
+    if (serverLogin) {
+      return addSecurityHeaders(NextResponse.redirect(serverLogin), request)
+    }
+    const home = new URL('/', request.url)
+    return addSecurityHeaders(NextResponse.redirect(home), request)
   }
 
   // Allow setup, auth API, docs, and container health probe without session
@@ -200,3 +221,6 @@ export function proxy(request: NextRequest) {
 export const config = {
   matcher: ['/((?!_next/static|_next/image|favicon.ico|brand/).*)']
 }
+
+/** Next.js 16+ uses `src/proxy.ts` as the network middleware entry (do not add `src/middleware.ts`). */
+export default proxy

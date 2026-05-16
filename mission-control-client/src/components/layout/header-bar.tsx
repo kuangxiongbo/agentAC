@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
-import { useMissionControl, type ConnectionStatus } from '@/store'
+import { useAgentCenterStore, type ConnectionStatus } from '@/store'
 import { extractWsHost } from '@/lib/agent-card-helpers'
 import { useWebSocket } from '@/lib/websocket'
 import { useNavigateToPanel, usePrefetchPanel } from '@/lib/navigation'
@@ -43,7 +43,7 @@ const QUICK_NAV_COMMANDS: Array<{ panel: string; titleKey: string; title: string
 ]
 
 export function HeaderBar() {
-  const { connection, sessions, unreadNotificationCount, activeTenant, activeProject, dashboardMode } = useMissionControl()
+  const { connection, sessions, unreadNotificationCount, activeTenant, activeProject, dashboardMode } = useAgentCenterStore()
   const { isConnected, reconnect } = useWebSocket()
   const navigateToPanel = useNavigateToPanel()
   const prefetchPanel = usePrefetchPanel()
@@ -463,7 +463,7 @@ function ModeBadge({
   connection: ConnectionStatus
   onReconnect: () => void
 }) {
-  const { dashboardMode } = useMissionControl()
+  const { dashboardMode } = useAgentCenterStore()
   const th = useTranslations('header')
   const isLocal = dashboardMode === 'local'
   const [showTooltip, setShowTooltip] = useState(false)
@@ -472,7 +472,7 @@ function ModeBadge({
     return (
       <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-2xs bg-void-cyan/10 border border-void-cyan/25">
         <span className="w-1.5 h-1.5 rounded-full bg-void-cyan" />
-        <span className="font-medium text-void-cyan">{th('local')}</span>
+        <span className="font-medium text-void-cyan">{th('clientMode')}</span>
       </div>
     )
   }
@@ -517,7 +517,7 @@ function ModeBadge({
         } transition-all`}
       >
         <span className={`w-1.5 h-1.5 rounded-full ${dotClass}`} />
-        <span className={`font-medium ${textClass}`}>GW</span>
+        <span className={`font-medium ${textClass}`}>{th('serverModeShort')}</span>
         <span className={`font-mono ${textClass} opacity-80`}>{statusLabel}</span>
       </button>
 

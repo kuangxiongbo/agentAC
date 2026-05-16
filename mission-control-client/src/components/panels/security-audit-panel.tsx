@@ -4,7 +4,7 @@ import { useState, useCallback } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 import { useNavigateToPanel } from '@/lib/navigation'
 import {
@@ -195,7 +195,7 @@ function ScanCategoryRow({ label, icon, category, failingCount }: {
 
 export function SecurityAuditPanel() {
   const t = useTranslations('securityAudit')
-  const { setSecurityPosture } = useMissionControl()
+  const { setSecurityPosture } = useAgentCenterStore()
   const navigateToPanel = useNavigateToPanel()
 
   const [selectedTimeframe, setSelectedTimeframe] = useState<'hour' | 'day' | 'week' | 'month'>('day')

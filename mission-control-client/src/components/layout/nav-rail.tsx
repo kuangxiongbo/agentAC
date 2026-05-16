@@ -3,7 +3,7 @@
 import Image from 'next/image'
 import { useState, useEffect, useMemo } from 'react'
 import { useTranslations } from 'next-intl'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { useNavigateToPanel, usePrefetchPanel } from '@/lib/navigation'
 import { Button } from '@/components/ui/button'
 import { APP_VERSION } from '@/lib/version'
@@ -31,9 +31,39 @@ const navGroups: NavGroup[] = [
       { id: 'overview', label: 'Overview', icon: <OverviewIcon />, priority: true, essential: true },
       { id: 'agents', label: 'Agents', icon: <AgentsIcon />, priority: true, essential: true },
       { id: 'tasks', label: 'Tasks', icon: <TasksIcon />, priority: true, essential: true },
+      { id: 'chat', label: 'Chat', icon: <SessionsIcon />, priority: true, essential: true },
+      { id: 'skills', label: 'Skills', icon: <SkillsIcon />, priority: false, essential: false },
+      { id: 'memory', label: 'Memory', icon: <MemoryIcon />, priority: false, essential: false },
+    ],
+  },
+  {
+    id: 'observe',
+    label: 'OBSERVE',
+    items: [
+      { id: 'activity', label: 'Activity', icon: <ActivityIcon />, priority: true, essential: true },
       { id: 'logs', label: 'Logs', icon: <LogsIcon />, priority: false, essential: true },
+      { id: 'tokens', label: 'Tokens', icon: <TokensIcon />, priority: false, essential: false },
+    ],
+  },
+  {
+    id: 'automate',
+    label: 'AUTOMATE',
+    items: [
+      { id: 'cron', label: 'Cron', icon: <CronIcon />, priority: false, essential: false },
+      { id: 'webhooks', label: 'Webhooks', icon: <WebhookIcon />, priority: false, essential: false },
+      { id: 'alerts', label: 'Alerts', icon: <AlertIcon />, priority: false, essential: false },
+    ],
+  },
+  {
+    id: 'admin',
+    label: 'ADMIN',
+    items: [
+      { id: 'channels', label: 'Channels', icon: <ChannelsIcon />, priority: false, essential: false },
+      { id: 'nodes', label: 'Nodes', icon: <NodesIcon />, priority: false, essential: false },
+      { id: 'exec-approvals', label: 'Approvals', icon: <ApprovalsIcon />, priority: false, essential: false },
+      { id: 'gateways', label: 'Gateways', icon: <GatewaysIcon />, priority: false, essential: false },
+      { id: 'gateway-config', label: 'Config', icon: <GatewayConfigIcon />, priority: false, essential: false },
       { id: 'settings', label: 'Settings', icon: <SettingsIcon />, priority: false, essential: true },
-      { id: 'gateway-config', label: 'Gateway Config', icon: <GatewayConfigIcon />, priority: false, essential: true },
     ],
   },
 ]
@@ -82,7 +112,7 @@ const gatewayOnlyPanels = new Set([
 const adminOnlyPanels = new Set<string>([])
 
 export function NavRail() {
-  const { activeTab, connection, dashboardMode, currentUser, activeTenant, tenants, osUsers, setActiveTenant, fetchTenants, fetchOsUsers, activeProject, projects, setActiveProject, fetchProjects, sidebarExpanded, collapsedGroups, toggleSidebar, toggleGroup, defaultOrgName, interfaceMode, setInterfaceMode } = useMissionControl()
+  const { activeTab, connection, dashboardMode, currentUser, activeTenant, tenants, osUsers, setActiveTenant, fetchTenants, fetchOsUsers, activeProject, projects, setActiveProject, fetchProjects, sidebarExpanded, collapsedGroups, toggleSidebar, toggleGroup, defaultOrgName, interfaceMode, setInterfaceMode } = useAgentCenterStore()
   const navigateToPanel = useNavigateToPanel()
   const prefetchPanel = usePrefetchPanel()
   const tn = useTranslations('nav')
@@ -191,17 +221,16 @@ export function NavRail() {
         <div className={`flex items-center shrink-0 ${sidebarExpanded ? 'px-3 py-3 gap-2.5' : 'flex-col py-3 gap-2'}`}>
           <div className="w-9 h-9 rounded-lg overflow-hidden bg-background border border-border/50 flex items-center justify-center shrink-0 hover:border-void-cyan/40 hover:glow-cyan transition-smooth">
             <Image
-              src="/brand/mc-logo-128.png"
-              alt="Mission Control logo"
+              src="/brand/app-logo.png"
+              alt="E-Agent-Client logo"
               width={36}
               height={36}
-              className="w-full h-full object-cover"
+              className="w-full h-full object-contain"
             />
           </div>
           {sidebarExpanded && (
             <div className="flex items-baseline gap-2 truncate flex-1 min-w-0">
-              <span className="text-sm font-semibold text-foreground truncate">Mission Control</span>
-              <span className="text-2xs text-muted-foreground font-mono-tight shrink-0">v{APP_VERSION}</span>
+              <span className="text-sm font-semibold text-foreground truncate">E-Agent-Client</span>
             </div>
           )}
           <Button
@@ -359,6 +388,38 @@ export function NavRail() {
             </div>
           ))}
         </div>
+
+        {/* Footer: Context switcher for tenants and projects */}
+        <div className="shrink-0 border-t border-border mt-auto pt-2">
+          <ContextSwitcher
+            currentUser={currentUser}
+            isAdmin={isAdmin}
+            isLocal={isLocal}
+            isConnected={connection.isConnected}
+            tenants={tenants}
+            osUsers={osUsers}
+            activeTenant={activeTenant}
+            onSwitchTenant={setActiveTenant}
+            projects={projects}
+            activeProject={activeProject}
+            onSwitchProject={setActiveProject}
+            expanded={sidebarExpanded}
+            defaultOrgName={defaultOrgName}
+            navigateToPanel={navigateToPanel}
+            fetchTenants={fetchTenants}
+            fetchOsUsers={fetchOsUsers}
+            interfaceMode={interfaceMode}
+            setInterfaceMode={setInterfaceMode}
+            activeTab={activeTab}
+          />
+        </div>
+
+        {/* Version number at the very bottom */}
+        {sidebarExpanded && (
+          <div className="px-3 pb-3 pt-1">
+            <span className="text-[10px] text-muted-foreground/40 font-mono-tight">v{APP_VERSION}</span>
+          </div>
+        )}
       </nav>
 
       {/* Mobile: Bottom tab bar */}
@@ -700,10 +761,11 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
   setInterfaceMode: (mode: 'essential' | 'full') => void
   activeTab: string
 }) {
-  const { setShowProjectManagerModal } = useMissionControl()
+  const { setShowProjectManagerModal } = useAgentCenterStore()
   const tcs = useTranslations('contextSwitcher')
   const tn = useTranslations('nav')
   const tc = useTranslations('common')
+  const td = useTranslations('dashboardOverview')
   // Build unified org list: DB tenants + unlinked OS users
   const linkedUsernames = new Set(tenants.map(t => t.linux_user))
   const unlinkedOsUsers = osUsers.filter(u => !linkedUsernames.has(u.username) && !u.is_process_owner)
@@ -713,12 +775,12 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
 
-  const userName = currentUser?.display_name || currentUser?.username || 'User'
-  const initials = userName.split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0, 2)
-  const tenantName = activeTenant?.display_name || defaultOrgName
   const projectName = activeProject?.name
-  const contextLine = projectName ? `${tenantName} / ${projectName}` : tenantName
+  const { clientName } = useAgentCenterStore()
+  const contextTitle = `${td('modeProxy')}: ${clientName}`
   const connectionLabel = isLocal ? tcs('localMode') : isConnected ? tcs('connected') : tcs('disconnected')
+  const contextMeta = projectName ? `${projectName} · ${connectionLabel}` : connectionLabel
+  const initials = (clientName || contextTitle).split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0, 2)
   const connectionDotClass = isLocal ? 'bg-void-cyan' : isConnected ? 'bg-green-500' : 'bg-red-500'
 
   return (
@@ -727,7 +789,7 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
       <Button
         variant="ghost"
         onClick={() => setOpen(!open)}
-        title={expanded ? undefined : `${userName} · ${contextLine} · ${connectionLabel}`}
+        title={expanded ? undefined : `${contextTitle} · ${contextMeta}`}
         className={`flex items-center rounded-lg ${
           expanded
             ? 'w-full gap-2.5 px-2.5 py-2 h-auto hover:bg-secondary/80 border border-transparent hover:border-border justify-start'
@@ -737,27 +799,16 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
         {/* Avatar */}
         <div className={`shrink-0 rounded-full flex items-center justify-center text-[11px] font-semibold relative ${
           expanded ? 'w-8 h-8' : 'w-8 h-8'
-        } ${currentUser?.avatar_url ? '' : 'bg-primary/20 text-primary'}`}>
-          {currentUser?.avatar_url ? (
-            <Image
-              src={currentUser.avatar_url}
-              alt=""
-              width={32}
-              height={32}
-              unoptimized
-              className="w-full h-full rounded-full object-cover"
-            />
-          ) : (
-            initials
-          )}
+        } bg-primary/20 text-primary`}>
+          {initials}
           {/* Connection dot on avatar */}
           <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-card ${connectionDotClass}`} />
         </div>
 
         {expanded && (
           <div className="flex-1 min-w-0 text-left">
-            <div className="text-sm font-medium text-foreground truncate leading-tight">{userName}</div>
-            <div className="text-[11px] text-muted-foreground truncate leading-tight">{contextLine}</div>
+            <div className="text-sm font-medium text-foreground truncate leading-tight">{contextTitle}</div>
+            <div className="text-[11px] text-muted-foreground truncate leading-tight">{contextMeta}</div>
           </div>
         )}
 
@@ -770,7 +821,7 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
         {/* Collapsed tooltip */}
         {!expanded && (
           <span className="absolute left-full ml-2 px-2 py-1 text-xs font-medium bg-popover text-popover-foreground border border-border rounded-md opacity-0 group-hover:opacity-100 pointer-events-none whitespace-nowrap z-50 transition-opacity">
-            {userName}
+            {contextTitle}
           </span>
         )}
       </Button>
@@ -785,27 +836,14 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
             {/* User info header */}
             <div className="px-3 pt-3 pb-2">
               <div className="flex items-center gap-2">
-                <div className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[11px] font-semibold ${
-                  currentUser?.avatar_url ? '' : 'bg-primary/20 text-primary'
-                }`}>
-                  {currentUser?.avatar_url ? (
-                    <Image
-                      src={currentUser.avatar_url}
-                      alt=""
-                      width={32}
-                      height={32}
-                      unoptimized
-                      className="w-full h-full rounded-full object-cover"
-                    />
-                  ) : (
-                    initials
-                  )}
+                <div className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[11px] font-semibold bg-primary/20 text-primary">
+                  {initials}
                 </div>
                 <div className="min-w-0">
-                  <div className="text-sm font-medium text-foreground truncate">{userName}</div>
+                  <div className="text-sm font-medium text-foreground truncate">{contextTitle}</div>
                   <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                    <span>{currentUser?.role || 'user'}</span>
-                    <span className="text-muted-foreground/30">·</span>
+                    {projectName && <span>{projectName}</span>}
+                    {projectName && <span className="text-muted-foreground/30">·</span>}
                     <span className={`flex items-center gap-1`}>
                       <span className={`w-1.5 h-1.5 rounded-full inline-block ${connectionDotClass}`} />
                       {connectionLabel}

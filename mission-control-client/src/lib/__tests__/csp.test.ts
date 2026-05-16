@@ -1,14 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { buildMissionControlCsp, buildNonceRequestHeaders } from '@/lib/csp'
+import { buildAgentCenterCsp, buildNonceRequestHeaders } from '@/lib/csp'
 
-describe('buildMissionControlCsp', () => {
+describe('buildAgentCenterCsp', () => {
   it('includes the request nonce in script and style directives', () => {
-    const csp = buildMissionControlCsp({ nonce: 'nonce-123', googleEnabled: false })
+    const csp = buildAgentCenterCsp({ nonce: 'nonce-123', googleEnabled: false })
 
     expect(csp).toContain(`script-src 'self' 'nonce-nonce-123' 'strict-dynamic'`)
     expect(csp).toContain("style-src 'self' 'unsafe-inline'")
     expect(csp).toContain("style-src-elem 'self' 'unsafe-inline'")
     expect(csp).toContain("style-src-attr 'unsafe-inline'")
+  })
+
+  it('relaxes script-src in development mode', () => {
+    const csp = buildAgentCenterCsp({ nonce: 'nonce-123', googleEnabled: false, isDev: true })
+
+    expect(csp).toContain(`script-src 'self' 'nonce-nonce-123' 'strict-dynamic' 'unsafe-inline' 'unsafe-eval'`)
   })
 })
 
@@ -18,9 +24,11 @@ describe('buildNonceRequestHeaders', () => {
       headers: new Headers({ host: 'localhost:3000' }),
       nonce: 'nonce-123',
       googleEnabled: false,
+      isDev: true,
     })
 
     expect(headers.get('x-nonce')).toBe('nonce-123')
+    expect(headers.get('Content-Security-Policy')).toContain("'unsafe-eval'")
     expect(headers.get('Content-Security-Policy')).toContain("style-src 'self' 'unsafe-inline'")
   })
 })

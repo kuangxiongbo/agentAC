@@ -11,6 +11,7 @@ interface Agent {
   role: string
   status: string
   session_key?: string
+  framework?: string
 }
 
 interface WorkflowTemplate {
@@ -91,7 +92,7 @@ export function OrchestrationBar() {
       const res = await fetch('/api/agents/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: selectedAgent, content: message, from: 'operator' })
+        body: JSON.stringify({ to: selectedAgent, message })
       })
       const data = await res.json()
       if (res.ok) {
@@ -272,8 +273,12 @@ export function OrchestrationBar() {
                 <option value="" disabled>{t('noAgentsRegistered')}</option>
               )}
               {agents.map(a => (
-                <option key={a.name} value={a.name} disabled={!a.session_key} title={!a.session_key ? 'Agent has no active session' : undefined}>
-                  {a.name} ({a.status}){!a.session_key ? ` — ${t('noSessionSuffix')}` : ''}
+                <option 
+                  key={a.name} 
+                  value={a.name} 
+                  title={!a.session_key ? (a.framework === 'openclaw' ? 'Agent has no active session' : 'Framework monitored agent') : undefined}
+                >
+                  {a.name} ({a.framework || 'oc'}) {a.status}
                 </option>
               ))}
             </select>

@@ -1,8 +1,9 @@
 'use client'
 
 import { useState, useRef } from 'react'
-import { useMissionControl } from '@/store'
-import { WIDGET_CATALOG, getDefaultLayout, getAvailableWidgets, getWidgetById } from '@/lib/dashboard-widgets'
+import { useTranslations } from 'next-intl'
+import { useAgentCenterStore } from '@/store'
+import { getDefaultLayout, getAvailableWidgets, getWidgetById } from '@/lib/dashboard-widgets'
 import { Button } from '@/components/ui/button'
 import type { DashboardData } from './widget-primitives'
 
@@ -39,7 +40,8 @@ const SIZE_CLASSES: Record<string, string> = {
 }
 
 export function WidgetGrid({ data }: { data: DashboardData }) {
-  const { dashboardLayout, setDashboardLayout, dashboardMode } = useMissionControl()
+  const t = useTranslations('dashboardOverview')
+  const { dashboardLayout, setDashboardLayout, dashboardMode } = useAgentCenterStore()
   const mode = dashboardMode === 'local' ? 'local' : 'full'
   const [customizing, setCustomizing] = useState(false)
   const [dragId, setDragId] = useState<string | null>(null)
@@ -231,7 +233,7 @@ export function WidgetGrid({ data }: { data: DashboardData }) {
       {/* Customize mode: hidden widgets + controls */}
       {customizing && hiddenWidgets.length > 0 && (
         <section className="space-y-2">
-          <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Available Widgets</h4>
+          <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t('widgetAvailableTitle')}</h4>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
             {hiddenWidgets.map((widget) => (
               <button
@@ -240,8 +242,8 @@ export function WidgetGrid({ data }: { data: DashboardData }) {
                 onClick={() => addWidget(widget.id)}
                 className="rounded-lg border border-dashed border-border/60 p-3 text-left hover:border-primary/40 hover:bg-primary/5 transition-smooth"
               >
-                <div className="text-xs font-medium text-foreground/70">{widget.label}</div>
-                <div className="text-2xs text-muted-foreground mt-0.5">{widget.description}</div>
+                <div className="text-xs font-medium text-foreground/70">{t(widget.labelKey)}</div>
+                <div className="text-2xs text-muted-foreground mt-0.5">{t(widget.descriptionKey)}</div>
               </button>
             ))}
           </div>
@@ -257,7 +259,7 @@ export function WidgetGrid({ data }: { data: DashboardData }) {
             onClick={resetToDefaults}
             className="text-2xs h-7"
           >
-            Reset to Defaults
+            {t('widgetResetDefaults')}
           </Button>
         )}
         <Button
@@ -266,7 +268,7 @@ export function WidgetGrid({ data }: { data: DashboardData }) {
           onClick={() => setCustomizing(!customizing)}
           className="text-2xs h-7"
         >
-          {customizing ? 'Done' : 'Customize'}
+          {customizing ? t('widgetDone') : t('widgetCustomize')}
         </Button>
       </div>
     </div>

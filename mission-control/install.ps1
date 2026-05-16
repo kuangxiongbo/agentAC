@@ -1,11 +1,11 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Mission Control — Windows Installer
+    E-AgentCenter — Windows Installer
     The mothership for your OpenClaw fleet.
 
 .DESCRIPTION
-    Installs Mission Control on Windows via local Node.js deployment.
+    Installs E-AgentCenter on Windows via local Node.js deployment.
     Mirrors the behaviour of install.sh for Linux/macOS.
 
 .PARAMETER Mode
@@ -157,7 +157,7 @@ function Get-Source {
             Pop-Location
         }
     } else {
-        Write-MC "Cloning Mission Control..."
+        Write-MC "Cloning E-AgentCenter..."
         if (-not (Test-Command "git")) {
             Stop-WithError "git is required to clone the repository"
         }
@@ -218,7 +218,7 @@ function Deploy-Docker {
         $env:MC_PORT = $script:Port
         docker compose up -d --build
 
-        Write-MC "Waiting for Mission Control to become healthy..."
+        Write-MC "Waiting for E-AgentCenter to become healthy..."
         $retries = 30
         while ($retries -gt 0) {
             try {
@@ -233,7 +233,7 @@ function Deploy-Docker {
             Write-Warn "Timeout waiting for health check - container may still be starting"
             docker compose logs --tail 20
         } else {
-            Write-Ok "Mission Control is running in Docker"
+            Write-Ok "E-AgentCenter is running in Docker"
         }
     } finally {
         Pop-Location
@@ -250,7 +250,7 @@ function Deploy-Local {
         if ($LASTEXITCODE -ne 0) { pnpm install }
         Write-Ok "Dependencies installed"
 
-        Write-MC "Building Mission Control..."
+        Write-MC "Building E-AgentCenter..."
         pnpm build
         if ($LASTEXITCODE -ne 0) { Stop-WithError "Build failed" }
         Write-Ok "Build complete"
@@ -273,7 +273,7 @@ function Deploy-Local {
         }
         Write-Ok "Static assets copied to standalone directory"
 
-        Write-MC "Starting Mission Control..."
+        Write-MC "Starting E-AgentCenter..."
         $env:PORT = $script:Port
         $env:NODE_ENV = "production"
         $env:HOSTNAME = "0.0.0.0"
@@ -292,7 +292,7 @@ function Deploy-Local {
 
         Start-Sleep -Seconds 3
         if (-not $process.HasExited) {
-            Write-Ok "Mission Control running (PID $($process.Id))"
+            Write-Ok "E-AgentCenter running (PID $($process.Id))"
         } else {
             Write-Err "Failed to start. Check logs: $logPath"
             exit 1
@@ -335,7 +335,7 @@ function Test-OpenClaw {
             Write-Ok "Config found: $ocConfig"
         } else {
             Write-Warn "No openclaw.json found at $ocConfig"
-            Write-MC "Mission Control will create a default config on first gateway connection"
+            Write-MC "E-AgentCenter will create a default config on first gateway connection"
         }
     } else {
         Write-MC "OpenClaw home not found at $ocHome"
@@ -359,7 +359,7 @@ function Test-OpenClaw {
 function Main {
     Write-Host ""
     Write-Host "  +======================================+" -ForegroundColor Magenta
-    Write-Host "  |   Mission Control Installer          |" -ForegroundColor Magenta
+    Write-Host "  |   E-AgentCenter Installer          |" -ForegroundColor Magenta
     Write-Host "  |   The mothership for your fleet      |" -ForegroundColor Magenta
     Write-Host "  +======================================+" -ForegroundColor Magenta
     Write-Host ""

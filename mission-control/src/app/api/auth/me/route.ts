@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getUserFromRequest, updateUser, requireRole, destroyAllUserSessions, createSession } from '@/lib/auth'
-import { logAuditEvent } from '@/lib/db'
+import { getUserFromRequest, updateUser, requireRole, destroyAllUserSessions, createSession, publicAuthUserFields } from '@/lib/auth'
+import { logAuditEvent, getDatabase } from '@/lib/db'
 import { verifyPassword } from '@/lib/password'
 import { getMcSessionCookieName, getMcSessionCookieOptions, isRequestSecure } from '@/lib/session-cookie'
 import { logger } from '@/lib/logger'
@@ -15,17 +15,23 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
   }
 
+  const db = getDatabase()
+  const orgRow = db
+    .prepare(
+      `SELECT t.id as tenant_id, t.display_name, t.slug
+       FROM workspaces w
+       JOIN tenants t ON t.id = w.tenant_id
+       WHERE w.id = ?`
+    )
+    .get(user.workspace_id ?? 1) as { tenant_id: number; display_name: string; slug: string } | undefined
+  const organization = orgRow
+    ? { tenant_id: orgRow.tenant_id, display_name: orgRow.display_name, slug: orgRow.slug }
+    : null
+
   return NextResponse.json({
     user: {
-      id: user.id,
-      username: user.username,
-      display_name: user.display_name,
-      role: user.role,
-      provider: user.provider || 'local',
-      email: user.email || null,
-      avatar_url: user.avatar_url || null,
-      workspace_id: user.workspace_id ?? 1,
-      tenant_id: user.tenant_id ?? 1,
+      ...publicAuthUserFields(user),
+      organization,
     },
   })
 }
@@ -52,6 +58,9 @@ export async function PATCH(request: NextRequest) {
 
     // Handle password change
     if (new_password) {
+      if ((user.provider || 'local') !== 'local') {
+        return NextResponse.json({ error: 'Password is managed by your identity provider' }, { status: 403 })
+      }
       if (!current_password) {
         return NextResponse.json({ error: 'Current password is required' }, { status: 400 })
       }
@@ -99,24 +108,30 @@ export async function PATCH(request: NextRequest) {
       logAuditEvent({ action: 'profile_update', actor: user.username, actor_id: user.id, detail: { display_name: updates.display_name }, ip_address: ipAddress })
     }
 
+    const db = getDatabase()
+    const orgRow = db
+      .prepare(
+        `SELECT t.id as tenant_id, t.display_name, t.slug
+         FROM workspaces w
+         JOIN tenants t ON t.id = w.tenant_id
+         WHERE w.id = ?`
+      )
+      .get(updated.workspace_id ?? 1) as { tenant_id: number; display_name: string; slug: string } | undefined
+    const organization = orgRow
+      ? { tenant_id: orgRow.tenant_id, display_name: orgRow.display_name, slug: orgRow.slug }
+      : null
+
     const response = NextResponse.json({
       success: true,
       user: {
-        id: updated.id,
-        username: updated.username,
-        display_name: updated.display_name,
-        role: updated.role,
-        provider: updated.provider || 'local',
-        email: updated.email || null,
-        avatar_url: updated.avatar_url || null,
-        workspace_id: updated.workspace_id ?? 1,
-        tenant_id: updated.tenant_id ?? 1,
+        ...publicAuthUserFields(updated),
+        organization,
       },
     })
 
     // Issue a fresh session cookie after password change (old ones were just revoked)
     if (updates.password) {
-      const { token, expiresAt } = createSession(user.id, ipAddress, userAgent, user.workspace_id ?? 1)
+      const { token, expiresAt } = createSession(user.id, ipAddress, userAgent, updated.workspace_id ?? 1)
       const isSecureRequest = isRequestSecure(request)
       const cookieName = getMcSessionCookieName(isSecureRequest)
       response.cookies.set(cookieName, token, {

@@ -14,6 +14,7 @@ interface RuntimeStatus {
   authRequired: boolean
   authHint: string
   authenticated: boolean
+  installSupported: boolean
 }
 
 interface InstallJob {
@@ -49,6 +50,14 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
     }
   }, [])
 
+  const syncMainAgents = useCallback(async () => {
+    try {
+      await fetch('/api/agents/sync?source=local', { method: 'POST' })
+    } catch {
+      // ignore
+    }
+  }, [])
+
   useEffect(() => { fetchRuntimes() }, [fetchRuntimes])
 
   // Poll active jobs
@@ -70,6 +79,7 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
             setActiveJobs(prev => ({ ...prev, [data.job.runtime]: data.job }))
             if (data.job.status === 'success') {
               showFeedback(true, `${data.job.runtime} installed successfully`)
+              syncMainAgents()
               fetchRuntimes()
             } else if (data.job.status === 'failed') {
               showFeedback(false, `${data.job.runtime} install failed`)
@@ -83,7 +93,7 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
     }, 2000)
 
     return () => clearInterval(interval)
-  }, [activeJobs, fetchRuntimes, showFeedback])
+  }, [activeJobs, fetchRuntimes, showFeedback, syncMainAgents])
 
   const handleInstall = async (runtimeId: string) => {
     try {
@@ -177,6 +187,11 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
                       Not installed
                     </span>
                   )}
+                  {!rt.installSupported && (
+                    <span className="text-2xs px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-300 border border-blue-500/20">
+                      Detection only
+                    </span>
+                  )}
                   {rt.installed && (
                     <span className={`text-2xs px-1.5 py-0.5 rounded-full border ${
                       rt.running
@@ -197,7 +212,7 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
                   >
                     Refresh
                   </Button>
-                  {!rt.installed && !isInstalling && (
+                  {!rt.installed && !isInstalling && rt.installSupported && (
                     <>
                       <Button
                         variant="ghost"

@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
-import { useMissionControl, type ConnectionStatus } from '@/store'
+import { useAgentCenterStore, type ConnectionStatus } from '@/store'
 import { extractWsHost } from '@/lib/agent-card-helpers'
 import { useWebSocket } from '@/lib/websocket'
 import { useNavigateToPanel, usePrefetchPanel } from '@/lib/navigation'
@@ -43,7 +43,7 @@ const QUICK_NAV_COMMANDS: Array<{ panel: string; titleKey: string; title: string
 ]
 
 export function HeaderBar() {
-  const { connection, sessions, unreadNotificationCount, activeTenant, activeProject, dashboardMode } = useMissionControl()
+  const { connection, sessions, unreadNotificationCount, activeTenant, activeProject, dashboardMode, currentUser } = useAgentCenterStore()
   const { isConnected, reconnect } = useWebSocket()
   const navigateToPanel = useNavigateToPanel()
   const prefetchPanel = usePrefetchPanel()
@@ -309,15 +309,31 @@ export function HeaderBar() {
               className="hidden lg:flex items-center gap-1 text-2xs bg-secondary/50 min-w-0 max-w-[320px]"
               title={`Scoped to project: ${activeProject.name}`}
             >
-              <span className="text-muted-foreground/60 truncate">{activeTenant?.display_name || 'Default'}</span>
+              <span className="text-muted-foreground/60 truncate">{currentUser?.organization?.display_name || activeTenant?.display_name || 'Default'}</span>
               <span className="text-muted-foreground/40">/</span>
               <span className="font-medium text-foreground truncate">{activeProject.name}</span>
             </Button>
-          ) : activeTenant ? (
+          ) : activeTenant || (currentUser?.provider && currentUser.provider !== 'local') ? (
             <div className="hidden lg:flex items-center gap-1 px-2 py-1 rounded-md bg-secondary/40 text-2xs">
-              <span className="text-muted-foreground">{th('workspace')}</span>
-              <span className="text-muted-foreground/40">/</span>
-              <span className="font-medium text-foreground truncate max-w-[220px]">{activeTenant.display_name}</span>
+              {currentUser?.provider && currentUser.provider !== 'local' ? (
+                <>
+                  <span className="text-muted-foreground">{th('organization')}</span>
+                  <span className="text-muted-foreground/40">/</span>
+                  <span className="text-muted-foreground/80 truncate max-w-[120px]">
+                    {currentUser.organization?.display_name || activeTenant?.display_name || '—'}
+                  </span>
+                  <span className="text-muted-foreground/40">/</span>
+                  <span className="font-medium text-foreground truncate max-w-[140px]">
+                    {(currentUser.display_name || '').trim() || (currentUser.email || '').trim() || currentUser.username}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="text-muted-foreground">{th('workspace')}</span>
+                  <span className="text-muted-foreground/40">/</span>
+                  <span className="font-medium text-foreground truncate max-w-[220px]">{activeTenant!.display_name}</span>
+                </>
+              )}
             </div>
           ) : null}
 
@@ -463,16 +479,158 @@ function ModeBadge({
   connection: ConnectionStatus
   onReconnect: () => void
 }) {
-  const { dashboardMode } = useMissionControl()
+  const { dashboardMode, centralMode } = useAgentCenterStore()
   const th = useTranslations('header')
   const isLocal = dashboardMode === 'local'
+  const isServiceMode = isLocal && centralMode
   const [showTooltip, setShowTooltip] = useState(false)
+  const [serviceStatus, setServiceStatus] = useState<{
+    clients: {
+      total: number
+      connected: number
+      disconnected: number
+      items: Array<{
+        client_id: string
+        client_name: string
+        status: 'connected' | 'disconnected'
+        last_seen: number
+        last_sync_source: string | null
+        agent_count: number
+      }>
+    }
+  } | null>(null)
 
-  if (isLocal) {
+  const fetchServiceStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/server-sync/status', { cache: 'no-store' })
+      if (!res.ok) return
+      const data = await res.json()
+      if (data?.clients) {
+        setServiceStatus({ clients: data.clients })
+      }
+    } catch {
+      // ignore tooltip refresh failures
+    }
+  }, [])
+
+  const formatLastSeen = useCallback((timestamp?: number) => {
+    if (!timestamp) return '-'
+    const diffSec = Math.max(0, Math.floor(Date.now() / 1000) - timestamp)
+    if (diffSec < 60) return `${diffSec}s`
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m`
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h`
+    return `${Math.floor(diffSec / 86400)}d`
+  }, [])
+
+  useEffect(() => {
+    if (!isServiceMode) return
+    fetchServiceStatus()
+    const interval = window.setInterval(fetchServiceStatus, 15000)
+    return () => window.clearInterval(interval)
+  }, [fetchServiceStatus, isServiceMode])
+
+  useEffect(() => {
+    if (!isServiceMode || !showTooltip) return
+    fetchServiceStatus()
+    const interval = window.setInterval(fetchServiceStatus, 5000)
+    return () => window.clearInterval(interval)
+  }, [fetchServiceStatus, isServiceMode, showTooltip])
+
+  if (isLocal && !isServiceMode) {
     return (
       <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-2xs bg-void-cyan/10 border border-void-cyan/25">
         <span className="w-1.5 h-1.5 rounded-full bg-void-cyan" />
         <span className="font-medium text-void-cyan">{th('local')}</span>
+      </div>
+    )
+  }
+
+  if (isServiceMode) {
+    const clientSummary = serviceStatus?.clients
+    const connectedClients = clientSummary?.connected ?? 0
+    const totalClients = clientSummary?.total ?? 0
+    const disconnectedClients = clientSummary?.disconnected ?? 0
+    const dotClass = connectedClients > 0 ? 'bg-green-500' : 'bg-void-cyan'
+    const borderClass = connectedClients > 0 ? 'border-green-500/25 bg-green-500/10' : 'border-void-cyan/25 bg-void-cyan/10'
+    const textClass = connectedClients > 0 ? 'text-green-400' : 'text-void-cyan'
+    const statusLabel = totalClients > 0 ? `${connectedClients}/${totalClients}` : th('listening')
+
+    return (
+      <div
+        className="relative"
+        onMouseEnter={() => setShowTooltip(true)}
+        onMouseLeave={() => setShowTooltip(false)}
+      >
+        <div className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-2xs border ${borderClass}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${dotClass}`} />
+          <span className={`font-medium ${textClass}`}>{th('service')}</span>
+          <span className={`font-mono ${textClass} opacity-80`}>{statusLabel}</span>
+        </div>
+
+        {showTooltip && (
+          <div className="absolute top-full left-0 mt-1.5 z-50 w-72 rounded-lg border border-border bg-card/95 backdrop-blur-md p-3 shadow-xl text-xs">
+            <div className="font-medium text-foreground mb-2">{th('serviceStatus')}</div>
+            <div className="space-y-1.5 text-muted-foreground">
+              <div className="flex justify-between gap-3">
+                <span>{th('status')}</span>
+                <span className={connectedClients > 0 ? 'text-green-400' : 'text-void-cyan'}>
+                  {connectedClients > 0 ? th('connected') : th('listening')}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>{th('connectedClients')}</span>
+                <span className="text-foreground/80">{connectedClients}/{totalClients}</span>
+              </div>
+              {disconnectedClients > 0 && (
+                <div className="flex justify-between gap-3">
+                  <span>{th('disconnected')}</span>
+                  <span className="text-foreground/80">{disconnectedClients}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-3 border-t border-border/60 pt-3">
+              {clientSummary?.items?.length ? (
+                <div className="space-y-2">
+                  {clientSummary.items.map((client) => (
+                    <div key={client.client_id} className="rounded-md border border-border/60 bg-secondary/20 p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate font-medium text-foreground">
+                            {client.client_name || client.client_id || th('unknownClient')}
+                          </div>
+                        </div>
+                        <span className={`rounded-full px-1.5 py-0.5 text-2xs border ${
+                          client.status === 'connected'
+                            ? 'border-green-500/30 bg-green-500/10 text-green-400'
+                            : 'border-slate-500/30 bg-slate-500/10 text-slate-300'
+                        }`}>
+                          {client.status === 'connected' ? th('connected') : th('disconnected')}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-2xs text-muted-foreground">
+                        <div className="flex justify-between gap-2">
+                          <span>{th('agents')}</span>
+                          <span className="text-foreground/80">{client.agent_count}</span>
+                        </div>
+                        <div className="flex justify-between gap-2">
+                          <span>{th('status')}</span>
+                          <span className="text-foreground/80">{client.last_sync_source || '-'}</span>
+                        </div>
+                        <div className="col-span-2 flex justify-between gap-2">
+                          <span>{th('lastSeen')}</span>
+                          <span className="truncate font-mono text-foreground/80">{formatLastSeen(client.last_seen)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-muted-foreground">{th('noClientsConnected')}</div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     )
   }

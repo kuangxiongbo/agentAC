@@ -276,7 +276,7 @@ export function syncGnap(repoPath: string): SyncResult {
   if (hasRemote(repoPath) && hasChanges(repoPath)) {
     try {
       git(repoPath, ['add', '.'])
-      git(repoPath, ['commit', '-m', `Sync from Mission Control at ${result.lastSync}`])
+      git(repoPath, ['commit', '-m', `Sync from E-Agent-Center at ${result.lastSync}`])
       git(repoPath, ['push'])
     } catch (err: any) {
       result.errors.push(`Push failed: ${err.message}`)

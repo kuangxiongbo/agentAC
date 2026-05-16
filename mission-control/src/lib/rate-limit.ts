@@ -104,6 +104,14 @@ export const loginLimiter = createRateLimiter({
   critical: true,
 })
 
+/** OIDC 发起与回调（GET）：与密码登录分桶，避免联调时 5 次/分钟过快触发 429 */
+export const oidcFlowLimiter = createRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 45,
+  message: 'Too many OIDC sign-in attempts. Try again in a minute.',
+  critical: false,
+})
+
 export const mutationLimiter = createRateLimiter({
   windowMs: 60_000,
   maxRequests: 60,
@@ -198,4 +206,11 @@ export const selfRegisterLimiter = createRateLimiter({
   windowMs: 60_000,
   maxRequests: 5,
   message: 'Too many registration attempts. Please try again later.',
+})
+
+/** Agent self-registration when a trusted controller syncs many agents from one host. */
+export const agentRegisterLimiter = createAgentRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 10,
+  message: 'Agent registration rate limit exceeded.',
 })

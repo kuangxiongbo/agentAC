@@ -1,8 +1,8 @@
 /**
  * Remote Server Bridge — Server-side persistent WebSocket client
  *
- * Proactively connects this local Mission Control instance to a remote
- * Mission Control server so the server can push tasks down to local agents.
+ * Proactively connects this local E-Agent-Client instance to a remote
+ * E-Agent-Client server so the server can push tasks down to local agents.
  *
  * Configured via:
  *   MC_REMOTE_SERVER_URL   — WebSocket URL of the remote server (ws:// or wss://)
@@ -24,6 +24,7 @@ import { getDatabase, db_helpers } from './db'
 import { eventBus } from './event-bus'
 import { logger } from './logger'
 import { REMOTE_SERVER_URL, REMOTE_SERVER_TOKEN, REMOTE_RECONNECT_MS } from './config'
+import { readLocalSessionTranscript, type LocalSessionTranscriptKind } from './session-transcript'
 
 // We use the native ws library if available (Node 18+ has it natively via global WebSocket)
 // In Next.js server context, we use the 'ws' package for server-side WebSocket.
@@ -55,6 +56,8 @@ interface BridgeState {
   isShuttingDown: boolean
   connected: boolean
   lastPong: number
+  resolvedUrl: string
+  discoverySource: string | null
 }
 
 const state: BridgeState = {
@@ -65,6 +68,8 @@ const state: BridgeState = {
   isShuttingDown: false,
   connected: false,
   lastPong: 0,
+  resolvedUrl: '',
+  discoverySource: null,
 }
 
 // Event emitter for bridge lifecycle events (used for monitoring)
@@ -83,19 +88,39 @@ function getLocalClientId(): string {
     // Generate and persist a stable client ID
     const { randomUUID } = require('crypto')
     const id = `mc-local-${randomUUID()}`
-    db.prepare(`INSERT OR IGNORE INTO settings (key, value, category) VALUES ('device.client_id', ?, 'device')`).run(id, 'device')
-    return id
+    try {
+      db.prepare(`INSERT OR IGNORE INTO settings (key, value, category) VALUES ('device.client_id', ?, 'device')`).run(id)
+      return id
+    } catch {
+      // If DB fails to write, use a hash of the current directory as a semi-stable ID
+      const { createHash } = require('crypto')
+      const hostHash = createHash('md5').update(process.cwd()).digest('hex').substring(0, 8)
+      return `mc-node-${hostHash}`
+    }
   } catch {
-    return `mc-local-${Date.now()}`
+    // Ultimate fallback if even getDatabase fails
+    return `mc-node-static`
   }
 }
 
-function getLocalAgentList(): Array<{ id: number; name: string; role: string; status: string }> {
+function getLocalClientLabel(): string {
+  try {
+    const db = getDatabase()
+    const row = db.prepare(`SELECT value FROM settings WHERE key = 'gateway.client_name'`).get() as { value?: string } | undefined
+    const value = typeof row?.value === 'string' ? row.value.trim() : ''
+    if (value) return value
+  } catch {
+    // ignore
+  }
+  return getLocalClientId()
+}
+
+function getLocalAgentList(): Array<{ id: number; name: string; role: string; status: string; framework?: string; parent_id?: number }> {
   try {
     const db = getDatabase()
     return db.prepare(
-      `SELECT id, name, role, status FROM agents WHERE hidden = 0 ORDER BY name`
-    ).all() as Array<{ id: number; name: string; role: string; status: string }>
+      `SELECT id, name, role, status, framework, parent_id FROM agents WHERE hidden = 0 ORDER BY name`
+    ).all() as Array<{ id: number; name: string; role: string; status: string; framework?: string; parent_id?: number }>
   } catch {
     return []
   }
@@ -109,6 +134,52 @@ function safeSend(ws: WebSocket | null, data: object): boolean {
   } catch {
     return false
   }
+}
+
+function isWebSocketUrl(value: string): boolean {
+  const normalized = String(value || '').trim().toLowerCase()
+  return normalized.startsWith('ws://') || normalized.startsWith('wss://')
+}
+
+function isHttpUrl(value: string): boolean {
+  const normalized = String(value || '').trim().toLowerCase()
+  return normalized.startsWith('http://') || normalized.startsWith('https://')
+}
+
+async function resolveRemoteBridgeUrl(): Promise<{ wsUrl: string; discoverySource: string | null }> {
+  const configured = REMOTE_SERVER_URL.trim()
+  if (!configured) {
+    throw new Error('MC_REMOTE_SERVER_URL not set')
+  }
+
+  if (isWebSocketUrl(configured)) {
+    return { wsUrl: configured, discoverySource: null }
+  }
+
+  if (isHttpUrl(configured)) {
+    const base = configured.replace(/\/+$/, '')
+    const infoUrl = `${base}/api/bridge/info`
+    const headers: Record<string, string> = {}
+    if (REMOTE_SERVER_TOKEN) {
+      headers['Authorization'] = `Bearer ${REMOTE_SERVER_TOKEN}`
+      headers['x-api-key'] = REMOTE_SERVER_TOKEN
+    }
+
+    const res = await fetch(infoUrl, { headers, cache: 'no-store' })
+    const payload = await res.json().catch(() => null)
+    if (!res.ok) {
+      throw new Error(payload?.error || `Bridge discovery failed with status ${res.status}`)
+    }
+
+    const wsUrl = String(payload?.bridge?.ws_url || '').trim()
+    if (!isWebSocketUrl(wsUrl)) {
+      throw new Error('Bridge discovery response did not include a valid websocket URL')
+    }
+
+    return { wsUrl, discoverySource: infoUrl }
+  }
+
+  throw new Error('MC_REMOTE_SERVER_URL must be an http(s) base URL or ws(s) bridge URL')
 }
 
 // ---------------------------------------------------------------------------
@@ -169,14 +240,16 @@ async function handleTaskDispatch(payload: any): Promise<void> {
     const mergedMeta = { ...metadata, remote_task_id: remoteTaskId, source: 'remote_server' }
 
     const result = db.prepare(`
-      INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, tags, metadata, workspace_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'remote-server', ?, ?, ?, ?, ?)
+      INSERT INTO tasks (title, description, status, priority, assigned_to, created_by, project_id, project_ticket_no, tags, metadata, workspace_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'remote-server', ?, ?, ?, ?, ?, ?, ?)
     `).run(
       String(title || 'Remote Task'),
       description ? String(description) : null,
       status,
       priority,
       targetAgent,
+      payload.projectId || null,
+      payload.projectTicketNo || null,
       tagsJson,
       JSON.stringify(mergedMeta),
       workspaceId,
@@ -220,6 +293,40 @@ async function handleTaskDispatch(payload: any): Promise<void> {
   }
 }
 
+async function handleIncomingChatMessage(message: any): Promise<void> {
+  if (!message || !message.content || !message.conversation_id) return
+
+  try {
+    const db = getDatabase()
+    const workspaceId = 1 // Default
+
+    // Check for duplicate
+    const existing = db.prepare('SELECT id FROM messages WHERE conversation_id = ? AND content = ? AND created_at = ?')
+      .get(message.conversation_id, message.content, message.created_at)
+    
+    if (existing) return
+
+    db.prepare(`
+      INSERT INTO messages (conversation_id, from_agent, to_agent, content, message_type, metadata, workspace_id, created_at, synced)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+    `).run(
+      message.conversation_id,
+      message.from_agent,
+      message.to_agent || null,
+      message.content,
+      message.message_type || 'text',
+      message.metadata ? (typeof message.metadata === 'string' ? message.metadata : JSON.stringify(message.metadata)) : null,
+      workspaceId,
+      message.created_at || Math.floor(Date.now() / 1000)
+    )
+
+    // Broadcast locally so UI updates
+    eventBus.broadcast('chat.message', { ...message, __from_bridge: true })
+  } catch (err) {
+    logger.error({ err }, '[RemoteBridge] Failed to handle incoming chat message')
+  }
+}
+
 function handleCommand(payload: any): void {
   const { action } = payload || {}
 
@@ -227,7 +334,7 @@ function handleCommand(payload: any): void {
     case 'agent_status_request': {
       // Server is asking for current agent status
       const agents = getLocalAgentList()
-      safeSend(state.ws, { type: 'agent_status', agents, timestamp: Date.now() })
+      safeSend(state.ws, { type: 'agent_status', clientId: getLocalClientId(), clientLabel: getLocalClientLabel(), agents, timestamp: Date.now() })
       break
     }
     case 'ping_agents': {
@@ -237,6 +344,81 @@ function handleCommand(payload: any): void {
     }
     default:
       logger.warn({ action }, '[RemoteBridge] Unknown command action')
+  }
+}
+
+function handleSessionTranscriptRequest(message: any): void {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  const session = message?.session && typeof message.session === 'object' ? message.session : {}
+  const kind = typeof session?.kind === 'string' ? session.kind : ''
+  const sessionId = typeof session?.sessionId === 'string' ? session.sessionId : ''
+  const limit = Math.min(Math.max(parseInt(String(session?.limit || '40'), 10) || 40, 1), 200)
+
+  if (!requestId) return
+
+  if (!sessionId || (kind !== 'claude-code' && kind !== 'codex-cli' && kind !== 'hermes')) {
+    safeSend(state.ws, {
+      type: 'session_transcript_response',
+      requestId,
+      ok: false,
+      error: 'kind and sessionId are required',
+    })
+    return
+  }
+
+  try {
+    const messages = readLocalSessionTranscript(kind as LocalSessionTranscriptKind, sessionId, limit)
+    safeSend(state.ws, {
+      type: 'session_transcript_response',
+      requestId,
+      ok: true,
+      source: 'remote-bridge',
+      messages,
+    })
+  } catch (err: any) {
+    safeSend(state.ws, {
+      type: 'session_transcript_response',
+      requestId,
+      ok: false,
+      error: err?.message || 'Failed to read session transcript',
+    })
+  }
+}
+
+async function handleProjectsSync(payload: any): Promise<void> {
+  const projects = Array.isArray(payload?.projects) ? payload.projects : []
+  if (projects.length === 0) return
+
+  try {
+    const db = getDatabase()
+    const now = Math.floor(Date.now() / 1000)
+    
+    db.transaction(() => {
+      // Mark existing projects as inactive or just upsert?
+      // For now, let's upsert everything from server.
+      for (const p of projects) {
+        db.prepare(`
+          INSERT INTO projects (id, name, slug, description, ticket_prefix, ticket_counter, status, workspace_id, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            slug = excluded.slug,
+            description = excluded.description,
+            ticket_prefix = excluded.ticket_prefix,
+            ticket_counter = excluded.ticket_counter,
+            status = excluded.status,
+            updated_at = excluded.updated_at
+        `).run(
+          p.id, p.name, p.slug, p.description, p.ticket_prefix, p.ticket_counter, 
+          p.status || 'active', p.workspace_id || 1, now, now
+        )
+      }
+    })()
+
+    logger.info({ count: projects.length }, '[RemoteBridge] Synced projects from server')
+    eventBus.broadcast('project.synced' as any, { count: projects.length })
+  } catch (err) {
+    logger.error({ err }, '[RemoteBridge] Failed to sync projects')
   }
 }
 
@@ -263,7 +445,7 @@ function handleMessage(raw: string): void {
     case 'welcome':
       logger.info({ serverId: msg.serverId }, '[RemoteBridge] Server welcome received')
       // Send agent status on welcome
-      safeSend(state.ws, { type: 'agent_status', agents: getLocalAgentList(), timestamp: Date.now() })
+      safeSend(state.ws, { type: 'agent_status', clientId: getLocalClientId(), clientLabel: getLocalClientLabel(), agents: getLocalAgentList(), timestamp: Date.now() })
       break
 
     case 'task_dispatch':
@@ -278,6 +460,24 @@ function handleMessage(raw: string): void {
 
     case 'ack':
       // Server acknowledged our message
+      break
+
+    case 'chat_message':
+      if (msg.message) {
+        handleIncomingChatMessage(msg.message).catch(e => 
+          logger.error({ err: e }, '[RemoteBridge] chat_message handler failed')
+        )
+      }
+      break
+
+    case 'session_transcript_request':
+      handleSessionTranscriptRequest(msg)
+      break
+
+    case 'projects_sync':
+      handleProjectsSync(msg).catch(e =>
+        logger.error({ err: e }, '[RemoteBridge] projects_sync handler failed')
+      )
       break
 
     default:
@@ -329,7 +529,8 @@ async function connect(): Promise<void> {
     return
   }
 
-  const url = new URL(REMOTE_SERVER_URL)
+  const resolved = await resolveRemoteBridgeUrl()
+  const url = new URL(resolved.wsUrl)
 
   // Attach token as query param if provided (simple auth; server can also check header)
   if (REMOTE_SERVER_TOKEN) {
@@ -351,25 +552,41 @@ async function connect(): Promise<void> {
   }
 
   state.ws = ws
+  state.resolvedUrl = resolved.wsUrl
+  state.discoverySource = resolved.discoverySource
   const clientId = getLocalClientId()
+  const clientLabel = getLocalClientLabel()
 
   ws.onopen = () => {
     state.connected = true
     state.reconnectAttempts = 0
-    logger.info({ url: REMOTE_SERVER_URL }, '[RemoteBridge] Connected to remote server')
+    logger.info({ url: resolved.wsUrl, discoverySource: resolved.discoverySource }, '[RemoteBridge] Connected to remote server')
 
     // Send hello handshake
     safeSend(ws, {
       type: 'hello',
       clientId,
+      clientLabel,
       version: '1.0',
-      capabilities: ['task_receive', 'agent_status', 'heartbeat'],
+      capabilities: ['task_receive', 'agent_status', 'heartbeat', 'chat_sync', 'session_transcript'],
       agents: getLocalAgentList(),
       timestamp: Date.now(),
     })
 
+    // Listen for local chat messages and forward them
+    const chatHandler = (event: any) => {
+      // Avoid loops: check if message was already synced
+      if (state.connected && !event.__from_bridge) {
+        safeSend(ws, { type: 'chat_message', message: event })
+      }
+    }
+    eventBus.on('chat.message', chatHandler)
+
     startHeartbeat()
-    bridgeEmitter.emit('connected', { url: REMOTE_SERVER_URL })
+    bridgeEmitter.emit('connected', { url: resolved.wsUrl, discoverySource: resolved.discoverySource })
+    
+    // Store handler for cleanup
+    ;(ws as any)._chatHandler = chatHandler
   }
 
   ws.onmessage = (event: MessageEvent) => {
@@ -379,14 +596,18 @@ async function connect(): Promise<void> {
   ws.onerror = (event: Event) => {
     // ws package passes an ErrorEvent; just log that an error occurred
     logger.warn('[RemoteBridge] WebSocket error, will reconnect...')
-    bridgeEmitter.emit('error', { message: 'WebSocket error' })
+    bridgeEmitter.emit('bridge_error', { message: 'WebSocket error' })
   }
 
   ws.onclose = (event: CloseEvent) => {
     state.connected = false
     state.ws = null
     stopHeartbeat()
-    logger.info({ code: event?.code, reason: event?.reason }, '[RemoteBridge] Disconnected from remote server')
+    
+    const handler = (ws as any)._chatHandler
+    if (handler) eventBus.off('chat.message', handler)
+
+    logger.info({ code: event?.code, reason: event?.reason, url: state.resolvedUrl || resolved.wsUrl }, '[RemoteBridge] Disconnected from remote server')
     bridgeEmitter.emit('disconnected', { code: event?.code, reason: event?.reason })
 
     if (!state.isShuttingDown) {
@@ -451,6 +672,8 @@ export function stopRemoteBridge(): void {
     try { state.ws.close(1000, 'Server shutting down') } catch { /* ignore */ }
     state.ws = null
   }
+  state.resolvedUrl = ''
+  state.discoverySource = null
   _started = false
   logger.info('[RemoteBridge] Bridge stopped')
 }
@@ -462,13 +685,17 @@ export function getRemoteBridgeStatus(): {
   enabled: boolean
   connected: boolean
   url: string
+  configuredUrl: string
+  discoverySource: string | null
   reconnectAttempts: number
   lastPong: number
 } {
   return {
     enabled: Boolean(REMOTE_SERVER_URL),
     connected: state.connected,
-    url: REMOTE_SERVER_URL,
+    url: state.resolvedUrl || REMOTE_SERVER_URL,
+    configuredUrl: REMOTE_SERVER_URL,
+    discoverySource: state.discoverySource,
     reconnectAttempts: state.reconnectAttempts,
     lastPong: state.lastPong,
   }

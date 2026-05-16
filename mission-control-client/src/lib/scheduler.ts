@@ -10,6 +10,7 @@ import { pruneGatewaySessionsOlderThan, getAgentLiveStatuses } from './sessions'
 import { eventBus } from './event-bus'
 import { syncSkillsFromDisk } from './skill-sync'
 import { syncLocalAgents } from './local-agent-sync'
+import { syncRuntimeAgents } from './runtime-agent-sync'
 import { dispatchAssignedTasks, runAegisReviews, requeueStaleTasks, autoRouteInboxTasks } from './task-dispatch'
 import { spawnRecurringTasks } from './recurring-tasks'
 import { runServerGatewaySync } from './gateway-sync'
@@ -285,6 +286,9 @@ export function initScheduler() {
   syncAgentsFromConfig('startup').catch(err => {
     logger.warn({ err }, 'Agent auto-sync failed')
   })
+  syncRuntimeAgents('startup').catch(err => {
+    logger.warn({ err }, 'Runtime agent auto-sync failed')
+  })
 
   // Start remote server bridge if configured
   startRemoteBridge()
@@ -358,6 +362,15 @@ export function initScheduler() {
     running: false,
   })
 
+  tasks.set('runtime_agent_sync', {
+    name: 'Runtime Agent Sync',
+    intervalMs: TICK_MS,
+    lastRun: null,
+    nextRun: now + 12_000,
+    enabled: true,
+    running: false,
+  })
+
   tasks.set('gateway_agent_sync', {
     name: 'Gateway Agent Sync',
     intervalMs: TICK_MS, // Every 60s — re-read openclaw.json
@@ -414,7 +427,16 @@ export function initScheduler() {
 
   // Start the tick loop
   tickInterval = setInterval(tick, TICK_MS)
-  logger.info('Scheduler initialized - backup at ~3AM, cleanup at ~4AM, heartbeat every 5m, webhook/claude/skill/local-agent/gateway-agent sync every 60s')
+  
+  // Real-time synchronization: trigger upstream sync whenever local agents change
+  eventBus.on('server-event', (event) => {
+    if (event.type === 'agent.status_changed' || event.type === 'agent.synced') {
+      logger.info({ event: event.type }, 'Triggering real-time gateway sync')
+      runServerGatewaySync().catch(err => logger.error('Real-time sync failed:', err))
+    }
+  })
+
+  logger.info('Scheduler initialized - real-time sync enabled, backup at ~3AM, cleanup at ~4AM')
 }
 
 /** Calculate ms until next occurrence of a given hour (UTC) */
@@ -442,6 +464,7 @@ async function tick() {
       : id === 'claude_session_scan' ? 'general.claude_session_scan'
       : id === 'skill_sync' ? 'general.skill_sync'
       : id === 'local_agent_sync' ? 'general.local_agent_sync'
+      : id === 'runtime_agent_sync' ? 'general.runtime_agent_sync'
       : id === 'gateway_agent_sync' ? 'general.gateway_agent_sync'
       : id === 'task_dispatch' ? 'general.task_dispatch'
       : id === 'aegis_review' ? 'general.aegis_review'
@@ -449,7 +472,7 @@ async function tick() {
       : id === 'stale_task_requeue' ? 'general.stale_task_requeue'
       : id === 'server_gateway_sync' ? 'general.server_gateway_sync'
       : 'general.agent_heartbeat'
-    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue' || id === 'server_gateway_sync'
+    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'runtime_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue' || id === 'server_gateway_sync'
     if (!isSettingEnabled(settingKey, defaultEnabled)) continue
 
     task.running = true
@@ -460,6 +483,7 @@ async function tick() {
         : id === 'claude_session_scan' ? await syncClaudeSessions()
         : id === 'skill_sync' ? await syncSkillsFromDisk()
         : id === 'local_agent_sync' ? await syncLocalAgents()
+        : id === 'runtime_agent_sync' ? await syncRuntimeAgents('scheduled').then((result) => ({ ok: true, message: result.message }))
         : id === 'gateway_agent_sync' ? await syncAgentsFromConfig('scheduled').then(async r => {
             const refreshed = await syncAgentLiveStatuses()
             return { ok: true, message: `Gateway sync: ${r.created} created, ${r.updated} updated, ${r.synced} total | Live status: ${refreshed} refreshed` }
@@ -504,6 +528,7 @@ export function getSchedulerStatus() {
       : id === 'claude_session_scan' ? 'general.claude_session_scan'
       : id === 'skill_sync' ? 'general.skill_sync'
       : id === 'local_agent_sync' ? 'general.local_agent_sync'
+      : id === 'runtime_agent_sync' ? 'general.runtime_agent_sync'
       : id === 'gateway_agent_sync' ? 'general.gateway_agent_sync'
       : id === 'task_dispatch' ? 'general.task_dispatch'
       : id === 'aegis_review' ? 'general.aegis_review'
@@ -511,7 +536,7 @@ export function getSchedulerStatus() {
       : id === 'stale_task_requeue' ? 'general.stale_task_requeue'
       : id === 'server_gateway_sync' ? 'general.server_gateway_sync'
       : 'general.agent_heartbeat'
-    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue' || id === 'server_gateway_sync'
+    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'runtime_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue' || id === 'server_gateway_sync'
     result.push({
       id,
       name: task.name,
@@ -535,6 +560,7 @@ export async function triggerTask(taskId: string): Promise<{ ok: boolean; messag
   if (taskId === 'claude_session_scan') return syncClaudeSessions()
   if (taskId === 'skill_sync') return syncSkillsFromDisk()
   if (taskId === 'local_agent_sync') return syncLocalAgents()
+  if (taskId === 'runtime_agent_sync') return syncRuntimeAgents('manual').then((r) => ({ ok: true, message: r.message }))
   if (taskId === 'gateway_agent_sync') return syncAgentsFromConfig('manual').then(r => ({ ok: true, message: `Gateway sync: ${r.created} created, ${r.updated} updated, ${r.synced} total` }))
   if (taskId === 'task_dispatch') return autoRouteInboxTasks().then(async (r) => { const d = await dispatchAssignedTasks(); return { ok: r.ok && d.ok, message: [r.message, d.message].filter(m => m && !m.includes('No ')).join(' | ') || 'No tasks' } })
   if (taskId === 'aegis_review') return runAegisReviews()

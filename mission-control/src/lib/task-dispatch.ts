@@ -20,6 +20,8 @@ interface DispatchableTask {
   project_ticket_no: number | null
   project_id: number | null
   tags?: string[]
+  agent_source?: string
+  agent_node_id?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +97,7 @@ function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | nu
     : `TASK-${task.id}`
 
   const lines = [
-    'You have been assigned a task in Mission Control.',
+    'You have been assigned a task in E-Agent-Center.',
     '',
     `**[${ticket}] ${task.title}**`,
     `Priority: ${task.priority}`,
@@ -330,7 +332,7 @@ function buildReviewPrompt(task: ReviewableTask): string {
     : `TASK-${task.id}`
 
   const lines = [
-    'You are Aegis, the quality reviewer for Mission Control.',
+    'You are Aegis, the quality reviewer for E-Agent-Center.',
     'Review the following completed task and its resolution.',
     '',
     `**[${ticket}] ${task.title}**`,
@@ -626,6 +628,7 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
 
   const tasks = db.prepare(`
     SELECT t.*, a.name as agent_name, a.id as agent_id, a.config as agent_config,
+           a.source as agent_source, a.node_id as agent_node_id,
            p.ticket_prefix, t.project_ticket_no
     FROM tasks t
     JOIN agents a ON a.name = t.assigned_to AND a.workspace_id = t.workspace_id
@@ -698,7 +701,17 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
       let agentResponse: AgentResponseParsed
       const useDirectApi = !isGatewayAvailable() && getAnthropicApiKey()
 
-      if (useDirectApi && !targetSession) {
+      if (task.agent_source === 'bridge') {
+        // Dispatch to remote bridge client
+        const { dispatchTaskToBridgeClient } = await import('./bridge-server')
+        await dispatchTaskToBridgeClient(task)
+        
+        // Bridge dispatch is asynchronous; we mark it as in_progress and wait for updates
+        agentResponse = {
+          text: `Task dispatched to remote client "${task.agent_node_id}". Awaiting processing.`,
+          sessionId: null
+        }
+      } else if (useDirectApi && !targetSession) {
         // Direct Claude API dispatch — no gateway needed
         agentResponse = await callClaudeDirectly(task, prompt)
       } else if (targetSession) {

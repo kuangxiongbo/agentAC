@@ -78,8 +78,10 @@ export const AUTH_DISABLED: boolean =
 
 // ---------------------------------------------------------------------------
 // Remote server bridge
-// MC_REMOTE_SERVER_URL  → WebSocket URL of the remote mission-control server
-//                         e.g. ws://192.168.1.10:5001 or wss://mc.example.com
+// MC_REMOTE_SERVER_URL  → Remote mission-control parent address.
+//                         Supports either:
+//                         - HTTP base URL, e.g. http://192.168.1.10:5000
+//                         - direct bridge WS URL, e.g. ws://192.168.1.10:5002
 // MC_REMOTE_SERVER_TOKEN → optional bearer token for authenticating to server
 // MC_REMOTE_RECONNECT_MS → reconnect delay (default: 5000ms)
 // ---------------------------------------------------------------------------
@@ -104,7 +106,7 @@ export const config = {
   openclawBin: process.env.OPENCLAW_BIN || 'openclaw',
   clawdbotBin: process.env.CLAWDBOT_BIN || 'clawdbot',
   gatewayHost: process.env.OPENCLAW_GATEWAY_HOST || '127.0.0.1',
-  gatewayPort: clampInt(Number(process.env.OPENCLAW_GATEWAY_PORT || '18789'), 1, 65535, 18789),
+  gatewayPort: clampInt(Number(process.env.OPENCLAW_GATEWAY_PORT || '5000'), 1, 65535, 5000),
   logsDir:
     process.env.OPENCLAW_LOG_DIR ||
     (openclawStateDir ? path.join(openclawStateDir, 'logs') : ''),

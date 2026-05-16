@@ -50,7 +50,7 @@ const LOADER_AGENTS = [
 
 const LOADER_IMAGE_SOURCES = [
   ...LOADER_AGENTS.map((agent) => agent.src),
-  '/brand/mc-logo-128.png',
+  '/brand/app-logo.png',
 ] as const
 
 function LoaderDots({ size = 'md' }: { size?: 'sm' | 'md' }) {
@@ -138,13 +138,13 @@ function PageLoader({ steps }: { steps?: InitStep[] }) {
           <div className="absolute inset-0 flex items-center justify-center opacity-0 animate-mc-fade-in">
             <div className="animate-float" style={{ animationDelay: '2.7s' }}>
               <Image
-                src="/brand/mc-logo-128.png"
-                alt="Mission Control"
+                src="/brand/app-logo.png"
+                alt="E-Agent-Center"
                 width={56}
                 height={56}
                 priority
                 fetchPriority="high"
-                className="w-14 h-14"
+                className="w-14 h-14 object-contain"
               />
             </div>
           </div>

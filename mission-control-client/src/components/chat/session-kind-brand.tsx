@@ -31,9 +31,9 @@ const SESSION_KIND_META: Record<SessionKind, {
     imageAlt: 'Hermes logo',
   },
   gateway: {
-    label: 'Gateway',
-    shortLabel: 'GW',
-    pillClassName: 'bg-muted text-muted-foreground',
+    label: 'OpenClaw',
+    shortLabel: 'OC',
+    pillClassName: 'bg-emerald-500/15 text-emerald-300/80',
   },
 }
 

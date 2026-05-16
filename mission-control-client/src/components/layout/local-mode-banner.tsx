@@ -1,12 +1,12 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
-import { useMissionControl } from '@/store'
+import { useAgentCenterStore } from '@/store'
 import { useNavigateToPanel } from '@/lib/navigation'
 import { Button } from '@/components/ui/button'
 
 export function LocalModeBanner() {
-  const { dashboardMode, bannerDismissed, capabilitiesChecked, dismissBanner } = useMissionControl()
+  const { dashboardMode, bannerDismissed, capabilitiesChecked, dismissBanner } = useAgentCenterStore()
   const navigateToPanel = useNavigateToPanel()
   const t = useTranslations('localModeBanner')
   const tc = useTranslations('common')

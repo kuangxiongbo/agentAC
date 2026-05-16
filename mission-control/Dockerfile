@@ -1,11 +1,14 @@
 FROM node:22.22.0-slim AS base
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Pin pnpm 9.x: pnpm 10+ blocks dependency install scripts unless explicitly approved,
+# which breaks native modules (better-sqlite3, sharp, @swc/core, etc.) in this image.
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 WORKDIR /app
 
 FROM base AS deps
 # Copy only dependency manifests first for better layer caching
 COPY package.json ./
 COPY pnpm-lock.yaml* ./
+COPY .npmrc ./
 # better-sqlite3 requires native compilation tools
 RUN apt-get -o Acquire::Retries=5 -o Acquire::https::Verify-Peer=false -o Acquire::https::Verify-Host=false update && \
     apt-get -o Acquire::Retries=5 -o Acquire::https::Verify-Peer=false -o Acquire::https::Verify-Host=false install -y --fix-missing python3 make g++ --no-install-recommends && \
@@ -27,7 +30,7 @@ FROM node:22.22.0-slim AS runtime
 
 ARG MC_VERSION=dev
 LABEL org.opencontainers.image.source="https://github.com/builderz-labs/mission-control"
-LABEL org.opencontainers.image.description="Mission Control - operations dashboard"
+LABEL org.opencontainers.image.description="E-AgentCenter - operations dashboard"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.version="${MC_VERSION}"
 

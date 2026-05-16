@@ -14,8 +14,8 @@ export async function GET(request: Request) {
   // Return bypassed user for minimalist mode
   const safeUser = user || {
     id: 1,
-    username: 'admin',
-    display_name: 'Administrator',
+    username: 'proxy-client',
+    display_name: 'Proxy Client',
     role: 'admin',
     workspace_id: 1,
     tenant_id: 1,

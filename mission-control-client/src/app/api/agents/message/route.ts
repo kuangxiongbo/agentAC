@@ -8,6 +8,10 @@ import { logger } from '@/lib/logger'
 import { scanForInjection } from '@/lib/injection-guard'
 import { scanForSecrets } from '@/lib/secret-scanner'
 import { logSecurityEvent } from '@/lib/security-events'
+import {
+  executeBoundLocalAgentPrompt,
+  getLocalSessionKindForFramework,
+} from '@/lib/local-session-executor'
 
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'operator')
@@ -48,24 +52,32 @@ export async function POST(request: NextRequest) {
     if (!agent) {
       return NextResponse.json({ error: 'Recipient agent not found' }, { status: 404 })
     }
-    if (!agent.session_key) {
+    const localSessionKind = getLocalSessionKindForFramework(agent.framework)
+    if (!agent.session_key && !localSessionKind) {
       return NextResponse.json(
         { error: 'Recipient agent has no session key configured' },
         { status: 400 }
       )
     }
 
-    await runOpenClaw(
-      [
-        'gateway',
-        'sessions_send',
-        '--session',
-        agent.session_key,
-        '--message',
-        `Message from ${from}: ${message}`
-      ],
-      { timeoutMs: 10000 }
-    )
+    if (localSessionKind) {
+      await executeBoundLocalAgentPrompt(
+        agent,
+        `Message from ${from}: ${message}`,
+      )
+    } else {
+      await runOpenClaw(
+        [
+          'gateway',
+          'sessions_send',
+          '--session',
+          agent.session_key,
+          '--message',
+          `Message from ${from}: ${message}`
+        ],
+        { timeoutMs: 10000 }
+      )
+    }
 
     db_helpers.createNotification(
       to,

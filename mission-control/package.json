@@ -1,7 +1,7 @@
 {
   "name": "mission-control",
   "version": "2.0.1",
-  "description": "OpenClaw Mission Control — open-source agent orchestration dashboard",
+  "description": "OpenClaw E-AgentCenter — open-source agent orchestration dashboard",
   "scripts": {
     "verify:node": "node scripts/check-node-version.mjs",
     "api:parity": "node scripts/check-api-contract-parity.mjs --root . --openapi openapi.json --ignore-file scripts/api-contract-parity.ignore",
@@ -25,6 +25,7 @@
     "test:e2e:openclaw": "pnpm test:e2e:openclaw:local && pnpm test:e2e:openclaw:gateway",
     "test:all": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:e2e",
     "quality:gate": "pnpm test:all",
+    "docker:multiarch": "bash scripts/docker-buildx-multiarch.sh",
     "postinstall": "node -e \"try{require('better-sqlite3')}catch(e){if(e.code==='ERR_DLOPEN_FAILED'||/NODE_MODULE_VERSION/.test(e.message)){console.error('\\n⚠  better-sqlite3 compiled for wrong Node version. Run: pnpm rebuild better-sqlite3\\n');process.exit(1)}}\""
   },
   "dependencies": {

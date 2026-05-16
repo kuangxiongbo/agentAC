@@ -1,12 +1,12 @@
-# Mission Control Platform Hardening + Full Agent CLI/TUI PRD
+# E-AgentCenter Platform Hardening + Full Agent CLI/TUI PRD
 
 > For Hermes: execute this plan in iterative vertical slices (contract parity -> CLI core -> TUI -> hardening), with tests at each slice.
 
 Goal
-Build a production-grade Mission Control operator surface for autonomous agents via a first-party CLI (and optional lightweight TUI), while fixing platform inconsistencies discovered in audit: API contract drift, uneven reliability controls, and incomplete automation ergonomics.
+Build a production-grade E-AgentCenter operator surface for autonomous agents via a first-party CLI (and optional lightweight TUI), while fixing platform inconsistencies discovered in audit: API contract drift, uneven reliability controls, and incomplete automation ergonomics.
 
 Architecture
-Mission Control remains the source of truth with REST + SSE endpoints. A first-party CLI consumes those APIs with profile-based auth and machine-friendly output. TUI is layered on top of CLI API client primitives for shared behavior. API contract reliability is enforced through route-to-spec parity checks in CI.
+E-AgentCenter remains the source of truth with REST + SSE endpoints. A first-party CLI consumes those APIs with profile-based auth and machine-friendly output. TUI is layered on top of CLI API client primitives for shared behavior. API contract reliability is enforced through route-to-spec parity checks in CI.
 
 Tech Stack
 - Existing: Next.js app-router API, SQLite, Node runtime, SSE
@@ -17,13 +17,13 @@ Tech Stack
 
 ## 1) Problem statement
 
-Current Mission Control backend has strong capabilities for agent orchestration, but external automation quality is constrained by:
+Current E-AgentCenter backend has strong capabilities for agent orchestration, but external automation quality is constrained by:
 1. API surface drift between route handlers, openapi.json, and /api/index.
 2. No first-party comprehensive CLI for operators/agents.
 3. Uneven hardening around operational concerns (auth posture defaults, multi-instance rate limiting strategy, spawn history durability).
 4. Incomplete UX for non-interactive agent workflows (idempotent commands, stable JSON output, strict exit codes).
 
-Result: agents can use Mission Control partially, but not yet with high confidence as a full control plane.
+Result: agents can use E-AgentCenter partially, but not yet with high confidence as a full control plane.
 
 ## 2) Product objectives
 
@@ -194,7 +194,7 @@ Unit
 - API parity checker route extraction and mismatch detection.
 
 Integration
-- CLI against local Mission Control test server.
+- CLI against local E-AgentCenter test server.
 - Auth modes (API key, login session where enabled).
 - Session control, queue polling, skills CRUD.
 

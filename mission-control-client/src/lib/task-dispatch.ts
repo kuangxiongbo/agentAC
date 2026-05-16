@@ -5,6 +5,10 @@ import { eventBus } from './event-bus'
 import { logger } from './logger'
 import { config } from './config'
 import { sendBridgeEvent } from './remote-server-bridge'
+import {
+  executeBoundLocalAgentPrompt,
+  getLocalSessionKindForFramework,
+} from './local-session-executor'
 
 interface DispatchableTask {
   id: number
@@ -16,7 +20,10 @@ interface DispatchableTask {
   workspace_id: number
   agent_name: string
   agent_id: number
+  agent_framework: string | null
+  agent_session_key: string | null
   agent_config: string | null
+  agent_workspace_path: string | null
   ticket_prefix: string | null
   project_ticket_no: number | null
   project_id: number | null
@@ -96,7 +103,7 @@ function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | nu
     : `TASK-${task.id}`
 
   const lines = [
-    'You have been assigned a task in Mission Control.',
+    'You have been assigned a task in E-Agent-Client.',
     '',
     `**[${ticket}] ${task.title}**`,
     `Priority: ${task.priority}`,
@@ -356,7 +363,7 @@ function buildReviewPrompt(task: ReviewableTask): string {
     : `TASK-${task.id}`
 
   const lines = [
-    'You are Aegis, the quality reviewer for Mission Control.',
+    'You are Aegis, the quality reviewer for E-Agent-Client.',
     'Review the following completed task and its resolution.',
     '',
     `**[${ticket}] ${task.title}**`,
@@ -441,6 +448,7 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
           id: task.id, title: task.title, description: task.description,
           status: 'quality_review', priority: 'high', assigned_to: 'aegis',
           workspace_id: task.workspace_id, agent_name: 'aegis', agent_id: 0,
+          agent_framework: null, agent_session_key: null, agent_workspace_path: null,
           agent_config: null, ticket_prefix: task.ticket_prefix,
           project_ticket_no: task.project_ticket_no, project_id: null,
         }
@@ -652,6 +660,8 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
 
   const tasks = db.prepare(`
     SELECT t.*, a.name as agent_name, a.id as agent_id, a.config as agent_config,
+           a.framework as agent_framework, a.session_key as agent_session_key,
+           a.workspace_path as agent_workspace_path,
            p.ticket_prefix, t.project_ticket_no
     FROM tasks t
     JOIN agents a ON a.name = t.assigned_to AND a.workspace_id = t.workspace_id
@@ -723,8 +733,25 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
 
       let agentResponse: AgentResponseParsed
       const useDirectApi = !isGatewayAvailable() && getAnthropicApiKey()
-
-      if (useDirectApi && !targetSession) {
+      const localSessionKind = getLocalSessionKindForFramework(task.agent_framework)
+      if (localSessionKind) {
+        const localResult = await executeBoundLocalAgentPrompt(
+          {
+            id: task.agent_id,
+            name: task.agent_name,
+            framework: task.agent_framework,
+            session_key: task.agent_session_key,
+            config: task.agent_config,
+            workspace_path: task.agent_workspace_path,
+          },
+          prompt,
+          { overrideSessionKey: targetSession || undefined },
+        )
+        agentResponse = {
+          text: localResult.reply,
+          sessionId: localResult.sessionId,
+        }
+      } else if (useDirectApi && !targetSession) {
         // Direct Claude API dispatch — no gateway needed
         agentResponse = await callClaudeDirectly(task, prompt)
       } else if (targetSession) {
