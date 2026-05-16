@@ -6,6 +6,7 @@ import {
   executeLocalSessionPrompt,
   type LocalSessionKind,
 } from '@/lib/local-session-executor'
+import { notifySessionTranscriptUpdated } from '@/lib/session-realtime'
 
 /**
  * POST /api/sessions/continue
@@ -21,11 +22,15 @@ export async function POST(request: NextRequest) {
     kind = body?.kind as LocalSessionKind
     const sessionId = typeof body?.id === 'string' ? body.id.trim() : ''
     const prompt = typeof body?.prompt === 'string' ? body.prompt : ''
+    const workingDir = typeof body?.working_dir === 'string' ? body.working_dir.trim() : ''
 
     if (!isLocalSessionKind(kind)) {
       return NextResponse.json({ error: 'Invalid kind' }, { status: 400 })
     }
-    const result = await executeLocalSessionPrompt(kind, sessionId, prompt)
+    const result = await executeLocalSessionPrompt(kind, sessionId, prompt, {
+      workingDirectory: workingDir || null,
+    })
+    notifySessionTranscriptUpdated(kind, result.sessionId || sessionId, 'continue_api')
 
     return NextResponse.json({ ok: true, reply: result.reply })
   } catch (error: any) {

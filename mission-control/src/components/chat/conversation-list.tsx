@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useTranslations } from 'next-intl'
-import { useAgentCenterStore, Conversation } from '@/store'
+import { useAgentCenterStore, type Conversation } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 import { createClientLogger } from '@/lib/client-logger'
 import { Button } from '@/components/ui/button'
@@ -150,6 +150,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
     activeConversation,
     setActiveConversation,
     markConversationRead,
+    centralMode,
   } = useAgentCenterStore()
   const [search, setSearch] = useState('')
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
@@ -446,6 +447,11 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
     const isSessionRow = conv.id.startsWith('session:')
     const isSelected = activeConversation === conv.id
     const isEditing = editingId === conv.id
+    const needsEdgeClient =
+      centralMode
+      && isSessionRow
+      && conv.session?.sessionKind !== 'gateway'
+      && !conv.session?.nodeId
 
     return (
       <Button
@@ -483,6 +489,11 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
                 )}
                 {isSessionRow && conv.session?.sessionKind && conv.session.sessionKind !== 'gateway' && (
                   <SessionKindPill kind={conv.session.sessionKind} />
+                )}
+                {needsEdgeClient && (
+                  <span className="rounded bg-amber-500/15 px-1 py-0.5 text-[9px] text-amber-400" title={t('remoteClientRequired')}>
+                    {t('edgeClientMissing')}
+                  </span>
                 )}
                 {isEditing ? (
                   <input

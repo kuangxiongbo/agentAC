@@ -5,9 +5,11 @@ import { config } from './config'
 import { eventBus } from './event-bus'
 import { logger } from './logger'
 import {
+  type SessionRealtimeKind,
   type SessionRealtimePayload,
   type SessionRealtimeSource,
   sessionKindFromSource,
+  sessionSourceFromKind,
 } from './session-realtime-events'
 import { invalidateSessionCache } from './sessions'
 
@@ -60,6 +62,17 @@ function emitTranscriptUpdate(source: SessionRealtimeSource, reason: string, ses
     sessionId,
     reason,
   })
+}
+
+/** Push transcript refresh to SSE clients (e.g. after Bridge continue on an edge node). */
+export function notifySessionTranscriptUpdated(
+  kind: SessionRealtimeKind | string,
+  sessionId: string,
+  reason = 'session_continued',
+) {
+  const source = sessionSourceFromKind(kind)
+  if (!source || !sessionId) return
+  emitTranscriptUpdate(source, reason, sessionId)
 }
 
 function sessionIdFromJsonl(filePath: string): string | undefined {

@@ -507,7 +507,11 @@ function SessionConversationView({
   onSavePreferences: (payload: { prefKey: string; displayName?: string; colorTag?: string }) => Promise<void>
 }) {
   const t = useTranslations('chat')
+  const { centralMode } = useAgentCenterStore()
   const isGatewaySession = session.sessionKind === 'gateway'
+  const isRemoteEdgeSession = Boolean(session.nodeId)
+  const needsEdgeClientForContinue =
+    centralMode && !isGatewaySession && !session.nodeId
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null)
   const [continuePrompt, setContinuePrompt] = useState('')
   const [continueBusy, setContinueBusy] = useState(false)
@@ -538,6 +542,10 @@ function SessionConversationView({
   const handleContinueSession = async () => {
     const prompt = continuePrompt.trim()
     if (!prompt || continueBusy) return
+    if (needsEdgeClientForContinue) {
+      setContinueError(t('remoteClientRequired'))
+      return
+    }
 
     setContinueBusy(true)
     setContinueError(null)
@@ -571,6 +579,10 @@ function SessionConversationView({
         // Refresh transcript after a short delay to capture the response
         setTimeout(() => onRefreshTranscript(), 2000)
       } else {
+        if (isRemoteEdgeSession && !session.nodeId) {
+          throw new Error(t('remoteClientRequired'))
+        }
+
         const res = await fetch('/api/sessions/continue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -579,10 +591,18 @@ function SessionConversationView({
             id: session.sessionId,
             prompt,
             ...(session.nodeId ? { client_id: session.nodeId } : {}),
+            ...(session.workingDir ? { working_dir: session.workingDir } : {}),
           }),
         })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) {
+          const code = typeof data?.code === 'string' ? data.code : ''
+          if (code === 'bridge_offline') {
+            throw new Error(data?.error || t('bridgeOfflineContinue'))
+          }
+          if (code === 'client_id_required') {
+            throw new Error(data?.error || t('remoteClientRequired'))
+          }
           throw new Error(data?.error || t('failedToContinueSession'))
         }
         setContinuePrompt('')
@@ -590,6 +610,9 @@ function SessionConversationView({
           setLastReply(data.reply.trim())
         }
         onRefreshTranscript()
+        if (isRemoteEdgeSession) {
+          window.setTimeout(() => onRefreshTranscript(), 10000)
+        }
       }
     } catch (err) {
       setContinueError(err instanceof Error ? err.message : t('failedToContinueSession'))
@@ -714,6 +737,16 @@ function SessionConversationView({
 
       {/* Continue session input */}
       <div className="border-t border-border/50 px-4 py-2">
+        {needsEdgeClientForContinue && (
+          <p className="mb-1.5 text-[10px] leading-relaxed text-amber-400/90">
+            {t('remoteClientRequired')}
+          </p>
+        )}
+        {isRemoteEdgeSession && session.workingDir && !needsEdgeClientForContinue && (
+          <p className="mb-1.5 text-[10px] leading-relaxed text-amber-400/90">
+            {t('remoteContinueHint', { dir: session.workingDir })}
+          </p>
+        )}
         <div className="flex items-center gap-2">
           <span className={`font-mono-tight text-xs ${isGatewaySession ? 'text-cyan-400/60' : 'text-green-400/60'}`}>{isGatewaySession ? '>' : '$'}</span>
           <input
@@ -725,14 +758,21 @@ function SessionConversationView({
                 void handleContinueSession()
               }
             }}
-            placeholder={isGatewaySession ? t('sendMessageToSession') : t('sendPromptToLocalSession')}
-            className="h-7 flex-1 rounded border border-border/40 bg-surface-1 px-2 font-mono-tight text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/30"
+            placeholder={
+              needsEdgeClientForContinue
+                ? t('remoteClientRequired')
+                : isGatewaySession
+                  ? t('sendMessageToSession')
+                  : t('sendPromptToLocalSession')
+            }
+            disabled={needsEdgeClientForContinue}
+            className="h-7 flex-1 rounded border border-border/40 bg-surface-1 px-2 font-mono-tight text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-50"
           />
           <Button
             onClick={handleContinueSession}
             size="sm"
             variant="ghost"
-            disabled={continueBusy || !continuePrompt.trim()}
+            disabled={continueBusy || !continuePrompt.trim() || needsEdgeClientForContinue}
             className="h-7 px-3 text-xs"
           >
             {continueBusy ? '...' : t('send')}
@@ -844,7 +884,11 @@ function shouldRefreshSelectedSession(
   if (detail.sessionKey && session.sessionKey && detail.sessionKey !== session.sessionKey) return false
 
   // Gateway and Codex session IDs are stable enough to filter precisely.
-  if ((detail.source === 'gateway' || detail.source === 'codex') && detail.sessionId && detail.sessionId !== session.sessionId) {
+  if (
+    (detail.source === 'gateway' || detail.source === 'codex' || detail.source === 'claude')
+    && detail.sessionId
+    && detail.sessionId !== session.sessionId
+  ) {
     return false
   }
 

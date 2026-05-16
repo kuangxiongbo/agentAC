@@ -27,3 +27,18 @@ export function sessionKindFromSource(source: SessionRealtimeSource): SessionRea
       return undefined
   }
 }
+
+export function sessionSourceFromKind(kind: string): SessionRealtimeSource | undefined {
+  switch (kind) {
+    case 'claude-code':
+      return 'claude'
+    case 'codex-cli':
+      return 'codex'
+    case 'hermes':
+      return 'hermes'
+    case 'gateway':
+      return 'gateway'
+    default:
+      return undefined
+  }
+}

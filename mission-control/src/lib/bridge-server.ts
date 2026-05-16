@@ -5,6 +5,7 @@ import { eventBus } from './event-bus'
 import { getDatabase } from './db'
 import { config } from './config'
 import type { LocalSessionTranscriptKind, TranscriptMessage } from './session-transcript'
+import { notifySessionTranscriptUpdated } from './session-realtime'
 
 let wss: WebSocketServer | null = (global as any)._mc_bridge_server || null
 const bridgeServerMeta: { port: number | null; startedAt: number | null } =
@@ -44,6 +45,8 @@ interface PendingBridgeRequest {
   connectionId: string
   timeout: NodeJS.Timeout
   kind: BridgePendingKind
+  sessionKind?: BridgeSessionContinueKind
+  sessionId?: string
   resolve: (value: unknown) => void
   reject: (error: Error) => void
 }
@@ -132,9 +135,13 @@ function resolvePendingRequest(msg: any) {
   }
 
   if (pending.kind === 'continue') {
+    const resolvedSessionId = typeof msg?.sessionId === 'string' ? msg.sessionId : pending.sessionId || null
+    if (pending.sessionKind && resolvedSessionId) {
+      notifySessionTranscriptUpdated(pending.sessionKind, resolvedSessionId, 'bridge_continue')
+    }
     pending.resolve({
       reply: typeof msg?.reply === 'string' ? msg.reply : '',
-      sessionId: typeof msg?.sessionId === 'string' ? msg.sessionId : null,
+      sessionId: resolvedSessionId,
       source: typeof msg?.source === 'string' ? msg.source : 'bridge',
     })
     return true
@@ -294,6 +301,17 @@ export function initBridgeServer(port: number = 5002) {
               touchConnection(connectionId)
               resolvePendingRequest(msg)
               break
+
+            case 'session_transcript_changed': {
+              touchConnection(connectionId)
+              const edgeSession = msg?.session && typeof msg.session === 'object' ? msg.session : {}
+              const edgeKind = typeof edgeSession?.kind === 'string' ? edgeSession.kind : ''
+              const edgeSessionId = typeof edgeSession?.sessionId === 'string' ? edgeSession.sessionId : ''
+              if (edgeKind && edgeSessionId) {
+                notifySessionTranscriptUpdated(edgeKind, edgeSessionId, 'edge_transcript_changed')
+              }
+              break
+            }
           }
         } catch (err) {
           logger.error({ err }, '[BridgeServer] Failed to handle message')
@@ -443,6 +461,7 @@ export async function requestBridgeClientSessionContinue(input: {
   kind: BridgeSessionContinueKind
   sessionId: string
   prompt: string
+  workingDirectory?: string | null
   timeoutMs?: number
 }): Promise<{ reply: string; sessionId: string | null; source: string }> {
   const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
@@ -461,6 +480,8 @@ export async function requestBridgeClientSessionContinue(input: {
       connectionId,
       timeout,
       kind: 'continue',
+      sessionKind: input.kind,
+      sessionId: input.sessionId,
       resolve: resolve as (value: unknown) => void,
       reject,
     })
@@ -473,6 +494,7 @@ export async function requestBridgeClientSessionContinue(input: {
           kind: input.kind,
           sessionId: input.sessionId,
           prompt: input.prompt,
+          ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
         },
       }))
     } catch (error) {

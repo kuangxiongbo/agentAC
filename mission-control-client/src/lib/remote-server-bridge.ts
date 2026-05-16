@@ -30,6 +30,7 @@ import {
   type LocalSessionKind,
 } from './local-session-executor'
 import { readLocalSessionTranscript, type LocalSessionTranscriptKind } from './session-transcript'
+import { notifySessionTranscriptUpdated } from './session-realtime'
 
 // We use the native ws library if available (Node 18+ has it natively via global WebSocket)
 // In Next.js server context, we use the 'ws' package for server-side WebSocket.
@@ -389,6 +390,11 @@ async function handleSessionContinueRequest(message: any): Promise<void> {
   const kind = typeof session?.kind === 'string' ? session.kind : ''
   const sessionId = typeof session?.sessionId === 'string' ? session.sessionId : ''
   const prompt = typeof session?.prompt === 'string' ? session.prompt : ''
+  const workingDirectory = typeof session?.workingDirectory === 'string'
+    ? session.workingDirectory.trim()
+    : typeof session?.working_dir === 'string'
+      ? session.working_dir.trim()
+      : ''
 
   if (!requestId) return
 
@@ -403,14 +409,22 @@ async function handleSessionContinueRequest(message: any): Promise<void> {
   }
 
   try {
-    const result = await executeLocalSessionPrompt(kind as LocalSessionKind, sessionId, prompt)
+    const result = await executeLocalSessionPrompt(kind as LocalSessionKind, sessionId, prompt, {
+      workingDirectory: workingDirectory || null,
+    })
+    const resolvedSessionId = result.sessionId || sessionId
+    notifySessionTranscriptUpdated(kind, resolvedSessionId, 'bridge_continue')
+    safeSend(state.ws, {
+      type: 'session_transcript_changed',
+      session: { kind, sessionId: resolvedSessionId },
+    })
     safeSend(state.ws, {
       type: 'session_continue_response',
       requestId,
       ok: true,
       source: 'remote-bridge',
       reply: result.reply,
-      sessionId: result.sessionId,
+      sessionId: resolvedSessionId,
     })
   } catch (err: any) {
     safeSend(state.ws, {

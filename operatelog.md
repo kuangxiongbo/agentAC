@@ -2,9 +2,13 @@
 
 ## 2026-05-16
 
+- **mission-control-client 本地重启**：停止占用 **5001** 的旧进程后执行 `pnpm dev`，服务已就绪 **http://127.0.0.1:5001**（Next.js 16.1.6，加载 `.env.local` 含 `MC_REMOTE_SERVER_URL`）。
+- **客户端/服务端发消息优化（续）**：Mac 执行 continue 后经 Bridge 发送 **`session_transcript_changed`**，中心服 **`notifySessionTranscriptUpdated`** 推 SSE → 浏览器即时刷新 transcript（保留 10s 兜底轮询）；生产模式下无 **`nodeId`** 的 CLI 会话在列表标「无边缘节点」并禁用发送框。
+- **客户端/服务端发消息优化**：Bridge `session_continue` 透传 **`working_dir`**（中心服 continue API → Bridge → Mac `executeLocalSessionPrompt` 的 `cwd`）；聊天页远程会话展示工作目录提示、Bridge 离线/`client_id` 缺失的明确错误、发送后延迟刷新 transcript；**mission-control-client** 本地 continue API 与聊天页同步上述逻辑。
 - **会话继续 `spawn codex ENOENT`**：`/api/sessions/continue` 在**生产中心服**（`centralMode`）返回 **503** 提示改在 **http://127.0.0.1:5001** 发送；**mission-control-client** 的 `local-session-executor` 增加 **`MC_CODEX_BIN`**、Homebrew PATH 与更明确的 ENOENT 错误文案。
 - **mission-control（i18n）**：`messages/zh.json` 的 `agentDetail` 补全 **`send`** 等键，修复控制台 `MISSING_MESSAGE: agentDetail.send (zh)`。
 - **端口约定**：**mission-control-client** 本机 dev 改为 **5001**（`package.json`）；**mission-control** Bridge 恢复 **5002**（`scheduler.ts`、`bridge/info/route.ts`）；**deploy/.env.1panel.example** 反代与映射改为 **5002**。本机访问客户端：**http://127.0.0.1:5001**。
+- **GitHub**：提交 **`399c922`** 并推送 **`origin/main`**（Bridge continue、部署文档、客户端 5001 等）；Codex 会话因沙箱仅可写 `mission-control-client` 无法在仓库根 `git push`。
 - **服务端镜像推送 ACR**：本地 buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:a8a99ed52eca877a2d55c7396eb44d2e0871e94a4e4cba80b34e597f28ff8a25`**（含 Bridge `session_continue`、transcript 503、zh `agentDetail.send` 等未提交本地改动）。
 - **Bridge 远程发送消息**：中心服 `POST /api/sessions/continue` 在带 **`client_id`** 或 **centralMode** 时经 Bridge 下发 **`session_continue_request`**；边缘 **mission-control-client** 本机执行 `executeLocalSessionPrompt` 并 **`session_continue_response`** 回传；聊天页 continue 请求附带 **`session.nodeId`**。需部署新服务端镜像并重启 Mac 客户端。
 - **Bridge 已打通（用户确认）**：Nginx **`/bridge-ws` → `127.0.0.1:5002`** 生效，生产聊天页已能拉取本地会话 **transcript**；Mac 代理客户端需保持运行且 Bridge 已连接。

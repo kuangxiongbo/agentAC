@@ -382,6 +382,7 @@ interface AgentCenterStore {
   bootComplete: boolean
   subscription: { type: string; provider?: string; rateLimitTier?: string } | null
   defaultOrgName: string
+  centralMode: boolean
   setDashboardMode: (mode: 'full' | 'local') => void
   setGatewayAvailable: (available: boolean) => void
   setLocalSessionsAvailable: (available: boolean) => void
@@ -390,6 +391,7 @@ interface AgentCenterStore {
   setBootComplete: () => void
   setSubscription: (sub: { type: string; provider?: string; rateLimitTier?: string } | null) => void
   setDefaultOrgName: (name: string) => void
+  setCentralMode: (central: boolean) => void
 
   // Update availability
   updateAvailable: { latestVersion: string; releaseUrl: string; releaseNotes: string } | null
@@ -617,6 +619,7 @@ export const useAgentCenterStore = create<AgentCenterStore>()(
     bootComplete: false,
     subscription: null,
     defaultOrgName: 'Default',
+    centralMode: false,
     setDashboardMode: (mode) => set({ dashboardMode: mode }),
     setGatewayAvailable: (available) => set({ gatewayAvailable: available }),
     setLocalSessionsAvailable: (available) => set({ localSessionsAvailable: available }),
@@ -625,6 +628,7 @@ export const useAgentCenterStore = create<AgentCenterStore>()(
     setBootComplete: () => set({ bootComplete: true }),
     setSubscription: (sub) => set({ subscription: sub }),
     setDefaultOrgName: (name) => set({ defaultOrgName: name }),
+    setCentralMode: (central) => set({ centralMode: central }),
     clientName: 'LocalClient',
     setClientName: (name) => set({ clientName: name }),
 

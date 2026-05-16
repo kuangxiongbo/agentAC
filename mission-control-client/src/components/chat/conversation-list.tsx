@@ -143,6 +143,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
     activeConversation,
     setActiveConversation,
     markConversationRead,
+    centralMode,
   } = useAgentCenterStore()
   const [search, setSearch] = useState('')
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
@@ -413,6 +414,11 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
     const isSessionRow = conv.id.startsWith('session:')
     const isSelected = activeConversation === conv.id
     const isEditing = editingId === conv.id
+    const needsEdgeClient =
+      centralMode
+      && isSessionRow
+      && conv.session?.sessionKind !== 'gateway'
+      && !conv.session?.nodeId
 
     return (
       <Button
@@ -450,6 +456,11 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
                 )}
                 {isSessionRow && conv.session?.sessionKind && (
                   <SessionKindPill kind={conv.session.sessionKind} />
+                )}
+                {needsEdgeClient && (
+                  <span className="rounded bg-amber-500/15 px-1 py-0.5 text-[9px] text-amber-400" title={t('remoteClientRequired')}>
+                    {t('edgeClientMissing')}
+                  </span>
                 )}
                 {isEditing ? (
                   <input

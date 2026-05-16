@@ -6,6 +6,7 @@ import { requestBridgeClientSessionContinue, type BridgeSessionContinueKind } fr
 import { logger } from '@/lib/logger'
 import { runCommand } from '@/lib/command'
 import { config } from '@/lib/config'
+import { notifySessionTranscriptUpdated } from '@/lib/session-realtime'
 
 const BRIDGE_CONTINUE_KINDS = new Set<BridgeSessionContinueKind>([
   'claude-code',
@@ -45,6 +46,7 @@ export async function POST(request: NextRequest) {
     const sessionId = typeof body?.id === 'string' ? body.id.trim() : ''
     const prompt = sanitizePrompt(body?.prompt)
     const clientId = typeof body?.client_id === 'string' ? body.client_id.trim() : ''
+    const workingDir = typeof body?.working_dir === 'string' ? body.working_dir.trim() : ''
 
     if (!sessionId || !/^[a-zA-Z0-9._:-]+$/.test(sessionId)) {
       return NextResponse.json({ error: 'Invalid session id' }, { status: 400 })
@@ -70,12 +72,15 @@ export async function POST(request: NextRequest) {
           kind,
           sessionId,
           prompt,
+          workingDirectory: workingDir || null,
           timeoutMs: 180000,
         })
+        const resolvedSessionId = remote.sessionId || sessionId
+        notifySessionTranscriptUpdated(kind, resolvedSessionId, 'continue_api')
         return NextResponse.json({
           ok: true,
           reply: remote.reply || 'Session continued, but no text response was returned.',
-          session_id: remote.sessionId,
+          session_id: resolvedSessionId,
           source: remote.source,
           remote: true,
           client_id: clientId,
@@ -127,6 +132,8 @@ export async function POST(request: NextRequest) {
     if (!reply) {
       reply = 'Session continued, but no text response was returned.'
     }
+
+    notifySessionTranscriptUpdated(kind, sessionId, 'continue_api')
 
     return NextResponse.json({ ok: true, reply })
   } catch (error: any) {
