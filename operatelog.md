@@ -75,6 +75,8 @@
 
 ## 2026-05-16
 
+- **GitHub 提交与推送**：提交 **`7d2cbe8`**（rebase 后为 **`13ab946`**）**`feat: Zitadel SSO, user-center tenancy, and production deploy tooling`**（494 文件）；**`git pull --rebase origin main`** 丢弃与远端重复的 **`c02812f`**；**`git push origin main`** 至 **`kuangxiongbo/agentAC`** 成功。未提交 **`.env.local`**、**`deploy/.env`**（已 gitignore）。
+- **镜像与代码对齐检查**：ACR **`agentcenter:2.0.1`** / **`:latest`** manifest 仍为 **`sha256:88e9a874…`**（**amd64+arm64**）；该镜像在提交前由本地工作区构建，与当前 **`main`** 内容一致，**无需因本次 push 再次构建**。仓库根目录无 **`.github/workflows`**，**`mission-control/.github`** 内 CI/镜像工作流不会在 push 时自动运行；生产仍用 ACR 手动 **`docker-buildx-multiarch.sh`**。
 - **mission-control（阿里云 ACR 镜像构建与推送）**：在 **`mission-control/`** 使用 **`scripts/docker-buildx-multiarch.sh`**（**`MC_DOCKER_PUSH=1`**、builder **`mc-multiarch`**）构建并推送多架构 manifest：**`linux/amd64`** + **`linux/arm64`**。镜像地址：**`crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1`** 与 **`:latest`**（digest **`sha256:88e9a8749bbedc3a50cc1425b0a68019e73d47179fc4786a7ad4205235e16c98`**）。**`deploy/.env`** 中 **`MC_IMAGE`** 已由 **`:1.0.0`** 更新为 **`:2.0.1`**，与 **`package.json`** 版本一致。构建耗时约 **7.7 分钟**，**`docker login`** 使用既有 ACR 凭据。
 
 ## 2026-05-15
