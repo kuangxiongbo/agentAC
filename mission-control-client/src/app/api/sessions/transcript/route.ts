@@ -5,7 +5,11 @@ import {
   readHermesTranscriptFromDbPath,
   readLocalSessionTranscript,
   type LocalSessionTranscriptKind,
+  type TranscriptMessage,
 } from '@/lib/session-transcript'
+
+const transcriptCache = new Map<string, { at: number; messages: TranscriptMessage[] }>()
+const TRANSCRIPT_CACHE_MS = 4000
 
 /**
  * GET /api/sessions/transcript
@@ -28,7 +32,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'kind and id are required' }, { status: 400 })
     }
 
+    const cacheKey = `${kind}:${sessionId}:${limit}`
+    const cached = transcriptCache.get(cacheKey)
+    const now = Date.now()
+    if (cached && now - cached.at < TRANSCRIPT_CACHE_MS) {
+      return NextResponse.json({ messages: cached.messages, cached: true })
+    }
+
     const messages = readLocalSessionTranscript(kind as LocalSessionTranscriptKind, sessionId, limit)
+    transcriptCache.set(cacheKey, { at: now, messages })
 
     return NextResponse.json({ messages })
   } catch (error) {

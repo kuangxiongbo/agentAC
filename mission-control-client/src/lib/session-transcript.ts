@@ -64,6 +64,114 @@ function listRecentFiles(root: string, ext: string, limit: number): string[] {
   return files.slice(0, Math.max(1, limit)).map((f) => f.path)
 }
 
+function deriveJsonlSessionId(filePath: string): string {
+  const base = path.basename(filePath, '.jsonl')
+  const match = base.match(/([0-9a-f]{8,}-[0-9a-f-]{8,})$/i)
+  return match?.[1] || base
+}
+
+/** Locate a session JSONL by id without reading file bodies (path / filename match). */
+function findSessionJsonlFile(root: string, sessionId: string): string | null {
+  if (!root || !sessionId || !fs.existsSync(root)) return null
+
+  const stack = [root]
+  while (stack.length > 0) {
+    const dir = stack.pop()
+    if (!dir) continue
+
+    let entries: string[] = []
+    try {
+      entries = fs.readdirSync(dir)
+    } catch {
+      continue
+    }
+
+    for (const entry of entries) {
+      const full = path.join(dir, entry)
+      let stat: fs.Stats
+      try {
+        stat = fs.statSync(full)
+      } catch {
+        continue
+      }
+
+      if (stat.isDirectory()) {
+        stack.push(full)
+        continue
+      }
+
+      if (!stat.isFile() || !full.endsWith('.jsonl')) continue
+      if (full.includes(sessionId) || deriveJsonlSessionId(full) === sessionId) {
+        return full
+      }
+    }
+  }
+
+  return null
+}
+
+function fileSnippetContains(filePath: string, needle: string, bytes = 8192): boolean {
+  try {
+    const fd = fs.openSync(filePath, 'r')
+    try {
+      const buf = Buffer.alloc(bytes)
+      const read = fs.readSync(fd, buf, 0, bytes, 0)
+      return buf.subarray(0, read).toString('utf-8').includes(needle)
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch {
+    return false
+  }
+}
+
+function listClaudeTranscriptCandidates(root: string, sessionId: string): string[] {
+  const recent = listRecentFiles(root, '.jsonl', 80)
+  const matched: string[] = []
+  for (const file of recent) {
+    if (file.includes(sessionId) || fileSnippetContains(file, sessionId)) {
+      matched.push(file)
+    }
+  }
+  return matched
+}
+
+const MAX_TRANSCRIPT_READ_BYTES = 6 * 1024 * 1024
+
+function readJsonlTextForTranscript(filePath: string): string {
+  let size = 0
+  try {
+    size = fs.statSync(filePath).size
+  } catch {
+    return ''
+  }
+
+  if (size <= MAX_TRANSCRIPT_READ_BYTES) {
+    try {
+      return fs.readFileSync(filePath, 'utf-8')
+    } catch {
+      return ''
+    }
+  }
+
+  const headBytes = Math.min(64 * 1024, size)
+  const tailBytes = Math.min(2 * 1024 * 1024, size - headBytes)
+  try {
+    const fd = fs.openSync(filePath, 'r')
+    try {
+      const head = Buffer.alloc(headBytes)
+      fs.readSync(fd, head, 0, headBytes, 0)
+      const tail = Buffer.alloc(tailBytes)
+      fs.readSync(fd, tail, 0, tailBytes, size - tailBytes)
+      return `${head.toString('utf-8')}\n${tail.toString('utf-8')}`
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch {
+    return ''
+  }
+}
+
 function pushMessage(
   list: TranscriptMessage[],
   role: TranscriptMessage['role'],
@@ -82,16 +190,12 @@ function textPart(content: string | null, limit = 8000): MessageContentPart | nu
 
 function readClaudeTranscript(sessionId: string, limit: number): TranscriptMessage[] {
   const root = path.join(config.claudeHome, 'projects')
-  const files = listRecentFiles(root, '.jsonl', 300)
+  const files = listClaudeTranscriptCandidates(root, sessionId)
   const out: TranscriptMessage[] = []
 
   for (const file of files) {
-    let raw = ''
-    try {
-      raw = fs.readFileSync(file, 'utf-8')
-    } catch {
-      continue
-    }
+    const raw = readJsonlTextForTranscript(file)
+    if (!raw) continue
 
     const lines = raw.split('\n').filter(Boolean)
     for (const line of lines) {
@@ -166,28 +270,24 @@ function readClaudeTranscript(sessionId: string, limit: number): TranscriptMessa
 
 function readCodexTranscript(sessionId: string, limit: number): TranscriptMessage[] {
   const root = path.join(config.homeDir, '.codex', 'sessions')
-  const files = listRecentFiles(root, '.jsonl', 300)
-  const out: TranscriptMessage[] = []
+  const file = findSessionJsonlFile(root, sessionId)
+  if (!file) return []
 
-  for (const file of files) {
-    let raw = ''
+  const raw = readJsonlTextForTranscript(file)
+  if (!raw) return []
+
+  const out: TranscriptMessage[] = []
+  let matchedSession = file.includes(sessionId)
+  const lines = raw.split('\n').filter(Boolean)
+  for (const line of lines) {
+    let parsed: any
     try {
-      raw = fs.readFileSync(file, 'utf-8')
+      parsed = JSON.parse(line)
     } catch {
       continue
     }
 
-    let matchedSession = file.includes(sessionId)
-    const lines = raw.split('\n').filter(Boolean)
-    for (const line of lines) {
-      let parsed: any
-      try {
-        parsed = JSON.parse(line)
-      } catch {
-        continue
-      }
-
-      if (!matchedSession && parsed?.type === 'session_meta' && parsed?.payload?.id === sessionId) {
+    if (!matchedSession && parsed?.type === 'session_meta' && parsed?.payload?.id === sessionId) {
         matchedSession = true
       }
       if (!matchedSession) continue
@@ -217,7 +317,6 @@ function readCodexTranscript(sessionId: string, limit: number): TranscriptMessag
         }
       }
     }
-  }
 
   return out.slice().sort((a, b) => messageTimestampMs(a) - messageTimestampMs(b)).slice(-limit)
 }

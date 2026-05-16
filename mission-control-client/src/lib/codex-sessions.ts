@@ -208,7 +208,19 @@ function parseCodexSessionFile(filePath: string, fileMtimeMs: number): CodexSess
   }
 }
 
+let cachedCodexScan: { at: number; sessions: CodexSessionStats[] } | null = null
+const CODEX_SCAN_CACHE_MS = 5000
+
+export function invalidateCodexSessionScan(): void {
+  cachedCodexScan = null
+}
+
 export function scanCodexSessions(limit = DEFAULT_FILE_SCAN_LIMIT): CodexSessionStats[] {
+  const now = Date.now()
+  if (cachedCodexScan && now - cachedCodexScan.at < CODEX_SCAN_CACHE_MS) {
+    return cachedCodexScan.sessions
+  }
+
   try {
     const files = listRecentCodexSessionFiles(limit)
     const sessions: CodexSessionStats[] = []
@@ -224,6 +236,7 @@ export function scanCodexSessions(limit = DEFAULT_FILE_SCAN_LIMIT): CodexSession
       return bTs - aTs
     })
 
+    cachedCodexScan = { at: now, sessions }
     return sessions
   } catch (err) {
     logger.warn({ err }, 'Failed to scan Codex sessions')

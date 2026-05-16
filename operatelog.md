@@ -2,6 +2,9 @@
 
 ## 2026-05-16
 
+- **服务端镜像推送 ACR（含 transcript SSE / working_dir）**：提交 **`4447c67`** 后 buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:d7c79c97af0a2a63f96af10e1da6a4ca81566e364e9d2b6137fcb5f0522ba929`**（amd64+arm64）；已 **`git push origin main`**。生产 1Panel：`docker compose pull && docker compose up -d --force-recreate`。
+- **聊天 UX**：transcript 仅在选中会话时加载，前端内存缓存切换秒开；会话列表 `requestIdleCallback` 懒加载；修复轮询刷新时强制滚底——仅在接近底部时自动滚动，上翻历史时显示「新消息」按钮。
+- **聊天性能**：切换会话时立即清空 transcript 并显示骨架屏；Codex transcript 改为按 sessionId 定位单个 JSONL（不再扫描 300 个文件）；Claude 先路径/片段匹配再读；`/api/sessions` Codex 扫描 5s 缓存；transcript API 4s 缓存。
 - **mission-control-client 本地重启**：停止占用 **5001** 的旧进程后执行 `pnpm dev`，服务已就绪 **http://127.0.0.1:5001**（Next.js 16.1.6，加载 `.env.local` 含 `MC_REMOTE_SERVER_URL`）。
 - **客户端/服务端发消息优化（续）**：Mac 执行 continue 后经 Bridge 发送 **`session_transcript_changed`**，中心服 **`notifySessionTranscriptUpdated`** 推 SSE → 浏览器即时刷新 transcript（保留 10s 兜底轮询）；生产模式下无 **`nodeId`** 的 CLI 会话在列表标「无边缘节点」并禁用发送框。
 - **客户端/服务端发消息优化**：Bridge `session_continue` 透传 **`working_dir`**（中心服 continue API → Bridge → Mac `executeLocalSessionPrompt` 的 `cwd`）；聊天页远程会话展示工作目录提示、Bridge 离线/`client_id` 缺失的明确错误、发送后延迟刷新 transcript；**mission-control-client** 本地 continue API 与聊天页同步上述逻辑。

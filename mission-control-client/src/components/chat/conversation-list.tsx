@@ -147,6 +147,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
   } = useAgentCenterStore()
   const [search, setSearch] = useState('')
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
+  const [sessionListReady, setSessionListReady] = useState(false)
 
   // Context menu state
   const [ctxMenu, setCtxMenu] = useState<{ convId: string; x: number; y: number } | null>(null)
@@ -350,8 +351,24 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
     return () => window.removeEventListener(SESSION_LIST_UPDATED_EVENT, handleSessionListUpdated)
   }, [loadConversations])
 
+  // Lazy-load session list after first paint (avoids blocking sidebar render)
+  useEffect(() => {
+    const run = () => {
+      void loadConversations().finally(() => setSessionListReady(true))
+    }
+    if (typeof requestIdleCallback === 'function') {
+      const id = requestIdleCallback(run, { timeout: 1500 })
+      return () => cancelIdleCallback(id)
+    }
+    const timer = setTimeout(run, 0)
+    return () => clearTimeout(timer)
+  }, [loadConversations])
+
   // Low-frequency fallback in case the OS drops a file notification.
-  useSmartPoll(loadConversations, SESSION_LIST_FALLBACK_POLL_MS)
+  useSmartPoll(loadConversations, SESSION_LIST_FALLBACK_POLL_MS, {
+    enabled: sessionListReady,
+    pauseWhenSseConnected: true,
+  })
 
   const handleSelect = (convId: string) => {
     setActiveConversation(convId)

@@ -50,6 +50,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
 
   const pendingIdRef = useRef(-1)
   const sessionTranscriptRequestIdRef = useRef(0)
+  const transcriptCacheRef = useRef(new Map<string, SessionTranscriptMessage[]>())
 
   const [showConversations, setShowConversations] = useState(true)
   const [isMobile, setIsMobile] = useState(false)
@@ -77,6 +78,21 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
       sessionTranscriptRequestIdRef.current += 1
     }
   }, [])
+
+  // Switch session: show cached transcript instantly, then refresh in background
+  useEffect(() => {
+    if (!activeConversation?.startsWith('session:')) return
+    sessionTranscriptRequestIdRef.current += 1
+    const cached = transcriptCacheRef.current.get(activeConversation)
+    if (cached) {
+      setSessionTranscript(cached)
+      setSessionTranscriptLoading(false)
+    } else {
+      setSessionTranscript([])
+      setSessionTranscriptLoading(true)
+    }
+    setSessionTranscriptError(null)
+  }, [activeConversation])
 
   // On mobile, hide conversations when a conversation is selected
   useEffect(() => {
@@ -239,8 +255,9 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
     !!activeConversation &&
     !activeConversation.startsWith('session:')
 
-  const loadSessionTranscript = useCallback(async () => {
+  const loadSessionTranscript = useCallback(async (options?: { background?: boolean }) => {
     const sessionMeta = selectedSession
+    const cacheKey = activeConversation
     if (!sessionMeta) {
       sessionTranscriptRequestIdRef.current += 1
       setSessionTranscript([])
@@ -251,7 +268,10 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
 
     const requestId = sessionTranscriptRequestIdRef.current + 1
     sessionTranscriptRequestIdRef.current = requestId
-    setSessionTranscriptLoading(true)
+    const hasCache = cacheKey ? transcriptCacheRef.current.has(cacheKey) : false
+    if (!options?.background || !hasCache) {
+      setSessionTranscriptLoading(true)
+    }
     setSessionTranscriptError(null)
 
     // Gateway sessions use the gateway transcript API
@@ -268,7 +288,9 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
 
       const data = await res.json()
       if (sessionTranscriptRequestIdRef.current !== requestId) return
-      setSessionTranscript(Array.isArray(data?.messages) ? data.messages : [])
+      const nextMessages = Array.isArray(data?.messages) ? data.messages : []
+      if (cacheKey) transcriptCacheRef.current.set(cacheKey, nextMessages)
+      setSessionTranscript(nextMessages)
     } catch (err) {
       if (sessionTranscriptRequestIdRef.current !== requestId) return
       setSessionTranscript([])
@@ -278,10 +300,10 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
         setSessionTranscriptLoading(false)
       }
     }
-  }, [selectedSession, sessionReloadNonce])
+  }, [selectedSession, sessionReloadNonce, activeConversation])
 
   useEffect(() => {
-    void loadSessionTranscript()
+    void loadSessionTranscript({ background: true })
   }, [loadSessionTranscript])
 
   useEffect(() => {
@@ -298,16 +320,18 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
   }, [selectedSession, loadSessionTranscript])
 
   useSmartPoll(
-    loadSessionTranscript,
+    () => loadSessionTranscript({ background: true }),
     selectedSession?.active ? ACTIVE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS : IDLE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS,
     {
       enabled: !!selectedSession,
+      pauseWhenSseConnected: true,
     }
   )
 
   const refreshSessionTranscript = useCallback(() => {
+    if (activeConversation) transcriptCacheRef.current.delete(activeConversation)
     setSessionReloadNonce((v) => v + 1)
-  }, [])
+  }, [activeConversation])
 
   const handleSaveSessionPreferences = useCallback(async (payload: {
     prefKey: string
@@ -464,6 +488,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
 
             {selectedConversation?.source === 'session' && selectedConversation.session ? (
               <SessionConversationView
+                key={activeConversation}
                 session={selectedConversation.session}
                 messages={sessionTranscript}
                 loading={sessionTranscriptLoading}
@@ -513,6 +538,9 @@ function SessionConversationView({
   const needsEdgeClientForContinue =
     centralMode && !isGatewaySession && !session.nodeId
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null)
+  const transcriptBottomRef = useRef<HTMLDivElement | null>(null)
+  const prevTranscriptCountRef = useRef(0)
+  const [showNewTranscript, setShowNewTranscript] = useState(false)
   const [continuePrompt, setContinuePrompt] = useState('')
   const [continueBusy, setContinueBusy] = useState(false)
   const [continueError, setContinueError] = useState<string | null>(null)
@@ -533,11 +561,52 @@ function SessionConversationView({
     setLastReply(null)
   }, [session.prefKey, session.displayName, session.colorTag])
 
-  useEffect(() => {
+  const isTranscriptNearBottom = useCallback(() => {
+    const container = transcriptScrollRef.current
+    if (!container) return true
+    return container.scrollHeight - container.scrollTop - container.clientHeight < 120
+  }, [])
+
+  const scrollTranscriptToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const container = transcriptScrollRef.current
     if (!container) return
-    container.scrollTop = container.scrollHeight
-  }, [messages, loading, lastReply])
+    container.scrollTo({ top: container.scrollHeight, behavior })
+  }, [])
+
+  // New session: start at bottom once
+  useEffect(() => {
+    prevTranscriptCountRef.current = 0
+    setShowNewTranscript(false)
+    requestAnimationFrame(() => {
+      const container = transcriptScrollRef.current
+      if (container) container.scrollTop = container.scrollHeight
+    })
+  }, [session.prefKey])
+
+  // Poll/refresh: only auto-scroll if user is already near bottom
+  useEffect(() => {
+    if (loading) return
+    const count = messages.length
+    if (count > prevTranscriptCountRef.current) {
+      if (isTranscriptNearBottom()) {
+        requestAnimationFrame(() => scrollTranscriptToBottom(count - prevTranscriptCountRef.current > 5 ? 'auto' : 'smooth'))
+        setShowNewTranscript(false)
+      } else if (count > 0) {
+        setShowNewTranscript(true)
+      }
+    }
+    prevTranscriptCountRef.current = count
+  }, [messages, loading, isTranscriptNearBottom, scrollTranscriptToBottom])
+
+  useEffect(() => {
+    if (lastReply && isTranscriptNearBottom()) {
+      requestAnimationFrame(() => scrollTranscriptToBottom('smooth'))
+    }
+  }, [lastReply, isTranscriptNearBottom, scrollTranscriptToBottom])
+
+  const handleTranscriptScroll = useCallback(() => {
+    if (isTranscriptNearBottom()) setShowNewTranscript(false)
+  }, [isTranscriptNearBottom])
 
   const handleContinueSession = async () => {
     const prompt = continuePrompt.trim()
@@ -705,7 +774,11 @@ function SessionConversationView({
       </div>
 
       {/* Transcript */}
-      <div ref={transcriptScrollRef} className="flex-1 overflow-y-auto font-mono-tight py-2">
+      <div
+        ref={transcriptScrollRef}
+        onScroll={handleTranscriptScroll}
+        className="relative flex-1 overflow-y-auto font-mono-tight py-2"
+      >
         {loading && messages.length === 0 && (
           <div className="space-y-2 px-4">
             <div className="h-4 w-3/4 animate-pulse rounded bg-surface-1/60" />
@@ -722,7 +795,7 @@ function SessionConversationView({
             {isGatewaySession ? t('noGatewayMessages') : t('noTranscriptSnippets')}
           </div>
         )}
-        {!error && messages.length > 0 && (
+        {!error && !loading && messages.length > 0 && (
           <div className="space-y-0">
             {messages.map((msg, idx) => (
               <SessionMessage
@@ -731,6 +804,23 @@ function SessionConversationView({
                 showTimestamp={shouldShowTimestamp(msg, messages[idx - 1])}
               />
             ))}
+            <div ref={transcriptBottomRef} className="h-px" />
+          </div>
+        )}
+        {showNewTranscript && (
+          <div className="pointer-events-none sticky bottom-2 flex justify-center">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="pointer-events-auto h-7 px-3 text-xs shadow-md"
+              onClick={() => {
+                scrollTranscriptToBottom('smooth')
+                setShowNewTranscript(false)
+              }}
+            >
+              {t('newMessages')}
+            </Button>
           </div>
         )}
       </div>

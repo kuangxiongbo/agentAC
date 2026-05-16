@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { invalidateClaudeSessionSync } from './claude-sessions'
+import { invalidateCodexSessionScan } from './codex-sessions'
 import { config } from './config'
 import { eventBus } from './event-bus'
 import { logger } from './logger'
@@ -121,6 +122,7 @@ export function ensureSessionRealtimeBridge() {
     recursive: true,
     filter: (fullPath) => fullPath.endsWith('.jsonl'),
     onRelevantChange: (fullPath) => {
+      invalidateCodexSessionScan()
       emitListUpdate('codex', 'file_changed')
       emitTranscriptUpdate('codex', 'file_changed', sessionIdFromJsonl(fullPath))
     },
