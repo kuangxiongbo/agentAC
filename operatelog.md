@@ -2,6 +2,7 @@
 
 ## 2026-05-16
 
+- **服务端镜像推送 ACR（聊天乐观发送 + 静默刷新）**：提交 **`c002f2a`** 后 buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:0cd0cbb1db551cd0cb88d6a903da11f8efa29c4ed474542bcf0894ac8051b424`**（linux/amd64）。已 **`git push origin main`**。生产：`docker compose pull && docker compose up -d --force-recreate`。
 - **聊天 UX（后台静默刷新 transcript）**：发送后轮询改为 `background` 模式，不再清缓存、不触发 `loading` 骨架屏；历史消息保持可见，仅「正在思考…」行脉冲更新，真实回复到达后原位替换。
 - **聊天 UX（乐观发送 + 去重复回复）**：`mission-control-client` / `mission-control` 的 `SessionConversationView` 移除输入框下方 `lastReply` 重复展示；点击发送后立即在 transcript 显示用户消息，并显示「正在思考…」占位；执行期间每 2s 轮询刷新 transcript，完成后由真实转录替换。i18n 新增 `chat.assistantThinking`。
 - **服务端镜像推送 ACR（打开会话默认滚到底）**：提交 **`783d835`** 后推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:a699918533e9442fad9f3ca69804bdb030961f0879b35c550ad5e913635b3d95`**（linux/amd64）。
