@@ -2,7 +2,9 @@
 
 ## 2026-05-16
 
+- **服务端镜像推送 ACR（含加载性能 + 聊天 UX）**：提交 **`bcb051e`** 后 buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:d6269a24aed65b6c6f5a854bd8847ca82ff7f26f479a57504e52f7bdb317a227`**（本次为 **linux/amd64** 单架构；arm64 构建 OOM 未纳入）。已 **`git push origin main`**。生产：`docker compose pull && docker compose up -d --force-recreate`。
 - **服务端镜像推送 ACR（含 transcript SSE / working_dir）**：提交 **`4447c67`** 后 buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:d7c79c97af0a2a63f96af10e1da6a4ca81566e364e9d2b6137fcb5f0522ba929`**（amd64+arm64）；已 **`git push origin main`**。生产 1Panel：`docker compose pull && docker compose up -d --force-recreate`。
+- **聊天 UX**：点击进入会话默认滚到 transcript 最底部（`useLayoutEffect` + `stickToBottom`）；上翻历史后后台刷新不再抢滚动。
 - **聊天 UX**：transcript 仅在选中会话时加载，前端内存缓存切换秒开；会话列表 `requestIdleCallback` 懒加载；修复轮询刷新时强制滚底——仅在接近底部时自动滚动，上翻历史时显示「新消息」按钮。
 - **聊天性能**：切换会话时立即清空 transcript 并显示骨架屏；Codex transcript 改为按 sessionId 定位单个 JSONL（不再扫描 300 个文件）；Claude 先路径/片段匹配再读；`/api/sessions` Codex 扫描 5s 缓存；transcript API 4s 缓存。
 - **mission-control-client 本地重启**：停止占用 **5001** 的旧进程后执行 `pnpm dev`，服务已就绪 **http://127.0.0.1:5001**（Next.js 16.1.6，加载 `.env.local` 含 `MC_REMOTE_SERVER_URL`）。

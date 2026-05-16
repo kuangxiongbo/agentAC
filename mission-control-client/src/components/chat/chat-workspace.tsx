@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useCallback, useState, useRef } from 'react'
+import { useEffect, useLayoutEffect, useCallback, useState, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import { useAgentCenterStore, type Conversation, type ChatAttachment } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
@@ -540,6 +540,7 @@ function SessionConversationView({
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null)
   const transcriptBottomRef = useRef<HTMLDivElement | null>(null)
   const prevTranscriptCountRef = useRef(0)
+  const stickToBottomRef = useRef(true)
   const [showNewTranscript, setShowNewTranscript] = useState(false)
   const [continuePrompt, setContinuePrompt] = useState('')
   const [continueBusy, setContinueBusy] = useState(false)
@@ -570,26 +571,39 @@ function SessionConversationView({
   const scrollTranscriptToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const container = transcriptScrollRef.current
     if (!container) return
-    container.scrollTo({ top: container.scrollHeight, behavior })
+    container.scrollTop = container.scrollHeight
+    if (behavior === 'smooth') {
+      container.scrollTo({ top: container.scrollHeight, behavior })
+    }
   }, [])
 
-  // New session: start at bottom once
+  // Open / switch session: always land on latest messages at the bottom
   useEffect(() => {
+    stickToBottomRef.current = true
     prevTranscriptCountRef.current = 0
     setShowNewTranscript(false)
-    requestAnimationFrame(() => {
-      const container = transcriptScrollRef.current
-      if (container) container.scrollTop = container.scrollHeight
-    })
   }, [session.prefKey])
 
-  // Poll/refresh: only auto-scroll if user is already near bottom
+  useLayoutEffect(() => {
+    if (!stickToBottomRef.current) return
+    if (loading && messages.length === 0) return
+    scrollTranscriptToBottom('auto')
+    requestAnimationFrame(() => {
+      if (!stickToBottomRef.current) return
+      scrollTranscriptToBottom('auto')
+    })
+  }, [session.prefKey, loading, messages, scrollTranscriptToBottom])
+
+  // Background refresh: only follow tail if user is at bottom (or still pinning open)
   useEffect(() => {
     if (loading) return
     const count = messages.length
     if (count > prevTranscriptCountRef.current) {
-      if (isTranscriptNearBottom()) {
-        requestAnimationFrame(() => scrollTranscriptToBottom(count - prevTranscriptCountRef.current > 5 ? 'auto' : 'smooth'))
+      if (stickToBottomRef.current || isTranscriptNearBottom()) {
+        requestAnimationFrame(() => {
+          scrollTranscriptToBottom(count - prevTranscriptCountRef.current > 5 ? 'auto' : 'smooth')
+          if (stickToBottomRef.current) stickToBottomRef.current = false
+        })
         setShowNewTranscript(false)
       } else if (count > 0) {
         setShowNewTranscript(true)
@@ -605,7 +619,11 @@ function SessionConversationView({
   }, [lastReply, isTranscriptNearBottom, scrollTranscriptToBottom])
 
   const handleTranscriptScroll = useCallback(() => {
-    if (isTranscriptNearBottom()) setShowNewTranscript(false)
+    if (isTranscriptNearBottom()) {
+      setShowNewTranscript(false)
+    } else {
+      stickToBottomRef.current = false
+    }
   }, [isTranscriptNearBottom])
 
   const handleContinueSession = async () => {
@@ -644,6 +662,7 @@ function SessionConversationView({
         if (fwd?.attempted && !fwd?.delivered) {
           setContinueError(t('messageSavedNotDelivered', { reason: fwd.reason || t('reasonUnknown') }))
         }
+        stickToBottomRef.current = true
         setContinuePrompt('')
         // Refresh transcript after a short delay to capture the response
         setTimeout(() => onRefreshTranscript(), 2000)
@@ -674,6 +693,7 @@ function SessionConversationView({
           }
           throw new Error(data?.error || t('failedToContinueSession'))
         }
+        stickToBottomRef.current = true
         setContinuePrompt('')
         if (typeof data?.reply === 'string' && data.reply.trim()) {
           setLastReply(data.reply.trim())
