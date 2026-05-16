@@ -36,13 +36,33 @@ interface BridgeServerClientState {
   remoteAddress: string | null
 }
 
+type BridgePendingKind = 'transcript' | 'continue'
+
 interface PendingBridgeRequest {
   requestId: string
   clientId: string
   connectionId: string
   timeout: NodeJS.Timeout
-  resolve: (value: { messages: TranscriptMessage[]; source: string }) => void
+  kind: BridgePendingKind
+  resolve: (value: unknown) => void
   reject: (error: Error) => void
+}
+
+function findConnectedEdgeBridge(clientId: string): { connectionId: string; ws: WebSocket } {
+  const target = Array.from(bridgeServerClients.values())
+    .filter((client) => client.clientId === clientId && client.kind === 'edge' && client.status === 'connected')
+    .sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0]
+
+  if (!target) {
+    throw new Error(`Remote client not connected: ${clientId}`)
+  }
+
+  const ws = bridgeServerSockets.get(target.connectionId)
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    throw new Error(`Remote client socket unavailable: ${clientId}`)
+  }
+
+  return { connectionId: target.connectionId, ws }
 }
 
 export interface BridgeServerStatusSnapshot {
@@ -107,7 +127,16 @@ function resolvePendingRequest(msg: any) {
   bridgePendingRequests.delete(requestId)
 
   if (msg?.ok === false) {
-    pending.reject(new Error(typeof msg?.error === 'string' ? msg.error : 'Remote transcript request failed'))
+    pending.reject(new Error(typeof msg?.error === 'string' ? msg.error : `Remote ${pending.kind} request failed`))
+    return true
+  }
+
+  if (pending.kind === 'continue') {
+    pending.resolve({
+      reply: typeof msg?.reply === 'string' ? msg.reply : '',
+      sessionId: typeof msg?.sessionId === 'string' ? msg.sessionId : null,
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
     return true
   }
 
@@ -261,6 +290,7 @@ export function initBridgeServer(port: number = 5002) {
               break
 
             case 'session_transcript_response':
+            case 'session_continue_response':
               touchConnection(connectionId)
               resolvePendingRequest(msg)
               break
@@ -368,20 +398,7 @@ export async function requestBridgeClientSessionTranscript(input: {
   limit: number
   timeoutMs?: number
 }): Promise<{ messages: TranscriptMessage[]; source: string }> {
-  const candidates = Array.from(bridgeServerClients.values())
-    .filter((client) => client.clientId === input.clientId && client.kind === 'edge' && client.status === 'connected')
-    .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
-
-  const target = candidates[0]
-  if (!target) {
-    throw new Error(`Remote client not connected: ${input.clientId}`)
-  }
-
-  const ws = bridgeServerSockets.get(target.connectionId)
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    throw new Error(`Remote client socket unavailable: ${input.clientId}`)
-  }
-
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
   const requestId = randomUUID()
   const timeoutMs = Math.max(1000, input.timeoutMs || 15000)
 
@@ -394,9 +411,10 @@ export async function requestBridgeClientSessionTranscript(input: {
     bridgePendingRequests.set(requestId, {
       requestId,
       clientId: input.clientId,
-      connectionId: target.connectionId,
+      connectionId,
       timeout,
-      resolve,
+      kind: 'transcript',
+      resolve: resolve as (value: unknown) => void,
       reject,
     })
 
@@ -414,6 +432,53 @@ export async function requestBridgeClientSessionTranscript(input: {
       clearTimeout(timeout)
       bridgePendingRequests.delete(requestId)
       reject(error instanceof Error ? error : new Error('Failed to send transcript request'))
+    }
+  })
+}
+
+export type BridgeSessionContinueKind = LocalSessionTranscriptKind | 'cursor' | 'opencode'
+
+export async function requestBridgeClientSessionContinue(input: {
+  clientId: string
+  kind: BridgeSessionContinueKind
+  sessionId: string
+  prompt: string
+  timeoutMs?: number
+}): Promise<{ reply: string; sessionId: string | null; source: string }> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(5000, input.timeoutMs || 180000)
+
+  return await new Promise<{ reply: string; sessionId: string | null; source: string }>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      bridgePendingRequests.delete(requestId)
+      reject(new Error(`Timed out waiting for session continue from client ${input.clientId}`))
+    }, timeoutMs)
+
+    bridgePendingRequests.set(requestId, {
+      requestId,
+      clientId: input.clientId,
+      connectionId,
+      timeout,
+      kind: 'continue',
+      resolve: resolve as (value: unknown) => void,
+      reject,
+    })
+
+    try {
+      ws.send(JSON.stringify({
+        type: 'session_continue_request',
+        requestId,
+        session: {
+          kind: input.kind,
+          sessionId: input.sessionId,
+          prompt: input.prompt,
+        },
+      }))
+    } catch (error) {
+      clearTimeout(timeout)
+      bridgePendingRequests.delete(requestId)
+      reject(error instanceof Error ? error : new Error('Failed to send session continue request'))
     }
   })
 }

@@ -158,11 +158,32 @@ export async function POST(request: NextRequest) {
   // When gateway host is localhost but the browser is remote (e.g. Tailscale),
   // resolve the correct browser-accessible WebSocket URL.
   const remoteUrl = explicitBrowserWsUrl || resolveRemoteGatewayUrl(gateway, request)
-  const ws_url = remoteUrl || buildGatewayWebSocketUrl({
+  let ws_url = remoteUrl || buildGatewayWebSocketUrl({
     host: gateway.host,
     port: gateway.port,
     browserProtocol: inferBrowserProtocol(request),
   })
+
+  const hostHeader = request.headers.get('host') || ''
+  if (hostHeader && ws_url) {
+    try {
+      const page = new URL(`http://${hostHeader}`)
+      const ws = new URL(ws_url)
+      const pagePort = page.port || '80'
+      const wsPort = ws.port || (ws.protocol === 'wss:' ? '443' : '80')
+      if (ws.hostname === page.hostname && wsPort === pagePort) {
+        return NextResponse.json(
+          {
+            error:
+              'Gateway WebSocket points at this dashboard port, not OpenClaw. Use port 18789 (or set NEXT_PUBLIC_GATEWAY_URL / NEXT_PUBLIC_GATEWAY_OPTIONAL=true).',
+          },
+          { status: 422 },
+        )
+      }
+    } catch {
+      // ignore malformed URLs
+    }
+  }
 
   const dbToken = (gateway.token || '').trim()
   const detectedToken = gateway.is_primary === 1 ? getDetectedGatewayToken() : ''

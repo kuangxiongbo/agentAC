@@ -10,6 +10,13 @@ const AGENT_REGISTRATION_CACHE_SCHEMA_VERSION = '3'
 const agentRegistrationCache = new Map<string, { signature: string; lastRegisteredAt: number }>()
 
 // Helper to fetch settings
+function isUpstreamTlsError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  const cause = err instanceof Error && err.cause instanceof Error ? err.cause.message : ''
+  const combined = `${msg} ${cause}`
+  return /self[- ]signed certificate|unable to verify|certificate.*chain|UNABLE_TO_VERIFY/i.test(combined)
+}
+
 function getSetting(key: string, defaultValue: string = ''): string {
   try {
     const db = getDatabase()
@@ -257,6 +264,13 @@ export async function runServerGatewaySync(): Promise<{ ok: boolean; message: st
         authFailures++
       }
     } catch (err) {
+      if (isUpstreamTlsError(err)) {
+        return {
+          ok: false,
+          message:
+            '无法连接上游 HTTPS：证书校验失败（self-signed certificate）。请在 agent.1sheng.work 配置有效 TLS 证书，或在 mission-control-client/.env.local 设置 NODE_TLS_REJECT_UNAUTHORIZED=0 后重启 pnpm dev。',
+        }
+      }
       logger.warn({ err, gatewayUrl }, 'Failed to publish client heartbeat upstream')
     }
 

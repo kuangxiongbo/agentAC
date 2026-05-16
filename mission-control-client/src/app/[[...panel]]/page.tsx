@@ -173,10 +173,14 @@ export default function Home() {
       return
     }
 
+    const gatewayOptional = process.env.NEXT_PUBLIC_GATEWAY_OPTIONAL === 'true'
+
     const connectWithEnvFallback = () => {
+      if (gatewayOptional) return
       const explicitWsUrl = process.env.NEXT_PUBLIC_GATEWAY_URL || ''
       const gatewayPort = process.env.NEXT_PUBLIC_GATEWAY_PORT || '18789'
-      const gatewayHost = process.env.NEXT_PUBLIC_GATEWAY_HOST || window.location.hostname
+      // 勿用 window.location.hostname:port — 代理客户端跑在 :5001 时会误连自身 /gateway-ws
+      const gatewayHost = process.env.NEXT_PUBLIC_GATEWAY_HOST || '127.0.0.1'
       const gatewayProto =
         process.env.NEXT_PUBLIC_GATEWAY_PROTOCOL ||
         (window.location.protocol === 'https:' ? 'wss' : 'ws')
@@ -257,19 +261,23 @@ export default function Home() {
         setCapabilitiesChecked(true)
         markStep('init')
 
-        // 3. Connect WebSocket
-        const primaryConnect = await connectWithPrimaryGateway()
-        if (!primaryConnect.connected && !primaryConnect.attempted) {
-          connectWithEnvFallback()
+        // 3. Connect WebSocket（纯代理客户端可设 NEXT_PUBLIC_GATEWAY_OPTIONAL=true，仅 HTTP 同步上游）
+        if (gatewayOptional) {
+          setDashboardMode('local')
+          setGatewayAvailable(false)
+        } else {
+          const primaryConnect = await connectWithPrimaryGateway()
+          if (!primaryConnect.connected && !primaryConnect.attempted) {
+            connectWithEnvFallback()
+          }
         }
         markStep('connect')
 
       } catch (err) {
         console.error('Boot sequence failed:', err)
-        // Fallback: mark everything as done so user can at least see the UI
         markStep('init')
         markStep('connect')
-        connectWithEnvFallback()
+        if (!gatewayOptional) connectWithEnvFallback()
       }
     }
 

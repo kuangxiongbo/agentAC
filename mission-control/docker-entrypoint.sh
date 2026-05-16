@@ -49,5 +49,8 @@ if [ -z "$API_KEY" ] || [ "$API_KEY" = "generate-a-random-key" ]; then
   export API_KEY
 fi
 
+# Next.js image optimizer writes under .next/cache (requires writable tmpfs/volume in read_only images)
+mkdir -p /app/.next/cache/images 2>/dev/null || true
+
 printf '[entrypoint] Starting server\n'
 exec node server.js

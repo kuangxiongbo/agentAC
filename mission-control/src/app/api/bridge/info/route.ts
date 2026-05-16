@@ -23,7 +23,8 @@ function toBridgeWsUrl(origin: string, port: number): string {
 
 export async function GET(request: NextRequest) {
   const origin = inferOrigin(request)
-  const bridgePort = 5002
+  const bridgePort = parseInt(process.env.MC_BRIDGE_PORT || '5002', 10) || 5002
+  const publicBridgeWs = (process.env.MC_BRIDGE_PUBLIC_WS_URL || '').trim()
 
   return NextResponse.json({
     service: {
@@ -34,7 +35,7 @@ export async function GET(request: NextRequest) {
     bridge: {
       enabled: true,
       port: bridgePort,
-      ws_url: toBridgeWsUrl(origin, bridgePort),
+      ws_url: publicBridgeWs || toBridgeWsUrl(origin, bridgePort),
       protocol: 'websocket',
       note: 'Bridge WebSocket for edge/local E-Agent-Center nodes. This is distinct from the OpenClaw gateway websocket.',
     },

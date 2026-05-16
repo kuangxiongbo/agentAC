@@ -24,6 +24,11 @@ import { getDatabase, db_helpers } from './db'
 import { eventBus } from './event-bus'
 import { logger } from './logger'
 import { REMOTE_SERVER_URL, REMOTE_SERVER_TOKEN, REMOTE_RECONNECT_MS } from './config'
+import {
+  executeLocalSessionPrompt,
+  isLocalSessionKind,
+  type LocalSessionKind,
+} from './local-session-executor'
 import { readLocalSessionTranscript, type LocalSessionTranscriptKind } from './session-transcript'
 
 // We use the native ws library if available (Node 18+ has it natively via global WebSocket)
@@ -146,10 +151,41 @@ function isHttpUrl(value: string): boolean {
   return normalized.startsWith('http://') || normalized.startsWith('https://')
 }
 
+function readBridgeSetting(key: string): string {
+  try {
+    const db = getDatabase()
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value?: string } | undefined
+    return typeof row?.value === 'string' ? row.value.trim() : ''
+  } catch {
+    return ''
+  }
+}
+
+/** Env MC_REMOTE_SERVER_URL wins; else settings gateway.server_url + gateway.token */
+export function getRemoteUpstreamConfig(): {
+  baseUrl: string
+  token: string
+  source: 'env' | 'settings' | null
+} {
+  const envUrl = REMOTE_SERVER_URL.trim()
+  if (envUrl) {
+    return { baseUrl: envUrl, token: REMOTE_SERVER_TOKEN, source: 'env' }
+  }
+  const settingsUrl = readBridgeSetting('gateway.server_url')
+  if (settingsUrl) {
+    return {
+      baseUrl: settingsUrl,
+      token: readBridgeSetting('gateway.token') || REMOTE_SERVER_TOKEN,
+      source: 'settings',
+    }
+  }
+  return { baseUrl: '', token: REMOTE_SERVER_TOKEN, source: null }
+}
+
 async function resolveRemoteBridgeUrl(): Promise<{ wsUrl: string; discoverySource: string | null }> {
-  const configured = REMOTE_SERVER_URL.trim()
+  const { baseUrl: configured, token } = getRemoteUpstreamConfig()
   if (!configured) {
-    throw new Error('MC_REMOTE_SERVER_URL not set')
+    throw new Error('Remote server URL not configured (MC_REMOTE_SERVER_URL or settings gateway.server_url)')
   }
 
   if (isWebSocketUrl(configured)) {
@@ -160,9 +196,9 @@ async function resolveRemoteBridgeUrl(): Promise<{ wsUrl: string; discoverySourc
     const base = configured.replace(/\/+$/, '')
     const infoUrl = `${base}/api/bridge/info`
     const headers: Record<string, string> = {}
-    if (REMOTE_SERVER_TOKEN) {
-      headers['Authorization'] = `Bearer ${REMOTE_SERVER_TOKEN}`
-      headers['x-api-key'] = REMOTE_SERVER_TOKEN
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
+      headers['x-api-key'] = token
     }
 
     const res = await fetch(infoUrl, { headers, cache: 'no-store' })
@@ -179,7 +215,7 @@ async function resolveRemoteBridgeUrl(): Promise<{ wsUrl: string; discoverySourc
     return { wsUrl, discoverySource: infoUrl }
   }
 
-  throw new Error('MC_REMOTE_SERVER_URL must be an http(s) base URL or ws(s) bridge URL')
+  throw new Error('Remote server URL must be an http(s) base URL or ws(s) bridge URL')
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +383,45 @@ function handleCommand(payload: any): void {
   }
 }
 
+async function handleSessionContinueRequest(message: any): Promise<void> {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  const session = message?.session && typeof message.session === 'object' ? message.session : {}
+  const kind = typeof session?.kind === 'string' ? session.kind : ''
+  const sessionId = typeof session?.sessionId === 'string' ? session.sessionId : ''
+  const prompt = typeof session?.prompt === 'string' ? session.prompt : ''
+
+  if (!requestId) return
+
+  if (!sessionId || !isLocalSessionKind(kind)) {
+    safeSend(state.ws, {
+      type: 'session_continue_response',
+      requestId,
+      ok: false,
+      error: 'kind, sessionId, and prompt are required',
+    })
+    return
+  }
+
+  try {
+    const result = await executeLocalSessionPrompt(kind as LocalSessionKind, sessionId, prompt)
+    safeSend(state.ws, {
+      type: 'session_continue_response',
+      requestId,
+      ok: true,
+      source: 'remote-bridge',
+      reply: result.reply,
+      sessionId: result.sessionId,
+    })
+  } catch (err: any) {
+    safeSend(state.ws, {
+      type: 'session_continue_response',
+      requestId,
+      ok: false,
+      error: err?.message || 'Failed to continue session',
+    })
+  }
+}
+
 function handleSessionTranscriptRequest(message: any): void {
   const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
   const session = message?.session && typeof message.session === 'object' ? message.session : {}
@@ -474,6 +549,12 @@ function handleMessage(raw: string): void {
       handleSessionTranscriptRequest(msg)
       break
 
+    case 'session_continue_request':
+      handleSessionContinueRequest(msg).catch((e) =>
+        logger.error({ err: e }, '[RemoteBridge] session_continue_request handler failed')
+      )
+      break
+
     case 'projects_sync':
       handleProjectsSync(msg).catch(e =>
         logger.error({ err: e }, '[RemoteBridge] projects_sync handler failed')
@@ -530,11 +611,12 @@ async function connect(): Promise<void> {
   }
 
   const resolved = await resolveRemoteBridgeUrl()
+  const { token: bridgeToken } = getRemoteUpstreamConfig()
   const url = new URL(resolved.wsUrl)
 
   // Attach token as query param if provided (simple auth; server can also check header)
-  if (REMOTE_SERVER_TOKEN) {
-    url.searchParams.set('token', REMOTE_SERVER_TOKEN)
+  if (bridgeToken) {
+    url.searchParams.set('token', bridgeToken)
   }
 
   const WS = await getWebSocketImpl()
@@ -542,8 +624,8 @@ async function connect(): Promise<void> {
 
   try {
     const headers: Record<string, string> = {}
-    if (REMOTE_SERVER_TOKEN) {
-      headers['Authorization'] = `Bearer ${REMOTE_SERVER_TOKEN}`
+    if (bridgeToken) {
+      headers['Authorization'] = `Bearer ${bridgeToken}`
     }
     // ws package accepts headers; native WebSocket does not (browser constraint)
     ws = new (WS as any)(url.toString(), [], { headers }) as WebSocket
@@ -568,7 +650,7 @@ async function connect(): Promise<void> {
       clientId,
       clientLabel,
       version: '1.0',
-      capabilities: ['task_receive', 'agent_status', 'heartbeat', 'chat_sync', 'session_transcript'],
+      capabilities: ['task_receive', 'agent_status', 'heartbeat', 'chat_sync', 'session_transcript', 'session_continue'],
       agents: getLocalAgentList(),
       timestamp: Date.now(),
     })
@@ -644,14 +726,15 @@ let _started = false
  * Does nothing if MC_REMOTE_SERVER_URL is not configured.
  */
 export function startRemoteBridge(): void {
-  if (!REMOTE_SERVER_URL) {
-    logger.info('[RemoteBridge] MC_REMOTE_SERVER_URL not set — bridge disabled')
+  const upstream = getRemoteUpstreamConfig()
+  if (!upstream.baseUrl) {
+    logger.info('[RemoteBridge] No upstream URL (env or gateway.server_url) — bridge disabled')
     return
   }
   if (_started) return
   _started = true
 
-  logger.info({ url: REMOTE_SERVER_URL }, '[RemoteBridge] Starting remote server bridge')
+  logger.info({ url: upstream.baseUrl, source: upstream.source }, '[RemoteBridge] Starting remote server bridge')
   connect().catch((e) => {
     logger.error({ err: e }, '[RemoteBridge] Initial connect failed')
     scheduleReconnect()
@@ -690,11 +773,12 @@ export function getRemoteBridgeStatus(): {
   reconnectAttempts: number
   lastPong: number
 } {
+  const upstream = getRemoteUpstreamConfig()
   return {
-    enabled: Boolean(REMOTE_SERVER_URL),
+    enabled: Boolean(upstream.baseUrl),
     connected: state.connected,
-    url: state.resolvedUrl || REMOTE_SERVER_URL,
-    configuredUrl: REMOTE_SERVER_URL,
+    url: state.resolvedUrl || upstream.baseUrl,
+    configuredUrl: upstream.baseUrl,
     discoverySource: state.discoverySource,
     reconnectAttempts: state.reconnectAttempts,
     lastPong: state.lastPong,

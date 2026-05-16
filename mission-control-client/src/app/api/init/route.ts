@@ -111,7 +111,7 @@ export async function GET(request: NextRequest) {
       clientName,
       skills: skillsList,
       capabilities: {
-        gateway: true,
+        gateway: process.env.NEXT_PUBLIC_GATEWAY_OPTIONAL !== 'true',
         openclawHome,
         claudeHome,
         subscription,

@@ -262,6 +262,15 @@ function getDbStats(workspaceId: number) {
   }
 }
 
+function isSpawnEnoent(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as NodeJS.ErrnoException).code === 'ENOENT'
+  )
+}
+
 async function getSystemStatus(workspaceId: number) {
   const status: any = {
     timestamp: Date.now(),
@@ -284,14 +293,23 @@ async function getSystemStatus(workspaceId: number) {
         status.uptime = Date.now() - parseInt(match[1]) * 1000
       }
     } else {
-      const { stdout } = await runCommand('uptime', ['-s'], {
-        timeoutMs: 3000
-      })
-      const bootTime = new Date(stdout.trim())
-      status.uptime = Date.now() - bootTime.getTime()
+      try {
+        const { stdout } = await runCommand('uptime', ['-s'], {
+          timeoutMs: 3000
+        })
+        const bootTime = new Date(stdout.trim())
+        status.uptime = Date.now() - bootTime.getTime()
+      } catch {
+        // Docker slim / minimal images may omit `uptime`; use process API (container uptime)
+        status.uptime = Math.round(os.uptime() * 1000)
+      }
     }
   } catch (error) {
-    logger.error({ err: error }, 'Error getting uptime')
+    if (!isSpawnEnoent(error)) {
+      logger.error({ err: error }, 'Error getting uptime')
+    } else {
+      status.uptime = Math.round(os.uptime() * 1000)
+    }
   }
 
   try {
@@ -345,7 +363,9 @@ async function getSystemStatus(workspaceId: number) {
       .filter((proc) => /clawdbot|openclaw/i.test(proc.command))
     status.processes = processes
   } catch (error) {
-    logger.error({ err: error }, 'Error getting process info')
+    if (!isSpawnEnoent(error)) {
+      logger.error({ err: error }, 'Error getting process info')
+    }
   }
 
   try {

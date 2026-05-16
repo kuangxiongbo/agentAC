@@ -578,6 +578,7 @@ function SessionConversationView({
             kind: session.sessionKind,
             id: session.sessionId,
             prompt,
+            ...(session.nodeId ? { client_id: session.nodeId } : {}),
           }),
         })
         const data = await res.json().catch(() => ({}))

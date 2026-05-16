@@ -291,7 +291,7 @@ export function initScheduler() {
   // Start the bridge server to accept connections from edge nodes
   try {
     const { initBridgeServer } = require('./bridge-server')
-    initBridgeServer(5002) // Running on 5002 to avoid conflict
+    initBridgeServer(5002) // mission-control-client dev uses :5001
   } catch (err) {
     logger.warn({ err }, 'Failed to start bridge server')
   }

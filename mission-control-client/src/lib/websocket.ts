@@ -3,7 +3,7 @@
 import { useCallback, useEffect } from 'react'
 import { useAgentCenterStore } from '@/store'
 import { normalizeModel } from '@/lib/utils'
-import { buildGatewayPathFallbackUrls, buildGatewayWebSocketUrl } from '@/lib/gateway-url'
+import { buildGatewayPathFallbackUrls, buildGatewayWebSocketUrl, isSameHostPortAsPage } from '@/lib/gateway-url'
 import {
   getOrCreateDeviceIdentity,
   signPayload,
@@ -689,6 +689,14 @@ export function useWebSocket() {
     authTokenRef.current = token || urlToken || ''
 
     const normalizedUrl = normalizeWebSocketUrl(url)
+    if (isSameHostPortAsPage(normalizedUrl)) {
+      log.warn(
+        `Skipping WebSocket to ${normalizedUrl} — same host:port as this dashboard. ` +
+          'Set NEXT_PUBLIC_GATEWAY_URL or OPENCLAW gateway host/port (default 18789), or NEXT_PUBLIC_GATEWAY_OPTIONAL=true.',
+      )
+      setConnection({ isConnected: false, reconnectAttempts: 0 })
+      return
+    }
     if (reconnectUrl.current !== normalizedUrl) {
       wsPathFallbackTriedRef.current.clear()
     }

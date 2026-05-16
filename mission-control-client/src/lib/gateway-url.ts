@@ -1,4 +1,4 @@
-function isLocalHost(host: string): boolean {
+export function isLocalHost(host: string): boolean {
   const normalized = host.toLowerCase()
   return (
     normalized === 'localhost' ||
@@ -37,6 +37,19 @@ function formatWebSocketUrl(parsed: URL): string {
   return parsed.toString().replace(/\/$/, '').replace('/?', '?')
 }
 
+/** True when the WebSocket target is this Mission Control page (e.g. :5001), not OpenClaw. */
+export function isSameHostPortAsPage(url: string): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    const target = new URL(url, window.location.origin)
+    const pagePort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80')
+    const targetPort = target.port || (target.protocol === 'wss:' ? '443' : '80')
+    return target.hostname === window.location.hostname && targetPort === pagePort
+  } catch {
+    return false
+  }
+}
+
 export function buildGatewayPathFallbackUrls(rawUrl: string): string[] {
   const trimmed = String(rawUrl || '').trim()
   if (!trimmed) return []
@@ -58,6 +71,7 @@ export function buildGatewayPathFallbackUrls(rawUrl: string): string[] {
   for (const path of fallbacks) {
     parsed.pathname = path
     const candidate = formatWebSocketUrl(parsed)
+    if (isSameHostPortAsPage(candidate)) continue
     if (!seen.has(candidate)) {
       seen.add(candidate)
       urls.push(candidate)

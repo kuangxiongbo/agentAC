@@ -36,6 +36,10 @@ LABEL org.opencontainers.image.version="${MC_VERSION}"
 
 WORKDIR /app
 ENV NODE_ENV=production
+# status/monitor panels invoke ps, uptime, free; slim image omits procps by default
+RUN apt-get -o Acquire::Retries=5 update && \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends procps && \
+    rm -rf /var/lib/apt/lists/*
 RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static

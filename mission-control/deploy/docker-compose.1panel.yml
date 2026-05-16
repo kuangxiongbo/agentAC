@@ -1,20 +1,20 @@
 # Mission Control — 1Panel / 生产编排推荐
-# 用法：在宿主机准备 .env（可由 .env.1panel.example 复制改名），与本文件同目录后执行：
-#   docker compose -f docker-compose.1panel.yml up -d
-# 1Panel：「容器」→ Compose 模板 → 选择本文件，填写环境变量或挂载 .env。
+# 环境变量：1Panel 面板填写的变量会写入同目录 1panel.env；本文件已通过 env_file 引用。
+# CLI 部署：cp .env.1panel.example 1panel.env 后编辑，再 docker compose -f docker-compose.1panel.yml up -d
 
 services:
   mission-control:
-    image: ${MC_IMAGE:-agentcenter:local-build}
-    container_name: ${MC_CONTAINER_NAME:-agentcenter}
+    # 升级版本时改此处 tag，并 docker compose pull && up -d
+    image: crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1
+    container_name: agentcenter
     restart: unless-stopped
 
     ports:
-      - "${MC_PUBLISH_PORT:-3000}:3000"
+      # 仅本机监听，由 Nginx/Caddy 反代 HTTPS；直连公网可改为 "3000:3000"
+      - "127.0.0.1:3000:3000"
 
     env_file:
-      - path: ${MC_ENV_FILE:-.env}
-        required: false
+      - 1panel.env
 
     environment:
       PORT: "3000"
@@ -42,11 +42,11 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-    # 可选加固：根文件系统只读 + 临时可写区（若启动失败可先注释 read_only 排查）
+    # 只读根文件系统；tmpfs 须与镜像内 USER nextjs（uid/gid 1001）一致，否则无法写图片优化缓存
     read_only: true
     tmpfs:
-      - /tmp
-      - /app/.next/cache
+      - /tmp:uid=1001,gid=1001,mode=1777
+      - /app/.next/cache:uid=1001,gid=1001,mode=0755
 
     cap_drop:
       - ALL

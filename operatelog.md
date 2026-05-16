@@ -1,5 +1,17 @@
 # 操作日志 (operatelog)
 
+## 2026-05-16
+
+- **会话继续 `spawn codex ENOENT`**：`/api/sessions/continue` 在**生产中心服**（`centralMode`）返回 **503** 提示改在 **http://127.0.0.1:5001** 发送；**mission-control-client** 的 `local-session-executor` 增加 **`MC_CODEX_BIN`**、Homebrew PATH 与更明确的 ENOENT 错误文案。
+- **mission-control（i18n）**：`messages/zh.json` 的 `agentDetail` 补全 **`send`** 等键，修复控制台 `MISSING_MESSAGE: agentDetail.send (zh)`。
+- **端口约定**：**mission-control-client** 本机 dev 改为 **5001**（`package.json`）；**mission-control** Bridge 恢复 **5002**（`scheduler.ts`、`bridge/info/route.ts`）；**deploy/.env.1panel.example** 反代与映射改为 **5002**。本机访问客户端：**http://127.0.0.1:5001**。
+- **服务端镜像推送 ACR**：本地 buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:a8a99ed52eca877a2d55c7396eb44d2e0871e94a4e4cba80b34e597f28ff8a25`**（含 Bridge `session_continue`、transcript 503、zh `agentDetail.send` 等未提交本地改动）。
+- **Bridge 远程发送消息**：中心服 `POST /api/sessions/continue` 在带 **`client_id`** 或 **centralMode** 时经 Bridge 下发 **`session_continue_request`**；边缘 **mission-control-client** 本机执行 `executeLocalSessionPrompt` 并 **`session_continue_response`** 回传；聊天页 continue 请求附带 **`session.nodeId`**。需部署新服务端镜像并重启 Mac 客户端。
+- **Bridge 已打通（用户确认）**：Nginx **`/bridge-ws` → `127.0.0.1:5002`** 生效，生产聊天页已能拉取本地会话 **transcript**；Mac 代理客户端需保持运行且 Bridge 已连接。
+- **Bridge 排错（agent.1sheng.work）**：生产 `/api/bridge/info` 仍返回 **`wss://…:5002`**（旧镜像），与 Nginx **`/bridge-ws`→5003** 不一致；Mac 客户端连 `:5002` 失败。`curl` 测 **`/bridge-ws` 为 502** → 宿主机 **5003 未监听或未映射**。客户端 `.env.local` 增加 **`MC_REMOTE_SERVER_URL=wss://agent.1sheng.work/bridge-ws`**（502 修复后生效）。生产需 **`MC_BRIDGE_PUBLIC_WS_URL`** + compose **`127.0.0.1:5003:5003`** + 重启容器。
+- **生产聊天页 Failed to fetch transcript（agent.1sheng.work）**：会话列表来自 HTTP 同步，但 **`GET /api/sessions/transcript`** 在中心模式下需经 **Bridge WebSocket** 向边缘 Mac 拉取本地 JSONL；边缘未连 Bridge 时原返回 500。服务端改为 **503 + `bridge_offline`** 明确提示；**`bridge/info`** 支持 **`MC_BRIDGE_PUBLIC_WS_URL`**（反代 `wss://…/bridge-ws`）。客户端 **`remote-server-bridge`** 在未设 `MC_REMOTE_SERVER_URL` 时自动使用设置里的 **`gateway.server_url` + `gateway.token`** 建 Bridge。
+- **mission-control-client（上游同步连不上 agent.1sheng.work）**：根因为 Node `fetch` 校验 HTTPS 失败（`self-signed certificate in certificate chain`），非服务网关地址填错；控制台 `POST /api/scheduler` 返回 500 是同步任务 `ok: false` 的正常表现。已在 **`mission-control-client/.env.local`** 增加 **`NODE_TLS_REJECT_UNAUTHORIZED=0`**（仅本地开发；生产应在反代配置有效证书后移除）。**`gateway-sync.ts`** 在 heartbeat 捕获 TLS 错误时返回明确中文提示，避免仅显示「7 register failure(s)」。
+
 ## 2026-05-14
 
 - **mission-control**：新增 Zitadel OIDC 统一登录（参考 `/Users/kuangxb/Desktop/yisheng/1sheng-console` 的 PKCE 流程）。
@@ -74,6 +86,22 @@
 - **mission-control（入驻页 OnboardingGate UI）**：**`/login/tenant-onboarding`** 改为全屏双栏 **`TenantOnboardingGate`**（对齐奕升 **`OnboardingGate`**）：左侧首登说明/当前认证账号/绑定收益/三步路径，右侧 Step 1/2、注册单位与加入已有单位 Tab、slug 可选、加入搜索+申请留言、待审批状态与刷新；内联 SVG 替代 `lucide-react`。**`register-tenant-from-zitadel`**：slug 留空时服务端自动生成；**`join-tenant-search`** 返回 **`score`/`loginRouteSegment`**；**`join-tenant-request`** 返回 **`delivery`**，申请后刷新 **`onboarding-status`** 展示 pending 而非立即重登。**`messages/en|zh.json`** 扩展 **`auth.tenantOnboarding`** 文案；**`pnpm typecheck`** 通过。
 
 ## 2026-05-16
+
+- **mission-control-client（WebSocket 误连 :5002/gateway-ws）**：代理客户端无本机 OpenClaw 时不再自动连 **`ws://127.0.0.1:5002/gateway-ws`**；**`gateway-url`** 跳过与页面同 host:port 的 fallback；**`websocket`/`page.tsx`** 支持 **`NEXT_PUBLIC_GATEWAY_OPTIONAL=true`**；**`gateways/connect`** 对错误端口返回 422；新增 **`.env.local`** / **`.env.local.example`**。
+- **mission-control-client**：**`pnpm dev`** 默认端口改为 **5002**；**mission-control** 本机 Bridge WebSocket 改为 **5003**，避免与客户端争用 5002（**`scheduler.ts`**、**`bridge/info/route.ts`**）。
+
+- **mission-control（ACR 镜像重建推送）**：重新 **buildx** 推送 **`…/1sheng/agentcenter:2.0.1`** 与 **`:latest`**（含 procps、登录页取消 sso_only 自动跳转、status ENOENT 回退等）；manifest **`sha256`** 以 `docker buildx imagetools inspect` 为准。服务器执行 **`docker compose pull && up -d --force-recreate`**。
+
+- **mission-control（登录页 SSO 自动跳转）**：移除 **`MC_UNIFIED_LOGIN=sso_only`** 时进入 `/login` 即调用 **`startUnifiedLogin()`** 的逻辑；统一登录改为**仅点击按钮**（或表单提交）后跳转 IdP。已登录会话仍会在 **`hasMcSession`** 时自动离开登录页；**`oidcEntryOrigin`** 主机对齐逻辑保留。更新 **`.env.example`**、**`/api/auth/sso`** 注释。
+
+- **mission-control（Docker 生产 spawn ENOENT）**：**`node:slim`** 缺 **`ps`/`uptime`** 导致 `/api/status` 刷 **`spawn … ENOENT`**；**Dockerfile** runtime 安装 **procps**；**`status/route.ts`** 对缺失 CLI 用 **`os.uptime()`** 回退并降低 ENOENT 日志级别。**`deploy/README.md`** 补充说明。
+
+- **mission-control（deploy）**：新增 **`deploy/SAME-HOST-NETWORK.md`**（同机多域名：内网 `USER_CENTER_API_URL` vs 公网 `USER_CENTER_PORTAL_URL`、Nginx/Compose 参考）；**`.env.1panel.example`**、**`deploy/README.md`** 增加链接与注释。
+
+- **mission-control（Docker 生产 EACCES）**：修复 **`read_only` + tmpfs** 下 Next.js 无法创建 **`/app/.next/cache/images`**（tmpfs 默认 root、进程 uid 1001）。**`deploy/docker-compose.1panel.yml`**、**`docker-compose.yml`** 的 tmpfs 增加 **`uid=1001,gid=1001`**；**`docker-entrypoint.sh`** 启动前 **`mkdir -p`** 缓存目录；**`deploy/README.md`** 增加 EACCES 与用户中心 **tenant-context 5xx** 排错说明。
+
+- **mission-control（deploy / 1Panel）**：**`docker-compose.1panel.yml`** 的 **`env_file`** 改为引用 **`1panel.env`**（与 1Panel 面板默认写入文件名一致）；**`.env.1panel.example`**、**`deploy/README.md`** 说明面板填变量 + compose 引用方式；**`.gitignore`** 增加 **`1panel.env`**。
+- **mission-control（deploy）**：**`docker-compose.1panel.yml`** 将 **`image` / `container_name` / `ports`** 写死在编排内（ACR **`…/1sheng/agentcenter:2.0.1`**、**`agentcenter`**、**`127.0.0.1:3000:3000`**）；**`.env`** 仅承载应用配置。**`deploy/.env.1panel.example`** 移除 **`MC_IMAGE`** 等 Compose 项；**`deploy/README.md`** 同步说明升级时改 compose 内 **`image:`** tag。
 
 - **GitHub 提交与推送**：提交 **`7d2cbe8`**（rebase 后为 **`13ab946`**）**`feat: Zitadel SSO, user-center tenancy, and production deploy tooling`**（494 文件）；**`git pull --rebase origin main`** 丢弃与远端重复的 **`c02812f`**；**`git push origin main`** 至 **`kuangxiongbo/agentAC`** 成功。未提交 **`.env.local`**、**`deploy/.env`**（已 gitignore）。
 - **镜像与代码对齐检查**：ACR **`agentcenter:2.0.1`** / **`:latest`** manifest 仍为 **`sha256:88e9a874…`**（**amd64+arm64**）；该镜像在提交前由本地工作区构建，与当前 **`main`** 内容一致，**无需因本次 push 再次构建**。仓库根目录无 **`.github/workflows`**，**`mission-control/.github`** 内 CI/镜像工作流不会在 push 时自动运行；生产仍用 ACR 手动 **`docker-buildx-multiarch.sh`**。

@@ -94,7 +94,6 @@ export default function LoginPage() {
   const [returnTo, setReturnTo] = useState('/')
   const [ssoNavigating, setSsoNavigating] = useState(false)
   const googleCallbackRef = useRef<((response: GoogleCredentialResponse) => void) | null>(null)
-  const ssoOnlyBootRef = useRef(false)
 
   const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || ''
   const zitadelEnabled = Boolean(ssoInfo?.zitadel)
@@ -183,16 +182,6 @@ export default function LoginPage() {
     })
     window.location.assign(url)
   }, [ssoNavigating, ssoReady, ssoInfo?.zitadel, returnTo, loginHintEmail, t])
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !ssoReady || !ssoInfo?.zitadel || localBypass) return
-    if (ssoInfo.mode !== 'sso_only') return
-    const entry = ssoInfo.oidcEntryOrigin
-    if (entry && window.location.origin !== entry) return
-    if (ssoOnlyBootRef.current) return
-    ssoOnlyBootRef.current = true
-    startUnifiedLogin()
-  }, [ssoReady, ssoInfo, localBypass, startUnifiedLogin])
 
   useEffect(() => {
     try {

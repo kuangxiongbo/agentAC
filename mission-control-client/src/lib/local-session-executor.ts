@@ -520,9 +520,26 @@ function extractStructuredOutput(raw: string): { reply: string | null; sessionId
   return { reply, sessionId }
 }
 
+function resolveCodexBin(): string {
+  const fromEnv = (process.env.MC_CODEX_BIN || '').trim()
+  if (fromEnv) return fromEnv
+  if (existsSync('/opt/homebrew/bin/codex')) return '/opt/homebrew/bin/codex'
+  if (existsSync('/usr/local/bin/codex')) return '/usr/local/bin/codex'
+  return 'codex'
+}
+
+function buildCommandEnv(): NodeJS.ProcessEnv {
+  const pathKey = process.platform === 'win32' ? 'Path' : 'PATH'
+  const existing = process.env[pathKey] || ''
+  const prefixes = ['/opt/homebrew/bin', '/usr/local/bin'].filter((p) => existsSync(p))
+  const merged = [...prefixes, ...existing.split(path.delimiter).filter(Boolean)].join(path.delimiter)
+  return { ...process.env, [pathKey]: merged }
+}
+
 function buildCommandOptions(options: LocalSessionExecutionOptions) {
-  const commandOptions: { timeoutMs: number; cwd?: string } = {
+  const commandOptions: { timeoutMs: number; cwd?: string; env?: NodeJS.ProcessEnv } = {
     timeoutMs: EXECUTION_TIMEOUT_MS,
+    env: buildCommandEnv(),
   }
   const cwd = resolveWorkingDirectory(options.workingDirectory)
   if (cwd) commandOptions.cwd = cwd
@@ -687,7 +704,7 @@ const LOCAL_RUNTIME_EXECUTORS: Record<LocalSessionKind, LocalRuntimeExecutorAdap
       ensureValidSessionId(sessionId)
       const outputPath = path.join('/tmp', `mc-codex-last-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
       try {
-        await runCommand('codex', ['exec', 'resume', sessionId, prompt, '--skip-git-repo-check', '-o', outputPath], buildCommandOptions(options))
+        await runCommand(resolveCodexBin(), ['exec', 'resume', sessionId, prompt, '--skip-git-repo-check', '-o', outputPath], buildCommandOptions(options))
       } finally {
         // best-effort output read below
       }
@@ -715,7 +732,7 @@ const LOCAL_RUNTIME_EXECUTORS: Record<LocalSessionKind, LocalRuntimeExecutorAdap
       let commandResult: { stdout: string; stderr: string } | null = null
       try {
         commandResult = await runCommand(
-          'codex',
+          resolveCodexBin(),
           ['exec', prompt, '--skip-git-repo-check', '--json', '-o', outputPath],
           buildCommandOptions(options),
         )

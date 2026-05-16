@@ -32,13 +32,26 @@ export async function GET(request: NextRequest) {
     }
 
     if (clientId) {
-      const remote = await requestBridgeClientSessionTranscript({
-        clientId,
-        kind: kind as LocalSessionTranscriptKind,
-        sessionId,
-        limit,
-      })
-      return NextResponse.json({ messages: remote.messages, source: remote.source, client_id: clientId, remote: true })
+      try {
+        const remote = await requestBridgeClientSessionTranscript({
+          clientId,
+          kind: kind as LocalSessionTranscriptKind,
+          sessionId,
+          limit,
+        })
+        return NextResponse.json({ messages: remote.messages, source: remote.source, client_id: clientId, remote: true })
+      } catch (bridgeErr) {
+        const msg = bridgeErr instanceof Error ? bridgeErr.message : String(bridgeErr)
+        if (/not connected|socket unavailable|timed out/i.test(msg)) {
+          return NextResponse.json({
+            error:
+              '边缘客户端未通过 Bridge 连接，无法读取本机会话记录。请在本机保持代理客户端运行，并确保其已连上中心服务端的 Bridge WebSocket。',
+            code: 'bridge_offline',
+            client_id: clientId,
+          }, { status: 503 })
+        }
+        throw bridgeErr
+      }
     }
 
     const messages = readLocalSessionTranscript(kind as LocalSessionTranscriptKind, sessionId, limit)
