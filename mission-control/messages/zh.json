@@ -967,6 +967,7 @@
     "sendMessageToSession": "向此智能体会话发送消息...",
     "sendPromptToLocalSession": "向此本地会话发送提示...",
     "send": "发送",
+    "assistantThinking": "正在思考…",
     "contextCompaction": "上下文压缩",
     "modelFallback": "模型回退",
     "conversationStatusLocalClaude": "本地 Claude 会话",

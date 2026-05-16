@@ -967,6 +967,7 @@
     "sendMessageToSession": "Send message to this agent session...",
     "sendPromptToLocalSession": "Send prompt to this local session...",
     "send": "Send",
+    "assistantThinking": "Thinking…",
     "contextCompaction": "Context Compaction",
     "modelFallback": "Model Fallback",
     "conversationStatusLocalClaude": "Local Claude session",
