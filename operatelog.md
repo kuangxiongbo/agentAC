@@ -2,6 +2,7 @@
 
 ## 2026-05-17
 
+- **服务端镜像推送 ACR（侧栏版本号布局）**：提交 **`5fc0fa6`** 后 buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:8cfca7f7445de3fc6559b62e758e9cd98f391b44cc162003260b29295694656c`**（linux/amd64）。已 **`git push origin main`**。
 - **侧栏底部布局（客户端/服务端一致）**：移除底部单独版本号空白区；版本号移至顶部 Logo 名称下方；收紧 ContextSwitcher 底部内边距。
 - **服务端镜像推送 ACR（transcript 分页 + 移动底栏顺序）**：提交 **`6ca1867`** 后 buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:d75b02cf892a515c6e3f6d465e85cd399f8c74dee7c0788ff09baa7b049cafe6`**（linux/amd64）。已 **`git push origin main`**。生产：`docker compose pull && docker compose up -d --force-recreate`。
 - **移动端底栏菜单顺序与 Web 侧栏一致**：`nav-rail.tsx` 底栏按侧栏分组顺序收集 Tab（`collectMobileBarItems`），不再用扁平列表 `filter(priority)`；精简模式下 `essential` 项也按侧栏顺序显示（如聊天在任务与活动之间）。中心服 `chat` 设为 `priority: true`。
