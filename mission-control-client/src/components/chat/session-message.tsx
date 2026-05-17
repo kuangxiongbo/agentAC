@@ -17,6 +17,7 @@ export type SessionTranscriptMessage = {
 interface SessionMessageProps {
   message: SessionTranscriptMessage
   showTimestamp: boolean
+  pending?: boolean
 }
 
 const ROLE_CONFIG = {
@@ -25,12 +26,12 @@ const ROLE_CONFIG = {
   system: { indicator: '', indicatorClass: '', borderClass: 'border-l-amber-500/20' },
 } as const
 
-export function SessionMessage({ message, showTimestamp }: SessionMessageProps) {
+export function SessionMessage({ message, showTimestamp, pending = false }: SessionMessageProps) {
   const config = ROLE_CONFIG[message.role]
   const timeStr = message.timestamp ? formatTime(message.timestamp) : ''
 
   return (
-    <div className={`flex gap-0 border-l-2 ${config.borderClass} pl-3 py-1.5`}>
+    <div className={`flex gap-0 border-l-2 ${config.borderClass} pl-3 py-1.5${pending ? ' opacity-80' : ''}`}>
       {/* Timestamp gutter */}
       <div className="hidden w-16 flex-shrink-0 text-right sm:block">
         {showTimestamp && timeStr && (
@@ -51,17 +52,17 @@ export function SessionMessage({ message, showTimestamp }: SessionMessageProps) 
       {/* Content */}
       <div className="min-w-0 flex-1 space-y-1">
         {message.parts.map((part, idx) => (
-          <PartRenderer key={idx} part={part} />
+          <PartRenderer key={idx} part={part} pending={pending} />
         ))}
       </div>
     </div>
   )
 }
 
-function PartRenderer({ part }: { part: MessageContentPart }) {
+function PartRenderer({ part, pending }: { part: MessageContentPart; pending?: boolean }) {
   switch (part.type) {
     case 'text':
-      return <TextPart text={part.text} />
+      return <TextPart text={part.text} pending={pending} />
     case 'thinking':
       return <ThinkingPart thinking={part.thinking} />
     case 'tool_use':
@@ -73,9 +74,13 @@ function PartRenderer({ part }: { part: MessageContentPart }) {
   }
 }
 
-function TextPart({ text }: { text: string }) {
+function TextPart({ text, pending }: { text: string; pending?: boolean }) {
   return (
-    <div className="font-mono-tight text-xs leading-relaxed text-foreground whitespace-pre-wrap break-words">
+    <div
+      className={`font-mono-tight text-xs leading-relaxed whitespace-pre-wrap break-words ${
+        pending ? 'animate-pulse text-muted-foreground' : 'text-foreground'
+      }`}
+    >
       {renderSessionContent(text)}
     </div>
   )

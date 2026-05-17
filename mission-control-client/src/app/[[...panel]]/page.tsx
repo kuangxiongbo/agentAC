@@ -309,9 +309,9 @@ export default function Home() {
           className="flex-1 overflow-auto"
           role="main"
         >
-          <div aria-live="polite" className="flex flex-col min-h-full">
+          <div aria-live="polite" className="flex flex-col flex-1 min-h-0">
             <ErrorBoundary>
-              <div key={currentTab} className="fade-in flex-1 flex flex-col min-h-full">
+              <div key={currentTab} className="fade-in flex flex-col flex-1 min-h-0">
                 <ContentRouter tab={currentTab} />
               </div>
             </ErrorBoundary>

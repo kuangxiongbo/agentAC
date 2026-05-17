@@ -18,7 +18,7 @@ import { getDatabase, db_helpers } from './db'
 import { eventBus } from './event-bus'
 import { logger } from './logger'
 import { REMOTE_SERVER_URL, REMOTE_SERVER_TOKEN, REMOTE_RECONNECT_MS } from './config'
-import { readLocalSessionTranscript, type LocalSessionTranscriptKind } from './session-transcript'
+import { readLocalSessionTranscriptPage, type LocalSessionTranscriptKind } from './session-transcript'
 
 function getDbSetting(key: string, defaultValue: string = ''): string {
   try {
@@ -343,6 +343,7 @@ function handleSessionTranscriptRequest(message: any): void {
   const kind = typeof session?.kind === 'string' ? session.kind : ''
   const sessionId = typeof session?.sessionId === 'string' ? session.sessionId : ''
   const limit = Math.min(Math.max(parseInt(String(session?.limit || '40'), 10) || 40, 1), 200)
+  const before = typeof session?.before === 'string' ? session.before : undefined
 
   if (!requestId) return
 
@@ -357,13 +358,13 @@ function handleSessionTranscriptRequest(message: any): void {
   }
 
   try {
-    const messages = readLocalSessionTranscript(kind as LocalSessionTranscriptKind, sessionId, limit)
+    const page = readLocalSessionTranscriptPage(kind as LocalSessionTranscriptKind, sessionId, { limit, before })
     safeSend(state.ws, {
       type: 'session_transcript_response',
       requestId,
       ok: true,
       source: 'remote-bridge',
-      messages,
+      ...page,
     })
   } catch (err: any) {
     safeSend(state.ws, {

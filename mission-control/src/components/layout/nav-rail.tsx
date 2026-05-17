@@ -32,7 +32,7 @@ const navGroups: NavGroup[] = [
       { id: 'overview', label: 'Overview', icon: <OverviewIcon />, priority: true, essential: true },
       { id: 'agents', label: 'Agents', icon: <AgentsIcon />, priority: true, essential: true },
       { id: 'tasks', label: 'Tasks', icon: <TasksIcon />, priority: true, essential: true },
-      { id: 'chat', label: 'Chat', icon: <ChatIcon />, priority: false, essential: true },
+      { id: 'chat', label: 'Chat', icon: <ChatIcon />, priority: true, essential: true },
       { id: 'channels', label: 'Channels', icon: <ChannelsIcon />, priority: false },
       { id: 'skills', label: 'Skills', icon: <SkillsIcon />, priority: false },
       { id: 'memory', label: 'Memory', icon: <MemoryIcon />, priority: false },
@@ -117,6 +117,31 @@ const groupTranslationKeys: Record<string, string> = {
   observe: 'observe',
   automate: 'automate',
   admin: 'admin',
+}
+
+const MOBILE_BAR_MAX_TABS = 5
+
+function shouldShowInMobileBar(item: NavItem, isEssential: boolean): boolean {
+  return isEssential ? Boolean(item.essential || item.priority) : Boolean(item.priority)
+}
+
+/** Bottom tabs follow desktop sidebar order (group → item), not flat-list order. */
+function collectMobileBarItems(groups: NavGroup[], isEssential: boolean, maxTabs = MOBILE_BAR_MAX_TABS): NavItem[] {
+  const out: NavItem[] = []
+  for (const group of groups) {
+    for (const item of group.items) {
+      if (item.children?.length) {
+        for (const child of item.children) {
+          if (out.length >= maxTabs) return out
+          if (shouldShowInMobileBar(child, isEssential)) out.push(child)
+        }
+        continue
+      }
+      if (out.length >= maxTabs) return out
+      if (shouldShowInMobileBar(item, isEssential)) out.push(item)
+    }
+  }
+  return out
 }
 
 const gatewayOnlyPanels = new Set([
@@ -469,7 +494,7 @@ export function NavRail() {
       </nav>
 
       {/* Mobile: Bottom tab bar */}
-      <MobileBottomBar activeTab={activeTab} navigateToPanel={navigateToPanel} groups={filteredGroups} items={filteredAllNavItems} />
+      <MobileBottomBar activeTab={activeTab} navigateToPanel={navigateToPanel} groups={filteredGroups} items={filteredAllNavItems} isEssential={isEssential} />
     </>
   )
 }
@@ -535,23 +560,24 @@ function NavButton({ item, active, expanded, onClick, onPrefetch, nested }: {
   )
 }
 
-function MobileBottomBar({ activeTab, navigateToPanel, groups, items }: {
+function MobileBottomBar({ activeTab, navigateToPanel, groups, items, isEssential }: {
   activeTab: string
   navigateToPanel: (tab: string) => void
   groups: NavGroup[]
   items: NavItem[]
+  isEssential: boolean
 }) {
   const tn = useTranslations('nav')
   const [sheetOpen, setSheetOpen] = useState(false)
-  const priorityItems = items.filter(i => i.priority)
-  const nonPriorityIds = new Set(items.filter(i => !i.priority).map(i => i.id))
-  const moreIsActive = nonPriorityIds.has(activeTab)
+  const mobileBarItems = collectMobileBarItems(groups, isEssential)
+  const mobileBarIds = new Set(mobileBarItems.map((i) => i.id))
+  const moreIsActive = Boolean(activeTab) && !mobileBarIds.has(activeTab) && items.some((i) => i.id === activeTab)
 
   return (
     <>
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-card/95 backdrop-blur-lg border-t border-border safe-area-bottom">
         <div className="flex items-center justify-around px-1 h-14">
-          {priorityItems.map((item) => (
+          {mobileBarItems.map((item) => (
             <Button
               key={item.id}
               variant="ghost"

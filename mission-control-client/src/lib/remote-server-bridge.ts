@@ -29,7 +29,7 @@ import {
   isLocalSessionKind,
   type LocalSessionKind,
 } from './local-session-executor'
-import { readLocalSessionTranscript, type LocalSessionTranscriptKind } from './session-transcript'
+import { readLocalSessionTranscriptPage, type LocalSessionTranscriptKind } from './session-transcript'
 import { notifySessionTranscriptUpdated } from './session-realtime'
 
 // We use the native ws library if available (Node 18+ has it natively via global WebSocket)
@@ -442,6 +442,7 @@ function handleSessionTranscriptRequest(message: any): void {
   const kind = typeof session?.kind === 'string' ? session.kind : ''
   const sessionId = typeof session?.sessionId === 'string' ? session.sessionId : ''
   const limit = Math.min(Math.max(parseInt(String(session?.limit || '40'), 10) || 40, 1), 200)
+  const before = typeof session?.before === 'string' ? session.before : undefined
 
   if (!requestId) return
 
@@ -456,13 +457,13 @@ function handleSessionTranscriptRequest(message: any): void {
   }
 
   try {
-    const messages = readLocalSessionTranscript(kind as LocalSessionTranscriptKind, sessionId, limit)
+    const page = readLocalSessionTranscriptPage(kind as LocalSessionTranscriptKind, sessionId, { limit, before })
     safeSend(state.ws, {
       type: 'session_transcript_response',
       requestId,
       ok: true,
       source: 'remote-bridge',
-      messages,
+      ...page,
     })
   } catch (err: any) {
     safeSend(state.ws, {

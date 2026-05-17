@@ -12,6 +12,7 @@ import { ThemeSelector } from '@/components/ui/theme-selector'
 import { LanguageSwitcher } from '@/components/ui/language-switcher'
 import { DigitalClock } from '@/components/ui/digital-clock'
 import { getNavigationMetrics, navigationMetricEventName } from '@/lib/navigation-metrics'
+import { useBridgeStatus } from '@/lib/use-bridge-status'
 
 interface SearchResult {
   type: string
@@ -465,14 +466,134 @@ function ModeBadge({
 }) {
   const { dashboardMode } = useAgentCenterStore()
   const th = useTranslations('header')
+  const tg = useTranslations('gatewayFloater')
+  const navigateToPanel = useNavigateToPanel()
   const isLocal = dashboardMode === 'local'
   const [showTooltip, setShowTooltip] = useState(false)
+  const { bridge, state: bridgeState, host: bridgeHost, reconnecting, reconnect } = useBridgeStatus(4000, isLocal)
 
   if (isLocal) {
+    let dotClass: string
+    let borderClass: string
+    let textClass: string
+    let statusLabel: string
+
+    switch (bridgeState) {
+      case 'connected':
+        dotClass = 'bg-green-500'
+        borderClass = 'border-green-500/25 bg-green-500/10'
+        textClass = 'text-green-400'
+        statusLabel = tg('centerConnected')
+        break
+      case 'reconnecting':
+        dotClass = 'bg-amber-500 animate-pulse'
+        borderClass = 'border-amber-500/25 bg-amber-500/10'
+        textClass = 'text-amber-400'
+        statusLabel = tg('centerReconnecting')
+        break
+      case 'disconnected':
+        dotClass = 'bg-red-500 animate-pulse'
+        borderClass = 'border-red-500/25 bg-red-500/10'
+        textClass = 'text-red-400'
+        statusLabel = tg('centerOffline')
+        break
+      case 'loading':
+        dotClass = 'bg-muted-foreground/50 animate-pulse'
+        borderClass = 'border-void-cyan/25 bg-void-cyan/10'
+        textClass = 'text-muted-foreground'
+        statusLabel = tg('checking')
+        break
+      default:
+        dotClass = 'bg-muted-foreground/40'
+        borderClass = 'border-void-cyan/25 bg-void-cyan/10'
+        textClass = 'text-muted-foreground'
+        statusLabel = tg('centerNotConfigured')
+    }
+
+    const canReconnect = bridge?.enabled && bridgeState !== 'connected'
+
     return (
-      <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-2xs bg-void-cyan/10 border border-void-cyan/25">
-        <span className="w-1.5 h-1.5 rounded-full bg-void-cyan" />
-        <span className="font-medium text-void-cyan">{th('clientMode')}</span>
+      <div
+        className="relative"
+        onMouseEnter={() => setShowTooltip(true)}
+        onMouseLeave={() => setShowTooltip(false)}
+      >
+        <button
+          type="button"
+          onClick={canReconnect ? () => void reconnect() : undefined}
+          disabled={reconnecting}
+          className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-2xs border ${borderClass} ${
+            canReconnect ? 'cursor-pointer hover:brightness-125' : 'cursor-default'
+          } transition-all`}
+        >
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotClass}`} />
+          <span className="font-medium text-void-cyan">{th('clientMode')}</span>
+          <span className={`font-mono ${textClass} opacity-90`}>{statusLabel}</span>
+        </button>
+
+        {showTooltip && (
+          <div className="absolute top-full left-0 mt-1.5 z-50 w-56 rounded-lg border border-border bg-card/95 backdrop-blur-md p-3 shadow-xl text-xs">
+            <div className="font-medium text-foreground mb-2">{tg('centerBridge')}</div>
+            <div className="space-y-1.5 text-muted-foreground">
+              <div className="flex justify-between">
+                <span>{th('status')}</span>
+                <span
+                  className={
+                    bridgeState === 'connected'
+                      ? 'text-green-400'
+                      : bridgeState === 'reconnecting'
+                        ? 'text-amber-400'
+                        : bridgeState === 'disconnected'
+                          ? 'text-red-400'
+                          : 'text-muted-foreground'
+                  }
+                >
+                  {bridgeState === 'connected'
+                    ? th('connected')
+                    : bridgeState === 'reconnecting'
+                      ? th('reconnecting')
+                      : bridgeState === 'disconnected'
+                        ? th('disconnected')
+                        : tg('notConfigured')}
+                </span>
+              </div>
+              {bridge?.enabled && (
+                <div className="flex justify-between gap-2">
+                  <span>{th('host')}</span>
+                  <span className="font-mono text-foreground/80 truncate">{bridgeHost}</span>
+                </div>
+              )}
+              {bridge?.discoverySource && (
+                <div className="flex justify-between gap-2">
+                  <span>{tg('discovery')}</span>
+                  <span className="font-mono text-foreground/80 truncate">{bridge.discoverySource}</span>
+                </div>
+              )}
+              {bridge && bridge.reconnectAttempts > 0 && (
+                <div className="flex justify-between">
+                  <span>{th('retries')}</span>
+                  <span className="text-amber-400">{bridge.reconnectAttempts}</span>
+                </div>
+              )}
+            </div>
+            {canReconnect && (
+              <div className="mt-2 pt-2 border-t border-border/40 text-muted-foreground/60 text-[10px]">
+                {reconnecting ? tg('reconnectingAction') : th('clickToReconnect')}
+              </div>
+            )}
+            {!bridge?.enabled && (
+              <div className="mt-2 pt-2 border-t border-border/40">
+                <button
+                  type="button"
+                  className="text-[10px] text-void-cyan hover:underline"
+                  onClick={() => navigateToPanel('settings')}
+                >
+                  {tg('configureUpstream')}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     )
   }

@@ -1,5 +1,13 @@
 # 操作日志 (operatelog)
 
+## 2026-05-17
+
+- **移动端底栏菜单顺序与 Web 侧栏一致**：`nav-rail.tsx` 底栏按侧栏分组顺序收集 Tab（`collectMobileBarItems`），不再用扁平列表 `filter(priority)`；精简模式下 `essential` 项也按侧栏顺序显示（如聊天在任务与活动之间）。中心服 `chat` 设为 `priority: true`。
+- **Codex transcript 完整分页（非头尾拼接）**：`session-transcript.ts` 按字节块或消息索引分页读取 JSONL（`before` 游标）；API 返回 `hasMoreOlder` / `nextOlderCursor` / `sourceMtimeMs`；聊天页顶部「加载更早消息」；活跃会话轮询 5s；Bridge 远程 transcript 透传分页字段。Codex 会话展示同步说明（网页读 `~/.codex/sessions`，可能略滞后于 TUI）。
+- **聊天 transcript 与终端不一致**：超大 Codex JSONL 原「头+尾」拼接会混入旧内容；改为只读文件尾部（最近约 6MB）。切换会话/手动刷新带 `nocache=1`；Codex 会话 transcript 条数上限提至 80。
+- **mission-control-client（顶部网关状态）**：中心服 Bridge 连接状态并入顶栏「客户端模式」徽章（动态绿/黄/红灯 + 中心服已连接等文案），悬停详情、点击重连；完全移除左下角 `GatewayStatusFloater` 及 `fixed bottom` 占位；主内容区 `min-h-full` 改为 `min-h-0` 避免底部留白。逻辑抽至 `use-bridge-status.ts`。
+- **mission-control-client 本地启动**：执行 `pnpm dev`，服务就绪 **http://127.0.0.1:5001**（Next.js 16.1.6，加载 `.env.local`）。
+
 ## 2026-05-16
 
 - **服务端镜像推送 ACR（聊天乐观发送 + 静默刷新）**：提交 **`c002f2a`** 后 buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:0cd0cbb1db551cd0cb88d6a903da11f8efa29c4ed474542bcf0894ac8051b424`**（linux/amd64）。已 **`git push origin main`**。生产：`docker compose pull && docker compose up -d --force-recreate`。

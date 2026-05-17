@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useLayoutEffect, useCallback, useState, useRef } from 'react'
+import { useEffect, useLayoutEffect, useCallback, useState, useRef, useMemo } from 'react'
 import { useTranslations } from 'next-intl'
 import { useAgentCenterStore, type Conversation, type ChatAttachment } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
@@ -18,7 +18,7 @@ import { SessionMessage, shouldShowTimestamp, type SessionTranscriptMessage } fr
 import { getSessionKindLabel, SessionKindAvatar } from './session-kind-brand'
 
 const log = createClientLogger('ChatWorkspace')
-const ACTIVE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS = 15000
+const ACTIVE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS = 5000
 const IDLE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS = 30000
 
 declare global {
@@ -50,6 +50,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
 
   const pendingIdRef = useRef(-1)
   const sessionTranscriptRequestIdRef = useRef(0)
+  const sessionTranscriptRef = useRef<SessionTranscriptMessage[]>([])
   const transcriptCacheRef = useRef(new Map<string, SessionTranscriptMessage[]>())
 
   const [showConversations, setShowConversations] = useState(true)
@@ -59,11 +60,16 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
   const [sessionTranscript, setSessionTranscript] = useState<SessionTranscriptMessage[]>([])
   const [sessionTranscriptLoading, setSessionTranscriptLoading] = useState(false)
   const [sessionTranscriptError, setSessionTranscriptError] = useState<string | null>(null)
-  const [sessionReloadNonce, setSessionReloadNonce] = useState(0)
-
+  const [transcriptHasMoreOlder, setTranscriptHasMoreOlder] = useState(false)
+  const [transcriptOlderCursor, setTranscriptOlderCursor] = useState<string | null>(null)
+  const [transcriptLoadingOlder, setTranscriptLoadingOlder] = useState(false)
+  const transcriptOlderCursorRef = useRef<string | null>(null)
+  const transcriptSourceMtimeRef = useRef(0)
   const isOverlay = mode === 'overlay'
   const selectedConversation = conversations.find((c) => c.id === activeConversation)
   const selectedSession = selectedConversation?.session
+
+  sessionTranscriptRef.current = sessionTranscript
 
   // Detect mobile
   useEffect(() => {
@@ -92,7 +98,15 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
       setSessionTranscriptLoading(true)
     }
     setSessionTranscriptError(null)
+    setTranscriptHasMoreOlder(false)
+    setTranscriptOlderCursor(null)
+    transcriptOlderCursorRef.current = null
+    transcriptSourceMtimeRef.current = 0
   }, [activeConversation])
+
+  useEffect(() => {
+    transcriptOlderCursorRef.current = transcriptOlderCursor
+  }, [transcriptOlderCursor])
 
   // On mobile, hide conversations when a conversation is selected
   useEffect(() => {
@@ -255,7 +269,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
     !!activeConversation &&
     !activeConversation.startsWith('session:')
 
-  const loadSessionTranscript = useCallback(async (options?: { background?: boolean }) => {
+  const loadSessionTranscript = useCallback(async (options?: { background?: boolean; older?: boolean }) => {
     const sessionMeta = selectedSession
     const cacheKey = activeConversation
     if (!sessionMeta) {
@@ -266,18 +280,29 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
       return
     }
 
+    const isOlder = options?.older === true
+    const beforeCursor = isOlder ? transcriptOlderCursorRef.current : null
+    if (isOlder && !beforeCursor) return
+
     const requestId = sessionTranscriptRequestIdRef.current + 1
     sessionTranscriptRequestIdRef.current = requestId
     const hasCache = cacheKey ? transcriptCacheRef.current.has(cacheKey) : false
-    if (!options?.background || !hasCache) {
+    const hasVisibleTranscript =
+      sessionTranscriptRef.current.length > 0 || (hasCache && cacheKey ? (transcriptCacheRef.current.get(cacheKey)?.length ?? 0) > 0 : false)
+    const background = options?.background === true
+    if (isOlder) {
+      setTranscriptLoadingOlder(true)
+    } else if (!background || !hasVisibleTranscript) {
       setSessionTranscriptLoading(true)
     }
     setSessionTranscriptError(null)
 
-    // Gateway sessions use the gateway transcript API
+    const messageLimit = sessionMeta.sessionKind === 'codex-cli' ? 80 : 40
+    const beforeParam = isOlder && beforeCursor ? `&before=${encodeURIComponent(beforeCursor)}` : ''
+    const nocacheParam = background && !isOlder ? '' : '&nocache=1'
     const url = sessionMeta.sessionKind === 'gateway'
-      ? `/api/sessions/transcript/gateway?key=${encodeURIComponent(sessionMeta.sessionKey || sessionMeta.sessionId)}&limit=50`
-      : `/api/sessions/transcript?kind=${encodeURIComponent(sessionMeta.sessionKind)}&id=${encodeURIComponent(sessionMeta.sessionId)}&limit=40`
+      ? `/api/sessions/transcript/gateway?key=${encodeURIComponent(sessionMeta.sessionKey || sessionMeta.sessionId)}&limit=50${nocacheParam}`
+      : `/api/sessions/transcript?kind=${encodeURIComponent(sessionMeta.sessionKind)}&id=${encodeURIComponent(sessionMeta.sessionId)}&limit=${messageLimit}${nocacheParam}${beforeParam}`
 
     try {
       const res = await fetch(url)
@@ -289,21 +314,48 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
       const data = await res.json()
       if (sessionTranscriptRequestIdRef.current !== requestId) return
       const nextMessages = Array.isArray(data?.messages) ? data.messages : []
-      if (cacheKey) transcriptCacheRef.current.set(cacheKey, nextMessages)
-      setSessionTranscript(nextMessages)
+      const hasMore = Boolean(data?.hasMoreOlder)
+      const nextCursor = typeof data?.nextOlderCursor === 'string' ? data.nextOlderCursor : null
+      const sourceMtime = typeof data?.sourceMtimeMs === 'number' ? data.sourceMtimeMs : 0
+
+      if (isOlder) {
+        setSessionTranscript((prev) => [...nextMessages, ...prev])
+      } else if (background && transcriptOlderCursorRef.current) {
+        setSessionTranscript((prev) => {
+          const merged =
+            prev.length <= nextMessages.length
+              ? nextMessages
+              : [...prev.slice(0, prev.length - nextMessages.length), ...nextMessages]
+          if (cacheKey) transcriptCacheRef.current.set(cacheKey, merged)
+          return merged
+        })
+      } else {
+        if (cacheKey) transcriptCacheRef.current.set(cacheKey, nextMessages)
+        setSessionTranscript(nextMessages)
+      }
+
+      setTranscriptHasMoreOlder(hasMore)
+      setTranscriptOlderCursor(nextCursor)
+      if (sourceMtime > 0) transcriptSourceMtimeRef.current = sourceMtime
     } catch (err) {
       if (sessionTranscriptRequestIdRef.current !== requestId) return
-      setSessionTranscript([])
+      if (!background && !isOlder) {
+        setSessionTranscript([])
+      }
       setSessionTranscriptError(err instanceof Error ? err.message : 'Failed to load transcript')
     } finally {
       if (sessionTranscriptRequestIdRef.current === requestId) {
-        setSessionTranscriptLoading(false)
+        if (isOlder) {
+          setTranscriptLoadingOlder(false)
+        } else {
+          setSessionTranscriptLoading(false)
+        }
       }
     }
-  }, [selectedSession, sessionReloadNonce, activeConversation])
+  }, [selectedSession, activeConversation])
 
   useEffect(() => {
-    void loadSessionTranscript({ background: true })
+    void loadSessionTranscript({ background: false })
   }, [loadSessionTranscript])
 
   useEffect(() => {
@@ -312,7 +364,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
     const handleTranscriptUpdated = (rawEvent: Event) => {
       const detail = (rawEvent as CustomEvent<SessionRealtimePayload | undefined>).detail
       if (!shouldRefreshSelectedSession(selectedSession, detail)) return
-      void loadSessionTranscript()
+      void loadSessionTranscript({ background: true })
     }
 
     window.addEventListener(SESSION_TRANSCRIPT_UPDATED_EVENT, handleTranscriptUpdated)
@@ -328,10 +380,19 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
     }
   )
 
-  const refreshSessionTranscript = useCallback(() => {
-    if (activeConversation) transcriptCacheRef.current.delete(activeConversation)
-    setSessionReloadNonce((v) => v + 1)
-  }, [activeConversation])
+  const refreshSessionTranscript = useCallback(
+    (options?: { background?: boolean }) => {
+      const background = options?.background ?? false
+      if (!background && activeConversation) {
+        transcriptCacheRef.current.delete(activeConversation)
+        setTranscriptHasMoreOlder(false)
+        setTranscriptOlderCursor(null)
+        transcriptOlderCursorRef.current = null
+      }
+      void loadSessionTranscript({ background })
+    },
+    [activeConversation, loadSessionTranscript]
+  )
 
   const handleSaveSessionPreferences = useCallback(async (payload: {
     prefKey: string
@@ -493,6 +554,9 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
                 messages={sessionTranscript}
                 loading={sessionTranscriptLoading}
                 error={sessionTranscriptError}
+                hasMoreOlder={transcriptHasMoreOlder}
+                loadingOlder={transcriptLoadingOlder}
+                onLoadOlder={() => void loadSessionTranscript({ background: true, older: true })}
                 onRefreshTranscript={refreshSessionTranscript}
                 onSavePreferences={handleSaveSessionPreferences}
               />
@@ -521,6 +585,9 @@ function SessionConversationView({
   messages,
   loading,
   error,
+  hasMoreOlder,
+  loadingOlder,
+  onLoadOlder,
   onRefreshTranscript,
   onSavePreferences,
 }: {
@@ -528,7 +595,10 @@ function SessionConversationView({
   messages: SessionTranscriptMessage[]
   loading: boolean
   error: string | null
-  onRefreshTranscript: () => void
+  hasMoreOlder: boolean
+  loadingOlder: boolean
+  onLoadOlder: () => void
+  onRefreshTranscript: (options?: { background?: boolean }) => void
   onSavePreferences: (payload: { prefKey: string; displayName?: string; colorTag?: string }) => Promise<void>
 }) {
   const t = useTranslations('chat')
@@ -545,7 +615,9 @@ function SessionConversationView({
   const [continuePrompt, setContinuePrompt] = useState('')
   const [continueBusy, setContinueBusy] = useState(false)
   const [continueError, setContinueError] = useState<string | null>(null)
-  const [lastReply, setLastReply] = useState<string | null>(null)
+  const [pendingUserMessage, setPendingUserMessage] = useState<SessionTranscriptMessage | null>(null)
+  const continuePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const transcriptBaselineRef = useRef(0)
   const [nameDraft, setNameDraft] = useState(session.displayName || '')
   const [colorDraft, setColorDraft] = useState(session.colorTag || '')
   const [prefBusy, setPrefBusy] = useState(false)
@@ -559,8 +631,57 @@ function SessionConversationView({
     setColorDraft(session.colorTag || '')
     setPrefError(null)
     setContinueError(null)
-    setLastReply(null)
+    setPendingUserMessage(null)
   }, [session.prefKey, session.displayName, session.colorTag])
+
+  const displayMessages = useMemo(() => {
+    const merged = [...messages]
+    if (pendingUserMessage) {
+      const text = getUserTextFromTranscriptMessage(pendingUserMessage)
+      if (!transcriptHasUserPrompt(messages, text)) {
+        merged.push(pendingUserMessage)
+      }
+    }
+    if (continueBusy) {
+      const last = messages[messages.length - 1]
+      const gotAssistantReply =
+        messages.length > transcriptBaselineRef.current && last?.role === 'assistant'
+      if (!gotAssistantReply) {
+        merged.push({
+          role: 'assistant',
+          parts: [{ type: 'text', text: t('assistantThinking') }],
+          timestamp: new Date().toISOString(),
+        })
+      }
+    }
+    return merged
+  }, [messages, pendingUserMessage, continueBusy, t])
+
+  useEffect(() => {
+    if (!pendingUserMessage) return
+    const text = getUserTextFromTranscriptMessage(pendingUserMessage)
+    if (transcriptHasUserPrompt(messages, text)) {
+      setPendingUserMessage(null)
+    }
+  }, [messages, pendingUserMessage])
+
+  useEffect(() => {
+    if (!continueBusy) {
+      if (continuePollRef.current) {
+        clearInterval(continuePollRef.current)
+        continuePollRef.current = null
+      }
+      return
+    }
+    onRefreshTranscript({ background: true })
+    continuePollRef.current = setInterval(() => onRefreshTranscript({ background: true }), 2000)
+    return () => {
+      if (continuePollRef.current) {
+        clearInterval(continuePollRef.current)
+        continuePollRef.current = null
+      }
+    }
+  }, [continueBusy, onRefreshTranscript])
 
   const isTranscriptNearBottom = useCallback(() => {
     const container = transcriptScrollRef.current
@@ -576,6 +697,15 @@ function SessionConversationView({
       container.scrollTo({ top: container.scrollHeight, behavior })
     }
   }, [])
+
+  useLayoutEffect(() => {
+    if (!stickToBottomRef.current) return
+    if (!pendingUserMessage && !continueBusy) return
+    scrollTranscriptToBottom('auto')
+    requestAnimationFrame(() => {
+      if (stickToBottomRef.current) scrollTranscriptToBottom('auto')
+    })
+  }, [pendingUserMessage, continueBusy, scrollTranscriptToBottom])
 
   // Open / switch session: always land on latest messages at the bottom
   useEffect(() => {
@@ -612,12 +742,6 @@ function SessionConversationView({
     prevTranscriptCountRef.current = count
   }, [messages, loading, isTranscriptNearBottom, scrollTranscriptToBottom])
 
-  useEffect(() => {
-    if (lastReply && isTranscriptNearBottom()) {
-      requestAnimationFrame(() => scrollTranscriptToBottom('smooth'))
-    }
-  }, [lastReply, isTranscriptNearBottom, scrollTranscriptToBottom])
-
   const handleTranscriptScroll = useCallback(() => {
     if (isTranscriptNearBottom()) {
       setShowNewTranscript(false)
@@ -634,9 +758,18 @@ function SessionConversationView({
       return
     }
 
+    const optimisticUser: SessionTranscriptMessage = {
+      role: 'user',
+      parts: [{ type: 'text', text: prompt }],
+      timestamp: new Date().toISOString(),
+    }
+    setPendingUserMessage(optimisticUser)
+    transcriptBaselineRef.current = messages.length
+    setContinuePrompt('')
+    stickToBottomRef.current = true
     setContinueBusy(true)
     setContinueError(null)
-    setLastReply(null)
+    requestAnimationFrame(() => scrollTranscriptToBottom('auto'))
     try {
       if (isGatewaySession) {
         // Gateway sessions: forward message to the agent via chat messages API
@@ -663,9 +796,7 @@ function SessionConversationView({
           setContinueError(t('messageSavedNotDelivered', { reason: fwd.reason || t('reasonUnknown') }))
         }
         stickToBottomRef.current = true
-        setContinuePrompt('')
-        // Refresh transcript after a short delay to capture the response
-        setTimeout(() => onRefreshTranscript(), 2000)
+        setTimeout(() => onRefreshTranscript({ background: true }), 2000)
       } else {
         if (isRemoteEdgeSession && !session.nodeId) {
           throw new Error(t('remoteClientRequired'))
@@ -694,19 +825,14 @@ function SessionConversationView({
           throw new Error(data?.error || t('failedToContinueSession'))
         }
         stickToBottomRef.current = true
-        setContinuePrompt('')
-        if (typeof data?.reply === 'string' && data.reply.trim()) {
-          setLastReply(data.reply.trim())
-        }
-        onRefreshTranscript()
-        if (isRemoteEdgeSession) {
-          window.setTimeout(() => onRefreshTranscript(), 10000)
-        }
+        onRefreshTranscript({ background: true })
       }
     } catch (err) {
       setContinueError(err instanceof Error ? err.message : t('failedToContinueSession'))
+      setPendingUserMessage(null)
     } finally {
       setContinueBusy(false)
+      onRefreshTranscript({ background: true })
     }
   }
 
@@ -810,20 +936,47 @@ function SessionConversationView({
         {!loading && error && (
           <div className="px-4 text-xs text-red-400">{error}</div>
         )}
-        {!loading && !error && messages.length === 0 && (
+        {!loading && !error && displayMessages.length === 0 && (
           <div className="px-4 text-xs text-muted-foreground">
             {isGatewaySession ? t('noGatewayMessages') : t('noTranscriptSnippets')}
           </div>
         )}
-        {!error && !loading && messages.length > 0 && (
+        {!error && displayMessages.length > 0 && (
           <div className="space-y-0">
-            {messages.map((msg, idx) => (
-              <SessionMessage
-                key={`${msg.timestamp || 'no-ts'}-${idx}`}
-                message={msg}
-                showTimestamp={shouldShowTimestamp(msg, messages[idx - 1])}
-              />
-            ))}
+            {hasMoreOlder && (
+              <div className="flex justify-center px-4 py-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-3 text-xs"
+                  disabled={loadingOlder}
+                  onClick={onLoadOlder}
+                >
+                  {loadingOlder ? t('loadingOlderMessages') : t('loadOlderMessages')}
+                </Button>
+              </div>
+            )}
+            {session.sessionKind === 'codex-cli' && (
+              <p className="px-4 pb-2 text-[10px] leading-relaxed text-muted-foreground/70">
+                {t('transcriptSyncHint')}
+              </p>
+            )}
+            {displayMessages.map((msg, idx) => {
+              const isThinkingPlaceholder =
+                continueBusy &&
+                idx === displayMessages.length - 1 &&
+                msg.role === 'assistant' &&
+                msg.parts.some((p) => p.type === 'text' && p.text === t('assistantThinking'))
+              return (
+                <SessionMessage
+                  key={`${msg.timestamp || 'no-ts'}-${idx}`}
+                  message={msg}
+                  showTimestamp={shouldShowTimestamp(msg, displayMessages[idx - 1])}
+                  pending={isThinkingPlaceholder}
+                />
+              )
+            })}
             <div ref={transcriptBottomRef} className="h-px" />
           </div>
         )}
@@ -889,11 +1042,6 @@ function SessionConversationView({
           </Button>
         </div>
         {continueError && <div className="mt-1 text-xs text-red-400">{continueError}</div>}
-        {lastReply && (
-          <div className="mt-2 border-l-2 border-primary/30 pl-3">
-            <div className="font-mono-tight text-xs leading-relaxed text-foreground whitespace-pre-wrap">{lastReply}</div>
-          </div>
-        )}
       </div>
     </div>
   )
@@ -978,6 +1126,25 @@ function getConversationStatus(agents: Array<{ name: string; status: string }>, 
   const agent = agents.find(a => a.name.toLowerCase() === name.toLowerCase())
   if (!agent) return labels.unknown
   return agent.status === 'idle' || agent.status === 'busy' ? labels.online : labels.offline
+}
+
+function getUserTextFromTranscriptMessage(message: SessionTranscriptMessage): string {
+  return message.parts
+    .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+    .map((part) => part.text)
+    .join('\n')
+    .trim()
+}
+
+function transcriptHasUserPrompt(messages: SessionTranscriptMessage[], prompt: string): boolean {
+  const target = prompt.trim()
+  if (!target) return false
+  const start = Math.max(0, messages.length - 6)
+  for (let i = messages.length - 1; i >= start; i--) {
+    const msg = messages[i]
+    if (msg.role === 'user' && getUserTextFromTranscriptMessage(msg) === target) return true
+  }
+  return false
 }
 
 function shouldRefreshSelectedSession(

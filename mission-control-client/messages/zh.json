@@ -370,6 +370,23 @@
     "catalogQuickActionsLabel": "快捷操作",
     "catalogQuickActionsDescription": "前往关键面板的快捷入口"
   },
+  "gatewayFloater": {
+    "title": "网关连接",
+    "toggleDetails": "展开/收起连接详情",
+    "collapse": "收起",
+    "checking": "检测连接…",
+    "centerConnected": "中心服已连接",
+    "centerReconnecting": "中心服重连中",
+    "centerOffline": "中心服未连接",
+    "centerNotConfigured": "未配置中心服",
+    "centerBridge": "中心服 Bridge",
+    "openclawGateway": "OpenClaw 网关",
+    "notConfigured": "未配置",
+    "discovery": "发现方式",
+    "reconnectBridge": "重新连接 Bridge",
+    "reconnectingAction": "连接中…",
+    "configureUpstream": "前往设置配置上游"
+  },
   "header": {
     "workspace": "工作区",
     "sessions": "会话",
@@ -749,6 +766,7 @@
     "sendMessageToSession": "向此智能体会话发送消息...",
     "sendPromptToLocalSession": "向此本地会话发送提示...",
     "send": "发送",
+    "assistantThinking": "正在思考…",
     "contextCompaction": "上下文压缩",
     "modelFallback": "模型回退",
     "conversationStatusLocalClaude": "本地 Claude 会话",
@@ -767,7 +785,10 @@
     "failedToSavePreferences": "保存偏好失败",
     "messageSavedNotDelivered": "消息已保存但未送达：{reason}",
     "reasonUnknown": "未知",
-    "failedToUpdateTranscript": "更新转录失败"
+    "failedToUpdateTranscript": "更新转录失败",
+    "loadOlderMessages": "加载更早消息",
+    "loadingOlderMessages": "正在加载…",
+    "transcriptSyncHint": "网页内容来自本机 Codex 会话日志（~/.codex/sessions），可能与终端 TUI 有数秒延迟；终端未写入日志前网页不会显示。"
   },
   "agentComms": {
     "connecting": "连接到 Feed 中...",

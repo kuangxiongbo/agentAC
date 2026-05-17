@@ -986,7 +986,10 @@
     "failedToSavePreferences": "Failed to save preferences",
     "messageSavedNotDelivered": "Message saved but not delivered: {reason}",
     "reasonUnknown": "unknown",
-    "failedToUpdateTranscript": "Failed to update transcript"
+    "failedToUpdateTranscript": "Failed to update transcript",
+    "loadOlderMessages": "Load older messages",
+    "loadingOlderMessages": "Loading…",
+    "transcriptSyncHint": "Web view reads from local Codex session logs (~/.codex/sessions). It may lag the terminal TUI by a few seconds until lines are flushed to disk."
   },
   "agentComms": {
     "connecting": "Connecting to feed...",

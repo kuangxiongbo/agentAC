@@ -150,6 +150,10 @@ function resolvePendingRequest(msg: any) {
   pending.resolve({
     messages: Array.isArray(msg?.messages) ? msg.messages as TranscriptMessage[] : [],
     source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    hasMoreOlder: Boolean(msg?.hasMoreOlder),
+    nextOlderCursor: typeof msg?.nextOlderCursor === 'string' ? msg.nextOlderCursor : null,
+    sourceMtimeMs: typeof msg?.sourceMtimeMs === 'number' ? msg.sourceMtimeMs : 0,
+    sourceSize: typeof msg?.sourceSize === 'number' ? msg.sourceSize : 0,
   })
   return true
 }
@@ -414,13 +418,28 @@ export async function requestBridgeClientSessionTranscript(input: {
   kind: LocalSessionTranscriptKind
   sessionId: string
   limit: number
+  before?: string
   timeoutMs?: number
-}): Promise<{ messages: TranscriptMessage[]; source: string }> {
+}): Promise<{
+  messages: TranscriptMessage[]
+  source: string
+  hasMoreOlder?: boolean
+  nextOlderCursor?: string | null
+  sourceMtimeMs?: number
+  sourceSize?: number
+}> {
   const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
   const requestId = randomUUID()
   const timeoutMs = Math.max(1000, input.timeoutMs || 15000)
 
-  return await new Promise<{ messages: TranscriptMessage[]; source: string }>((resolve, reject) => {
+  return await new Promise<{
+    messages: TranscriptMessage[]
+    source: string
+    hasMoreOlder?: boolean
+    nextOlderCursor?: string | null
+    sourceMtimeMs?: number
+    sourceSize?: number
+  }>((resolve, reject) => {
     const timeout = setTimeout(() => {
       bridgePendingRequests.delete(requestId)
       reject(new Error(`Timed out waiting for transcript from client ${input.clientId}`))
@@ -444,6 +463,7 @@ export async function requestBridgeClientSessionTranscript(input: {
           kind: input.kind,
           sessionId: input.sessionId,
           limit: input.limit,
+          ...(input.before ? { before: input.before } : {}),
         },
       }))
     } catch (error) {

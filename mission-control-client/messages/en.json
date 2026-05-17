@@ -370,6 +370,23 @@
     "catalogQuickActionsLabel": "Quick Actions",
     "catalogQuickActionsDescription": "Navigation shortcuts to key panels"
   },
+  "gatewayFloater": {
+    "title": "Gateway connection",
+    "toggleDetails": "Show or hide connection details",
+    "collapse": "Collapse",
+    "checking": "Checking…",
+    "centerConnected": "Center server connected",
+    "centerReconnecting": "Center server reconnecting",
+    "centerOffline": "Center server offline",
+    "centerNotConfigured": "Center server not configured",
+    "centerBridge": "Center server Bridge",
+    "openclawGateway": "OpenClaw gateway",
+    "notConfigured": "Not configured",
+    "discovery": "Discovery",
+    "reconnectBridge": "Reconnect Bridge",
+    "reconnectingAction": "Connecting…",
+    "configureUpstream": "Configure upstream in Settings"
+  },
   "header": {
     "workspace": "Workspace",
     "sessions": "Sessions",
@@ -749,6 +766,7 @@
     "sendMessageToSession": "Send message to this agent session...",
     "sendPromptToLocalSession": "Send prompt to this local session...",
     "send": "Send",
+    "assistantThinking": "Thinking…",
     "contextCompaction": "Context Compaction",
     "modelFallback": "Model Fallback",
     "conversationStatusLocalClaude": "Local Claude session",
@@ -767,7 +785,10 @@
     "failedToSavePreferences": "Failed to save preferences",
     "messageSavedNotDelivered": "Message saved but not delivered: {reason}",
     "reasonUnknown": "unknown",
-    "failedToUpdateTranscript": "Failed to update transcript"
+    "failedToUpdateTranscript": "Failed to update transcript",
+    "loadOlderMessages": "Load older messages",
+    "loadingOlderMessages": "Loading…",
+    "transcriptSyncHint": "Web view reads from local Codex session logs (~/.codex/sessions). It may lag the terminal TUI by a few seconds until lines are flushed to disk."
   },
   "agentComms": {
     "connecting": "Connecting to feed...",

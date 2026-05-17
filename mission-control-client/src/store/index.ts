@@ -244,6 +244,8 @@ export interface Conversation {
     sessionKind: 'claude-code' | 'codex-cli' | 'hermes' | 'gateway'
     runtimeGroup?: 'claude' | 'codex' | 'openclaw' | 'cursor' | 'opencode' | 'hermes' | 'other'
     agent?: string
+    nodeId?: string
+    nodeLabel?: string
     displayName?: string
     colorTag?: string
     model?: string

@@ -18,7 +18,7 @@ import { SessionMessage, shouldShowTimestamp, type SessionTranscriptMessage } fr
 import { getSessionKindLabel, SessionKindAvatar } from './session-kind-brand'
 
 const log = createClientLogger('ChatWorkspace')
-const ACTIVE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS = 15000
+const ACTIVE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS = 5000
 const IDLE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS = 30000
 
 declare global {
@@ -60,6 +60,11 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
   const [sessionTranscript, setSessionTranscript] = useState<SessionTranscriptMessage[]>([])
   const [sessionTranscriptLoading, setSessionTranscriptLoading] = useState(false)
   const [sessionTranscriptError, setSessionTranscriptError] = useState<string | null>(null)
+  const [transcriptHasMoreOlder, setTranscriptHasMoreOlder] = useState(false)
+  const [transcriptOlderCursor, setTranscriptOlderCursor] = useState<string | null>(null)
+  const [transcriptLoadingOlder, setTranscriptLoadingOlder] = useState(false)
+  const transcriptOlderCursorRef = useRef<string | null>(null)
+  const transcriptSourceMtimeRef = useRef(0)
   const isOverlay = mode === 'overlay'
   const selectedConversation = conversations.find((c) => c.id === activeConversation)
   const selectedSession = selectedConversation?.session
@@ -93,7 +98,15 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
       setSessionTranscriptLoading(true)
     }
     setSessionTranscriptError(null)
+    setTranscriptHasMoreOlder(false)
+    setTranscriptOlderCursor(null)
+    transcriptOlderCursorRef.current = null
+    transcriptSourceMtimeRef.current = 0
   }, [activeConversation])
+
+  useEffect(() => {
+    transcriptOlderCursorRef.current = transcriptOlderCursor
+  }, [transcriptOlderCursor])
 
   // On mobile, hide conversations when a conversation is selected
   useEffect(() => {
@@ -256,7 +269,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
     !!activeConversation &&
     !activeConversation.startsWith('session:')
 
-  const loadSessionTranscript = useCallback(async (options?: { background?: boolean }) => {
+  const loadSessionTranscript = useCallback(async (options?: { background?: boolean; older?: boolean }) => {
     const sessionMeta = selectedSession
     const cacheKey = activeConversation
     if (!sessionMeta) {
@@ -267,21 +280,30 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
       return
     }
 
+    const isOlder = options?.older === true
+    const beforeCursor = isOlder ? transcriptOlderCursorRef.current : null
+    if (isOlder && !beforeCursor) return
+
     const requestId = sessionTranscriptRequestIdRef.current + 1
     sessionTranscriptRequestIdRef.current = requestId
     const hasCache = cacheKey ? transcriptCacheRef.current.has(cacheKey) : false
     const hasVisibleTranscript =
       sessionTranscriptRef.current.length > 0 || (hasCache && cacheKey ? (transcriptCacheRef.current.get(cacheKey)?.length ?? 0) > 0 : false)
     const background = options?.background === true
-    if (!background || !hasVisibleTranscript) {
+    if (isOlder) {
+      setTranscriptLoadingOlder(true)
+    } else if (!background || !hasVisibleTranscript) {
       setSessionTranscriptLoading(true)
     }
     setSessionTranscriptError(null)
 
-    // Gateway sessions use the gateway transcript API
+    const messageLimit = sessionMeta.sessionKind === 'codex-cli' ? 80 : 40
+    const beforeParam = isOlder && beforeCursor ? `&before=${encodeURIComponent(beforeCursor)}` : ''
+    const nocacheParam = background && !isOlder ? '' : '&nocache=1'
+    const clientParam = sessionMeta.nodeId ? `&client_id=${encodeURIComponent(sessionMeta.nodeId)}` : ''
     const url = sessionMeta.sessionKind === 'gateway'
-      ? `/api/sessions/transcript/gateway?key=${encodeURIComponent(sessionMeta.sessionKey || sessionMeta.sessionId)}&limit=50`
-      : `/api/sessions/transcript?kind=${encodeURIComponent(sessionMeta.sessionKind)}&id=${encodeURIComponent(sessionMeta.sessionId)}&limit=40${sessionMeta.nodeId ? `&client_id=${encodeURIComponent(sessionMeta.nodeId)}` : ''}`
+      ? `/api/sessions/transcript/gateway?key=${encodeURIComponent(sessionMeta.sessionKey || sessionMeta.sessionId)}&limit=50${nocacheParam}`
+      : `/api/sessions/transcript?kind=${encodeURIComponent(sessionMeta.sessionKind)}&id=${encodeURIComponent(sessionMeta.sessionId)}&limit=${messageLimit}${nocacheParam}${clientParam}${beforeParam}`
 
     try {
       const res = await fetch(url)
@@ -293,23 +315,48 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
       const data = await res.json()
       if (sessionTranscriptRequestIdRef.current !== requestId) return
       const nextMessages = Array.isArray(data?.messages) ? data.messages : []
-      if (cacheKey) transcriptCacheRef.current.set(cacheKey, nextMessages)
-      setSessionTranscript(nextMessages)
+      const hasMore = Boolean(data?.hasMoreOlder)
+      const nextCursor = typeof data?.nextOlderCursor === 'string' ? data.nextOlderCursor : null
+      const sourceMtime = typeof data?.sourceMtimeMs === 'number' ? data.sourceMtimeMs : 0
+
+      if (isOlder) {
+        setSessionTranscript((prev) => [...nextMessages, ...prev])
+      } else if (background && transcriptOlderCursorRef.current) {
+        setSessionTranscript((prev) => {
+          const merged =
+            prev.length <= nextMessages.length
+              ? nextMessages
+              : [...prev.slice(0, prev.length - nextMessages.length), ...nextMessages]
+          if (cacheKey) transcriptCacheRef.current.set(cacheKey, merged)
+          return merged
+        })
+      } else {
+        if (cacheKey) transcriptCacheRef.current.set(cacheKey, nextMessages)
+        setSessionTranscript(nextMessages)
+      }
+
+      setTranscriptHasMoreOlder(hasMore)
+      setTranscriptOlderCursor(nextCursor)
+      if (sourceMtime > 0) transcriptSourceMtimeRef.current = sourceMtime
     } catch (err) {
       if (sessionTranscriptRequestIdRef.current !== requestId) return
-      if (!background) {
+      if (!background && !isOlder) {
         setSessionTranscript([])
       }
       setSessionTranscriptError(err instanceof Error ? err.message : 'Failed to load transcript')
     } finally {
       if (sessionTranscriptRequestIdRef.current === requestId) {
-        setSessionTranscriptLoading(false)
+        if (isOlder) {
+          setTranscriptLoadingOlder(false)
+        } else {
+          setSessionTranscriptLoading(false)
+        }
       }
     }
   }, [selectedSession, activeConversation])
 
   useEffect(() => {
-    void loadSessionTranscript({ background: true })
+    void loadSessionTranscript({ background: false })
   }, [loadSessionTranscript])
 
   useEffect(() => {
@@ -339,6 +386,9 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
       const background = options?.background ?? false
       if (!background && activeConversation) {
         transcriptCacheRef.current.delete(activeConversation)
+        setTranscriptHasMoreOlder(false)
+        setTranscriptOlderCursor(null)
+        transcriptOlderCursorRef.current = null
       }
       void loadSessionTranscript({ background })
     },
@@ -505,6 +555,9 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
                 messages={sessionTranscript}
                 loading={sessionTranscriptLoading}
                 error={sessionTranscriptError}
+                hasMoreOlder={transcriptHasMoreOlder}
+                loadingOlder={transcriptLoadingOlder}
+                onLoadOlder={() => void loadSessionTranscript({ background: true, older: true })}
                 onRefreshTranscript={refreshSessionTranscript}
                 onSavePreferences={handleSaveSessionPreferences}
               />
@@ -533,6 +586,9 @@ function SessionConversationView({
   messages,
   loading,
   error,
+  hasMoreOlder,
+  loadingOlder,
+  onLoadOlder,
   onRefreshTranscript,
   onSavePreferences,
 }: {
@@ -540,6 +596,9 @@ function SessionConversationView({
   messages: SessionTranscriptMessage[]
   loading: boolean
   error: string | null
+  hasMoreOlder: boolean
+  loadingOlder: boolean
+  onLoadOlder: () => void
   onRefreshTranscript: (options?: { background?: boolean }) => void
   onSavePreferences: (payload: { prefKey: string; displayName?: string; colorTag?: string }) => Promise<void>
 }) {
@@ -888,6 +947,25 @@ function SessionConversationView({
         )}
         {!error && displayMessages.length > 0 && (
           <div className="space-y-0">
+            {hasMoreOlder && (
+              <div className="flex justify-center px-4 py-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-3 text-xs"
+                  disabled={loadingOlder}
+                  onClick={onLoadOlder}
+                >
+                  {loadingOlder ? t('loadingOlderMessages') : t('loadOlderMessages')}
+                </Button>
+              </div>
+            )}
+            {session.sessionKind === 'codex-cli' && (
+              <p className="px-4 pb-2 text-[10px] leading-relaxed text-muted-foreground/70">
+                {t('transcriptSyncHint')}
+              </p>
+            )}
             {displayMessages.map((msg, idx) => {
               const isThinkingPlaceholder =
                 continueBusy &&

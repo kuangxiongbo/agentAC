@@ -18,6 +18,18 @@ export type TranscriptMessage = {
 
 export type LocalSessionTranscriptKind = 'claude-code' | 'codex-cli' | 'hermes'
 
+/** One page of transcript loaded from disk (newest page first when `before` is omitted). */
+export type TranscriptPageResult = {
+  messages: TranscriptMessage[]
+  hasMoreOlder: boolean
+  /** Opaque cursor: `msg:<index>` for small logs, `<byteOffset>` for chunked JSONL reads. */
+  nextOlderCursor: string | null
+  sourceMtimeMs: number
+  sourceSize: number
+}
+
+const TRANSCRIPT_PAGE_SCAN_BYTES = 8 * 1024 * 1024
+
 function messageTimestampMs(message: TranscriptMessage): number {
   if (!message.timestamp) return 0
   const ts = new Date(message.timestamp).getTime()
@@ -138,35 +150,161 @@ function listClaudeTranscriptCandidates(root: string, sessionId: string): string
 
 const MAX_TRANSCRIPT_READ_BYTES = 6 * 1024 * 1024
 
-function readJsonlTextForTranscript(filePath: string): string {
-  let size = 0
+function readFileStat(filePath: string): { size: number; mtimeMs: number } | null {
   try {
-    size = fs.statSync(filePath).size
+    const stat = fs.statSync(filePath)
+    return { size: stat.size, mtimeMs: stat.mtimeMs }
   } catch {
-    return ''
+    return null
   }
+}
 
-  if (size <= MAX_TRANSCRIPT_READ_BYTES) {
-    try {
-      return fs.readFileSync(filePath, 'utf-8')
-    } catch {
-      return ''
-    }
-  }
+function readFileRangeUtf8(filePath: string, startInclusive: number, endExclusive: number): string {
+  const start = Math.max(0, startInclusive)
+  const end = Math.max(start, endExclusive)
+  const length = end - start
+  if (length <= 0) return ''
 
-  const headBytes = Math.min(64 * 1024, size)
-  const tailBytes = Math.min(2 * 1024 * 1024, size - headBytes)
+  const fd = fs.openSync(filePath, 'r')
   try {
-    const fd = fs.openSync(filePath, 'r')
-    try {
-      const head = Buffer.alloc(headBytes)
-      fs.readSync(fd, head, 0, headBytes, 0)
-      const tail = Buffer.alloc(tailBytes)
-      fs.readSync(fd, tail, 0, tailBytes, size - tailBytes)
-      return `${head.toString('utf-8')}\n${tail.toString('utf-8')}`
-    } finally {
-      fs.closeSync(fd)
+    const buf = Buffer.alloc(length)
+    fs.readSync(fd, buf, 0, length, start)
+    return buf.toString('utf-8')
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+function parseBeforeCursor(before?: string): { mode: 'byte' | 'msg'; value: number } | null {
+  if (!before) return null
+  if (before.startsWith('msg:')) {
+    const value = Number.parseInt(before.slice(4), 10)
+    return Number.isFinite(value) && value >= 0 ? { mode: 'msg', value } : null
+  }
+  const value = Number.parseInt(before, 10)
+  return Number.isFinite(value) && value >= 0 ? { mode: 'byte', value } : null
+}
+
+function emptyTranscriptPage(filePath?: string): TranscriptPageResult {
+  const stat = filePath ? readFileStat(filePath) : null
+  return {
+    messages: [],
+    hasMoreOlder: false,
+    nextOlderCursor: null,
+    sourceMtimeMs: stat?.mtimeMs ?? 0,
+    sourceSize: stat?.size ?? 0,
+  }
+}
+
+function parseCodexJsonlLine(parsed: any, sessionId: string, out: TranscriptMessage[], matchedSession: { value: boolean }) {
+  if (!matchedSession.value && parsed?.type === 'session_meta' && parsed?.payload?.id === sessionId) {
+    matchedSession.value = true
+  }
+  if (!matchedSession.value) return
+
+  const ts = typeof parsed?.timestamp === 'string' ? parsed.timestamp : undefined
+  if (parsed?.type !== 'response_item') return
+
+  const payload = parsed?.payload
+  if (payload?.type !== 'message') return
+
+  const role = payload?.role === 'assistant' ? 'assistant' as const : 'user' as const
+  const parts: MessageContentPart[] = []
+  if (typeof payload?.content === 'string') {
+    const part = textPart(payload.content)
+    if (part) parts.push(part)
+  } else if (Array.isArray(payload?.content)) {
+    for (const block of payload.content) {
+      const blockType = String(block?.type || '')
+      if (
+        (blockType === 'text' || blockType === 'input_text' || blockType === 'output_text')
+        && typeof block?.text === 'string'
+      ) {
+        const part = textPart(block.text)
+        if (part) parts.push(part)
+      }
     }
+  }
+  pushMessage(out, role, parts, ts)
+}
+
+function parseCodexLines(lines: string[], sessionId: string, pathIncludesSession: boolean): TranscriptMessage[] {
+  const out: TranscriptMessage[] = []
+  const matchedSession = { value: pathIncludesSession }
+  for (const line of lines) {
+    let parsed: any
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      continue
+    }
+    parseCodexJsonlLine(parsed, sessionId, out, matchedSession)
+  }
+  return out
+}
+
+function readCodexTranscriptPage(
+  sessionId: string,
+  limit: number,
+  before?: string,
+  maxScanBytes = TRANSCRIPT_PAGE_SCAN_BYTES,
+): TranscriptPageResult {
+  const root = path.join(config.homeDir, '.codex', 'sessions')
+  const file = findSessionJsonlFile(root, sessionId)
+  if (!file) return emptyTranscriptPage()
+
+  const stat = readFileStat(file)
+  if (!stat) return emptyTranscriptPage()
+
+  const cursor = parseBeforeCursor(before)
+
+  if (stat.size <= MAX_TRANSCRIPT_READ_BYTES) {
+    let raw = ''
+    try {
+      raw = fs.readFileSync(file, 'utf-8')
+    } catch {
+      return emptyTranscriptPage(file)
+    }
+    const all = parseCodexLines(raw.split('\n').filter(Boolean), sessionId, file.includes(sessionId))
+      .sort((a, b) => messageTimestampMs(a) - messageTimestampMs(b))
+    const endIndex = cursor?.mode === 'msg' ? cursor.value : all.length
+    const startIndex = Math.max(0, endIndex - limit)
+    return {
+      messages: all.slice(startIndex, endIndex),
+      hasMoreOlder: startIndex > 0,
+      nextOlderCursor: startIndex > 0 ? `msg:${startIndex}` : null,
+      sourceMtimeMs: stat.mtimeMs,
+      sourceSize: stat.size,
+    }
+  }
+
+  const endExclusive = cursor?.mode === 'byte' ? cursor.value : stat.size
+  const scanStart = Math.max(0, endExclusive - maxScanBytes)
+  let text = readFileRangeUtf8(file, scanStart, endExclusive)
+  if (scanStart > 0) {
+    const firstNl = text.indexOf('\n')
+    if (firstNl >= 0) text = text.slice(firstNl + 1)
+  }
+
+  const chunkMessages = parseCodexLines(text.split('\n').filter(Boolean), sessionId, file.includes(sessionId))
+    .sort((a, b) => messageTimestampMs(a) - messageTimestampMs(b))
+  const page = chunkMessages.slice(-limit)
+
+  return {
+    messages: page,
+    hasMoreOlder: scanStart > 0,
+    nextOlderCursor: scanStart > 0 ? String(scanStart) : null,
+    sourceMtimeMs: stat.mtimeMs,
+    sourceSize: stat.size,
+  }
+}
+
+/** Read full JSONL into memory (small files only). */
+function readJsonlTextForTranscript(filePath: string): string {
+  const stat = readFileStat(filePath)
+  if (!stat || stat.size > MAX_TRANSCRIPT_READ_BYTES) return ''
+  try {
+    return fs.readFileSync(filePath, 'utf-8')
   } catch {
     return ''
   }
@@ -269,56 +407,7 @@ function readClaudeTranscript(sessionId: string, limit: number): TranscriptMessa
 }
 
 function readCodexTranscript(sessionId: string, limit: number): TranscriptMessage[] {
-  const root = path.join(config.homeDir, '.codex', 'sessions')
-  const file = findSessionJsonlFile(root, sessionId)
-  if (!file) return []
-
-  const raw = readJsonlTextForTranscript(file)
-  if (!raw) return []
-
-  const out: TranscriptMessage[] = []
-  let matchedSession = file.includes(sessionId)
-  const lines = raw.split('\n').filter(Boolean)
-  for (const line of lines) {
-    let parsed: any
-    try {
-      parsed = JSON.parse(line)
-    } catch {
-      continue
-    }
-
-    if (!matchedSession && parsed?.type === 'session_meta' && parsed?.payload?.id === sessionId) {
-        matchedSession = true
-      }
-      if (!matchedSession) continue
-
-      const ts = typeof parsed?.timestamp === 'string' ? parsed.timestamp : undefined
-      if (parsed?.type === 'response_item') {
-        const payload = parsed?.payload
-        if (payload?.type === 'message') {
-          const role = payload?.role === 'assistant' ? 'assistant' as const : 'user' as const
-          const parts: MessageContentPart[] = []
-          if (typeof payload?.content === 'string') {
-            const part = textPart(payload.content)
-            if (part) parts.push(part)
-          } else if (Array.isArray(payload?.content)) {
-            for (const block of payload.content) {
-              const blockType = String(block?.type || '')
-              if (
-                (blockType === 'text' || blockType === 'input_text' || blockType === 'output_text')
-                && typeof block?.text === 'string'
-              ) {
-                const part = textPart(block.text)
-                if (part) parts.push(part)
-              }
-            }
-          }
-          pushMessage(out, role, parts, ts)
-        }
-      }
-    }
-
-  return out.slice().sort((a, b) => messageTimestampMs(a) - messageTimestampMs(b)).slice(-limit)
+  return readCodexTranscriptPage(sessionId, limit).messages
 }
 
 type HermesMessageRow = {
@@ -427,7 +516,34 @@ function readHermesTranscript(sessionId: string, limit: number): TranscriptMessa
 }
 
 export function readLocalSessionTranscript(kind: LocalSessionTranscriptKind, sessionId: string, limit: number): TranscriptMessage[] {
-  if (kind === 'claude-code') return readClaudeTranscript(sessionId, limit)
-  if (kind === 'codex-cli') return readCodexTranscript(sessionId, limit)
-  return readHermesTranscript(sessionId, limit)
+  return readLocalSessionTranscriptPage(kind, sessionId, { limit }).messages
+}
+
+export function readLocalSessionTranscriptPage(
+  kind: LocalSessionTranscriptKind,
+  sessionId: string,
+  options: { limit: number; before?: string },
+): TranscriptPageResult {
+  const limit = Math.max(1, options.limit)
+  if (kind === 'codex-cli') {
+    return readCodexTranscriptPage(sessionId, limit, options.before)
+  }
+  if (kind === 'claude-code') {
+    const messages = readClaudeTranscript(sessionId, limit)
+    return {
+      messages,
+      hasMoreOlder: false,
+      nextOlderCursor: null,
+      sourceMtimeMs: 0,
+      sourceSize: 0,
+    }
+  }
+  const messages = readHermesTranscript(sessionId, limit)
+  return {
+    messages,
+    hasMoreOlder: false,
+    nextOlderCursor: null,
+    sourceMtimeMs: 0,
+    sourceSize: 0,
+  }
 }

@@ -986,7 +986,10 @@
     "failedToSavePreferences": "保存偏好失败",
     "messageSavedNotDelivered": "消息已保存但未送达：{reason}",
     "reasonUnknown": "未知",
-    "failedToUpdateTranscript": "更新转录失败"
+    "failedToUpdateTranscript": "更新转录失败",
+    "loadOlderMessages": "加载更早消息",
+    "loadingOlderMessages": "正在加载…",
+    "transcriptSyncHint": "网页内容来自本机 Codex 会话日志（~/.codex/sessions），可能与终端 TUI 有数秒延迟；终端未写入日志前网页不会显示。"
   },
   "agentComms": {
     "connecting": "连接到 Feed 中...",
