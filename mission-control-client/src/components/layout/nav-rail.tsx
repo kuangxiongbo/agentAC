@@ -254,8 +254,9 @@ export function NavRail() {
             />
           </div>
           {sidebarExpanded && (
-            <div className="flex items-baseline gap-2 truncate flex-1 min-w-0">
+            <div className="flex flex-col min-w-0 flex-1 truncate leading-tight">
               <span className="text-sm font-semibold text-foreground truncate">E-Agent-Client</span>
+              <span className="text-[10px] text-muted-foreground/50 font-mono-tight">v{APP_VERSION}</span>
             </div>
           )}
           <Button
@@ -415,7 +416,7 @@ export function NavRail() {
         </div>
 
         {/* Footer: Context switcher for tenants and projects */}
-        <div className="shrink-0 border-t border-border mt-auto pt-2">
+        <div className="shrink-0 border-t border-border mt-auto">
           <ContextSwitcher
             currentUser={currentUser}
             isAdmin={isAdmin}
@@ -439,12 +440,6 @@ export function NavRail() {
           />
         </div>
 
-        {/* Version number at the very bottom */}
-        {sidebarExpanded && (
-          <div className="px-3 pb-3 pt-1">
-            <span className="text-[10px] text-muted-foreground/40 font-mono-tight">v{APP_VERSION}</span>
-          </div>
-        )}
       </nav>
 
       {/* Mobile: Bottom tab bar */}
@@ -810,7 +805,7 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
   const connectionDotClass = isLocal ? 'bg-void-cyan' : isConnected ? 'bg-green-500' : 'bg-red-500'
 
   return (
-    <div className={`shrink-0 relative ${expanded ? 'px-3 pb-3' : 'flex flex-col items-center pb-3'}`}>
+    <div className={`shrink-0 relative ${expanded ? 'px-3 py-2' : 'flex flex-col items-center py-2'}`}>
       {/* Trigger */}
       <Button
         variant="ghost"

@@ -278,9 +278,9 @@ export function NavRail() {
             />
           </div>
           {sidebarExpanded && (
-            <div className="flex items-baseline gap-2 truncate flex-1 min-w-0">
+            <div className="flex flex-col min-w-0 flex-1 truncate leading-tight">
               <span className="text-sm font-semibold text-foreground truncate">E-Agent-Center</span>
-              <span className="text-2xs text-muted-foreground font-mono-tight shrink-0">v{APP_VERSION}</span>
+              <span className="text-[10px] text-muted-foreground/50 font-mono-tight">v{APP_VERSION}</span>
             </div>
           )}
           <Button
@@ -898,7 +898,7 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
   }
 
   return (
-    <div className={`shrink-0 relative ${expanded ? 'px-3 pb-3' : 'flex flex-col items-center pb-3'}`}>
+    <div className={`shrink-0 relative ${expanded ? 'px-3 py-2' : 'flex flex-col items-center py-2'}`}>
       {/* Trigger */}
       <Button
         variant="ghost"
