@@ -153,7 +153,7 @@ export function listSyncedSessions() {
       agent: row.agent || row.client_name,
       kind: row.session_kind,
       age: row.age || '-',
-      model: row.model || 'unknown',
+      model: row.model && row.model !== 'unknown' ? row.model : null,
       tokens: row.tokens || '0/0',
       channel: 'client',
       flags: [],

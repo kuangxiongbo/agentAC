@@ -4,6 +4,7 @@ import { logger } from './logger'
 import { getSyncableSessions } from './session-sync'
 import { getSyncableSkills } from './skill-sync-export'
 import { getSyncableMemoryAgents } from './memory-sync'
+import { isRemoteBridgeConnected } from './remote-server-bridge'
 
 const AGENT_REGISTER_TTL_MS = 5 * 60 * 1000
 const AGENT_REGISTRATION_CACHE_SCHEMA_VERSION = '3'
@@ -249,6 +250,12 @@ export async function runServerGatewaySync(): Promise<{ ok: boolean; message: st
           client_name: clientName,
           previous_client_name: previousClientName || undefined,
           agent_count: agents.length,
+          agent_inventory: agents.map((agent) => ({
+            original_name: agent.name,
+            status: agent.status,
+            role: agent.role,
+            framework: agent.framework,
+          })),
         }),
       })
       if (heartbeatRes.ok) {
@@ -349,8 +356,9 @@ export async function runServerGatewaySync(): Promise<{ ok: boolean; message: st
       logger.warn({ err, gatewayUrl }, 'Failed to sync memory summaries upstream')
     }
 
-    // 2. Sync Agents Upstream
-    for (const agent of clientsOnlyMode ? [] : agents) {
+    // 2. Sync Agents Upstream (skip when Bridge is connected — index pushed over WS)
+    const bridgeConnected = isRemoteBridgeConnected()
+    for (const agent of clientsOnlyMode || bridgeConnected ? [] : agents) {
       try {
         const fullAgentName = buildRemoteAgentRegistrationName(clientName, agent.name)
         const headerAgentName = toHeaderSafeAgentName(fullAgentName)

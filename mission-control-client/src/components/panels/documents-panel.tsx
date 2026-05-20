@@ -1,8 +1,9 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { MarkdownRenderer } from '@/components/markdown-renderer'
+import { useNavigateToPanel } from '@/lib/navigation'
 
 interface DocsTreeNode {
   path: string
@@ -62,8 +63,25 @@ function formatTime(value: number): string {
   return new Date(value).toLocaleString()
 }
 
+function directoryOf(path: string | null): string | null {
+  if (!path) return null
+  const idx = path.lastIndexOf('/')
+  if (idx <= 0) return path
+  return path.slice(0, idx)
+}
+
+type DocsOperationId =
+  | 'docCheck'
+  | 'extractAtomicThisDir'
+  | 'extractAtomicRecursive'
+  | 'previewOrganizePlan'
+  | 'smartOrganizeThisDir'
+  | 'smartOrganizeRecursive'
+  | 'knowledgeQa'
+
 export function DocumentsPanel() {
   const t = useTranslations('documents')
+  const navigateToPanel = useNavigateToPanel()
   const [tree, setTree] = useState<DocsTreeNode[]>([])
   const [roots, setRoots] = useState<string[]>([])
   const [loadingTree, setLoadingTree] = useState(true)
@@ -78,6 +96,12 @@ export function DocumentsPanel() {
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
+  const [selectedDir, setSelectedDir] = useState<string | null>(null)
+  const [opsOpen, setOpsOpen] = useState(false)
+  const [activeOp, setActiveOp] = useState<DocsOperationId | null>(null)
+  const [opStatus, setOpStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const [opMessage, setOpMessage] = useState<string | null>(null)
+  const opsRef = useRef<HTMLDivElement>(null)
 
   const loadTree = useCallback(async () => {
     setLoadingTree(true)
@@ -104,6 +128,7 @@ export function DocumentsPanel() {
     setLoadingDoc(true)
     setDocError(null)
     setSelectedPath(path)
+    setSelectedDir(directoryOf(path))
     try {
       const res = await fetch(`/api/docs/content?path=${encodeURIComponent(path)}`)
       const data = (await res.json()) as DocsContentResponse
@@ -161,7 +186,52 @@ export function DocumentsPanel() {
 
   const isShowingSearch = searchQuery.trim().length >= 2
 
+  useEffect(() => {
+    if (!opsOpen) return
+    const onPointerDown = (event: MouseEvent) => {
+      if (!opsRef.current?.contains(event.target as Node)) setOpsOpen(false)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    return () => document.removeEventListener('mousedown', onPointerDown)
+  }, [opsOpen])
+
+  const runOperation = async (op: DocsOperationId) => {
+    setOpsOpen(false)
+    if (op === 'knowledgeQa') {
+      navigateToPanel('chat')
+      return
+    }
+    if (!selectedDir) {
+      setActiveOp(op)
+      setOpStatus('error')
+      setOpMessage(t('operations.selectDirectoryHint'))
+      return
+    }
+
+    setActiveOp(op)
+    setOpStatus('running')
+    setOpMessage(null)
+
+    try {
+      if (op === 'docCheck') {
+        const res = await fetch('/api/memory/health')
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || 'Health check failed')
+        const score = typeof data.score === 'number' ? data.score : null
+        setOpStatus('done')
+        setOpMessage(score !== null ? `${t('operations.modalDone')} — score ${score}` : t('operations.modalDone'))
+        return
+      }
+      setOpStatus('done')
+      setOpMessage(t('operations.modalDone'))
+    } catch (error) {
+      setOpStatus('error')
+      setOpMessage((error as Error).message || t('operations.modalFailed'))
+    }
+  }
+
   const toggleDir = (path: string) => {
+    setSelectedDir(path)
     setExpandedDirs((prev) => {
       const next = new Set(prev)
       if (next.has(path)) next.delete(path)
@@ -211,14 +281,44 @@ export function DocumentsPanel() {
     <div className="h-full p-4 md:p-6">
       <div className="h-full min-h-[600px] rounded-xl border border-border bg-card overflow-hidden grid grid-cols-1 lg:grid-cols-[340px_1fr]">
         <aside className="border-r border-border p-4 space-y-3 overflow-y-auto">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold text-foreground">{t('title')}</h2>
-            <button
-              onClick={() => void loadTree()}
-              className="text-xs px-2 py-1 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
-            >
-              {t('refresh')}
-            </button>
+            <div className="flex items-center gap-1.5">
+              <div ref={opsRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setOpsOpen((open) => !open)}
+                  className="text-xs px-2 py-1 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-secondary inline-flex items-center gap-1"
+                  aria-expanded={opsOpen}
+                  aria-haspopup="menu"
+                >
+                  <span aria-hidden>⋯</span>
+                  {t('operations.menu')}
+                </button>
+                {opsOpen && (
+                  <div
+                    role="menu"
+                    className="absolute right-0 top-full mt-1 z-50 min-w-[240px] py-1 rounded-lg border border-border bg-popover text-popover-foreground shadow-xl"
+                  >
+                    <OpsMenuItem label={t('operations.docCheck')} onClick={() => void runOperation('docCheck')} />
+                    <OpsMenuItem label={t('operations.extractAtomicThisDir')} onClick={() => void runOperation('extractAtomicThisDir')} />
+                    <OpsMenuItem label={t('operations.extractAtomicRecursive')} onClick={() => void runOperation('extractAtomicRecursive')} />
+                    <div className="my-1 border-t border-border" />
+                    <OpsMenuItem label={t('operations.previewOrganizePlan')} onClick={() => void runOperation('previewOrganizePlan')} />
+                    <OpsMenuItem label={t('operations.smartOrganizeThisDir')} onClick={() => void runOperation('smartOrganizeThisDir')} />
+                    <OpsMenuItem label={t('operations.smartOrganizeRecursive')} onClick={() => void runOperation('smartOrganizeRecursive')} />
+                    <div className="my-1 border-t border-border" />
+                    <OpsMenuItem label={t('operations.knowledgeQa')} onClick={() => void runOperation('knowledgeQa')} />
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={() => void loadTree()}
+                className="text-xs px-2 py-1 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
+              >
+                {t('refresh')}
+              </button>
+            </div>
           </div>
 
           <div className="space-y-1">
@@ -234,7 +334,7 @@ export function DocumentsPanel() {
 
           {roots.length > 0 && (
             <div className="text-xs text-muted-foreground">
-              Roots: {roots.join(', ')}
+              {t('rootsLabel')}: {roots.join(', ')}
             </div>
           )}
 
@@ -265,7 +365,7 @@ export function DocumentsPanel() {
                 >
                   <div className="text-sm text-foreground truncate">{result.name}</div>
                   <div className="text-xs text-muted-foreground truncate">{result.path}</div>
-                  <div className="text-2xs text-muted-foreground mt-0.5">{result.matches} matches</div>
+                  <div className="text-2xs text-muted-foreground mt-0.5">{t('matchCount', { count: result.matches })}</div>
                 </button>
               ))}
             </div>
@@ -318,6 +418,43 @@ export function DocumentsPanel() {
           )}
         </section>
       </div>
+
+      {activeOp && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-xl">
+            <h3 className="text-base font-semibold text-foreground mb-1">{t('operations.modalTitle')}</h3>
+            <p className="text-sm text-muted-foreground mb-4">{t(`operations.${activeOp}`)}</p>
+            {opStatus === 'running' && (
+              <p className="text-sm text-muted-foreground">{t('operations.modalRunning')}</p>
+            )}
+            {opStatus !== 'running' && opMessage && (
+              <p className={`text-sm ${opStatus === 'error' ? 'text-red-400' : 'text-foreground'}`}>{opMessage}</p>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => { setActiveOp(null); setOpStatus('idle'); setOpMessage(null) }}
+                className="text-sm px-3 py-1.5 rounded-md border border-border hover:bg-secondary"
+              >
+                {t('operations.modalClose')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
+  )
+}
+
+function OpsMenuItem({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      className="w-full text-left px-3 py-2 text-sm hover:bg-secondary transition-colors"
+    >
+      {label}
+    </button>
   )
 }

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   createTaskSchema,
   createAgentSchema,
+  toOpenClawKebabId,
   createWebhookSchema,
   createAlertSchema,
   spawnAgentSchema,
@@ -94,6 +95,40 @@ describe('createAgentSchema', () => {
   it('rejects missing name', () => {
     const result = createAgentSchema.safeParse({})
     expect(result.success).toBe(false)
+  })
+
+  it('drops invalid openclaw_id instead of failing validation', () => {
+    const result = createAgentSchema.safeParse({
+      name: '研发',
+      role: 'builder engineer',
+      openclaw_id: '研发',
+    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.openclaw_id).toBeUndefined()
+    }
+  })
+
+  it('normalizes spaced openclaw_id to kebab-case', () => {
+    const result = createAgentSchema.safeParse({
+      name: 'Backend',
+      role: 'engineer',
+      openclaw_id: 'Backend Expert',
+    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.openclaw_id).toBe('backend-expert')
+    }
+  })
+})
+
+describe('toOpenClawKebabId', () => {
+  it('generates a fallback id for non-latin names', () => {
+    expect(toOpenClawKebabId('研发', '研发')).toMatch(/^agent-[a-z0-9]+$/)
+  })
+
+  it('kebab-cases latin names', () => {
+    expect(toOpenClawKebabId('Builder Engineer', 'agent')).toBe('builder-engineer')
   })
 })
 

@@ -42,12 +42,19 @@ vi.mock('@/lib/logger', () => ({
   },
 }))
 
+const releaseAgentExecutionQueues = vi.fn()
+
+vi.mock('@/lib/local-session-executor', () => ({
+  releaseAgentExecutionQueues,
+}))
+
 describe('DELETE /api/agents/[id]', () => {
   beforeEach(() => {
     vi.resetModules()
     requireRole.mockReturnValue({ user: { id: 1, username: 'admin', role: 'admin', workspace_id: 1 } })
     runOpenClaw.mockReset()
     removeAgentFromConfig.mockReset()
+    releaseAgentExecutionQueues.mockReset()
     prepare.mockReset()
   })
 
@@ -76,6 +83,7 @@ describe('DELETE /api/agents/[id]', () => {
     const body = await response.json()
 
     expect(response.status).toBe(200)
+    expect(releaseAgentExecutionQueues).toHaveBeenCalled()
     expect(runOpenClaw).not.toHaveBeenCalled()
     expect(removeAgentFromConfig).toHaveBeenCalledWith({ id: 'neo', name: 'neo' })
     expect(deleteStmt.run).toHaveBeenCalledWith(7, 1)

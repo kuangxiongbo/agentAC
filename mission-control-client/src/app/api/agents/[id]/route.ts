@@ -5,6 +5,7 @@ import { writeAgentToConfig, enrichAgentConfigFromWorkspace, removeAgentFromConf
 import { eventBus } from '@/lib/event-bus'
 import { logger } from '@/lib/logger'
 import { runOpenClaw } from '@/lib/command'
+import { releaseAgentExecutionQueues } from '@/lib/local-session-executor'
 
 function resolveAgentFramework(agent: any, parsedConfig: Record<string, any>): string {
   return String(
@@ -271,6 +272,14 @@ export async function DELETE(
         logger.warn({ err, agent: agent.name }, 'Failed to remove OpenClaw agent config entry')
       }
     }
+
+    releaseAgentExecutionQueues({
+      id: agent.id,
+      name: agent.name,
+      framework,
+      session_key: agent.session_key,
+      config: agent.config,
+    })
 
     db.prepare('DELETE FROM agents WHERE id = ? AND workspace_id = ?').run(agent.id, workspaceId)
 

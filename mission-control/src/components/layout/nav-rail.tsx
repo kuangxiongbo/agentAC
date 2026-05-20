@@ -8,6 +8,11 @@ import { useNavigateToPanel, usePrefetchPanel } from '@/lib/navigation'
 import { Button } from '@/components/ui/button'
 import { APP_VERSION } from '@/lib/version'
 import { getPluginNavItems } from '@/lib/plugins'
+import {
+  canManageAllTenants,
+  isIdentityProviderUser,
+  tenantFromOrganization,
+} from '@/lib/tenant-auth-scope'
 import { logoutThenFollowSsoRedirect } from '@/lib/zitadel-sso-client'
 
 interface NavItem {
@@ -94,6 +99,7 @@ const navItemTranslationKeys: Record<string, string> = {
   activity: 'activity',
   logs: 'logs',
   'cost-tracker': 'costTracker',
+  'human-watch': 'humanWatch',
   nodes: 'nodes',
   'exec-approvals': 'approvals',
   office: 'office',
@@ -148,10 +154,11 @@ const gatewayOnlyPanels = new Set([
   'gateways', 'gateway-config', 'channels', 'nodes', 'exec-approvals',
   ...getPluginNavItems().filter(pi => pi.gatewayOnly).map(pi => pi.id),
 ])
+const centralOnlyPanels = new Set(['human-watch'])
 const adminOnlyPanels = new Set<string>([])
 
 export function NavRail() {
-  const { activeTab, connection, dashboardMode, currentUser, activeTenant, tenants, osUsers, setActiveTenant, fetchTenants, fetchOsUsers, activeProject, projects, setActiveProject, fetchProjects, sidebarExpanded, collapsedGroups, toggleSidebar, toggleGroup, defaultOrgName, interfaceMode, setInterfaceMode } = useAgentCenterStore()
+  const { activeTab, connection, dashboardMode, currentUser, activeTenant, tenants, osUsers, setActiveTenant, fetchTenants, fetchOsUsers, activeProject, projects, setActiveProject, fetchProjects, sidebarExpanded, collapsedGroups, toggleSidebar, toggleGroup, defaultOrgName, interfaceMode, setInterfaceMode, centralMode } = useAgentCenterStore()
   const navigateToPanel = useNavigateToPanel()
   const prefetchPanel = usePrefetchPanel()
   const tn = useTranslations('nav')
@@ -168,6 +175,8 @@ export function NavRail() {
   }
   const isLocal = dashboardMode === 'local'
   const isAdmin = currentUser?.role === 'admin'
+  const isIdpUser = isIdentityProviderUser(currentUser)
+  const platformMultiTenant = canManageAllTenants(currentUser)
   const [expandedParents, setExpandedParents] = useState<Set<string>>(new Set())
 
   function toggleParent(id: string) {
@@ -179,23 +188,31 @@ export function NavRail() {
     })
   }
 
-  // Fetch tenants, OS users, and projects for admin users
+  // IdP 用户：仅绑定认证单位；平台管理员：多租户列表
   useEffect(() => {
-    if (isAdmin) {
+    if (!currentUser) return
+    if (isIdpUser) {
+      if (currentUser.organization) {
+        setActiveTenant(tenantFromOrganization(currentUser.organization))
+      }
+      fetchProjects()
+      return
+    }
+    if (platformMultiTenant) {
       fetchTenants()
       fetchOsUsers()
       fetchProjects()
     }
-  }, [isAdmin, fetchTenants, fetchOsUsers, fetchProjects])
+  }, [currentUser, isIdpUser, platformMultiTenant, fetchTenants, fetchOsUsers, fetchProjects, setActiveTenant])
 
-  // Re-fetch projects and clear active project when tenant changes
+  // Re-fetch projects and clear active project when tenant changes (platform admin)
   useEffect(() => {
-    if (isAdmin) {
+    if (platformMultiTenant) {
       setActiveProject(null)
       fetchProjects()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTenant?.id])
+  }, [activeTenant?.id, platformMultiTenant])
 
   // In local mode, hide gateway-only panels. Non-admin users don't see admin-only panels.
   // In essential mode, hide non-essential panels.
@@ -209,6 +226,7 @@ export function NavRail() {
           return { ...i, children: filteredChildren }
         }
         if (isLocal && gatewayOnlyPanels.has(i.id)) return null
+        if (!centralMode && centralOnlyPanels.has(i.id)) return null
         if (!isAdmin && adminOnlyPanels.has(i.id)) return null
         if (isEssential && !i.essential) return null
         return i
@@ -439,40 +457,13 @@ export function NavRail() {
           ))}
         </div>
 
-        {/* Promo banners */}
-        {sidebarExpanded && (
-          <div className="px-2 pb-2 space-y-2 shrink-0">
-            <a
-              href="https://x.com/nyk_builderz/status/2022996371922649192?s=20"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block rounded-lg border border-border/50 bg-surface-1 hover:bg-surface-2 hover:border-primary/30 transition-all duration-200 p-2 group"
-            >
-              <div className="flex items-center gap-1.5 mb-0.5">
-                <span className="text-2xs font-semibold text-foreground group-hover:text-primary transition-colors">xint</span>
-                <span className="text-[9px] px-1 py-px rounded bg-primary/15 text-primary font-mono">CLI</span>
-              </div>
-              <p className="text-[10px] text-muted-foreground/70 leading-snug">X power tools for agents.</p>
-            </a>
-            <a
-              href="https://builderz.dev"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block rounded-lg border border-void-cyan/20 bg-gradient-to-br from-void-cyan/5 to-transparent hover:from-void-cyan/10 hover:border-void-cyan/40 transition-all duration-200 p-2 group"
-            >
-              <div className="flex items-center gap-1.5 mb-0.5">
-                <span className="text-2xs font-bold text-foreground group-hover:text-void-cyan transition-colors">builderz</span>
-                <span className="text-[9px] px-1 py-px rounded bg-void-cyan/15 text-void-cyan">.dev</span>
-              </div>
-              <p className="text-[10px] text-muted-foreground/70 leading-snug">AI-native dev shop · Solana experts.</p>
-            </a>
-          </div>
-        )}
 
         {/* Context switcher (profile-style, bottom of sidebar) */}
         <ContextSwitcher
           currentUser={currentUser}
           isAdmin={isAdmin}
+          isIdpUser={isIdpUser}
+          platformMultiTenant={platformMultiTenant}
           isLocal={isLocal}
           isConnected={connection.isConnected}
           tenants={tenants}
@@ -812,9 +803,11 @@ function OrgRow({ label, initial, active, colorClass, onClick, isActiveOrg, proj
   )
 }
 
-function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, osUsers, activeTenant, onSwitchTenant, projects, activeProject, onSwitchProject, expanded, defaultOrgName, navigateToPanel, fetchTenants, fetchOsUsers, interfaceMode, setInterfaceMode, activeTab }: {
+function ContextSwitcher({ currentUser, isAdmin, isIdpUser, platformMultiTenant, isLocal, isConnected, tenants, osUsers, activeTenant, onSwitchTenant, projects, activeProject, onSwitchProject, expanded, defaultOrgName, navigateToPanel, fetchTenants, fetchOsUsers, interfaceMode, setInterfaceMode, activeTab }: {
   currentUser: import('@/store').CurrentUser | null
   isAdmin: boolean
+  isIdpUser: boolean
+  platformMultiTenant: boolean
   isLocal: boolean
   isConnected: boolean
   tenants: import('@/store').Tenant[]
@@ -842,10 +835,6 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
   const linkedUsernames = new Set(tenants.map(t => t.linux_user))
   const unlinkedOsUsers = osUsers.filter(u => !linkedUsernames.has(u.username) && !u.is_process_owner)
   const [open, setOpen] = useState(false)
-  const [createMode, setCreateMode] = useState(false)
-  const [createForm, setCreateForm] = useState({ username: '', display_name: '', gateway_port: '', install_openclaw: true, install_claude: false, install_codex: false })
-  const [creating, setCreating] = useState(false)
-  const [createError, setCreateError] = useState<string | null>(null)
   const [signingOut, setSigningOut] = useState(false)
 
   const projectName = activeProject?.name
@@ -1053,8 +1042,30 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
               </>
             )}
 
-            {/* Organizations with nested projects (admin only, always visible) */}
-            {isAdmin && (
+            {isIdpUser && currentUser?.organization && (
+              <>
+                <div className="mx-2 border-t border-border my-1" />
+                <div className="px-3 pt-2 pb-1">
+                  <span className="text-[10px] tracking-wider text-muted-foreground/60 font-semibold">{tcs('organizations')}</span>
+                </div>
+                <div className="px-1 pb-1">
+                  <OrgRow
+                    label={currentUser.organization.display_name}
+                    initial={currentUser.organization.display_name?.[0]?.toUpperCase() || 'O'}
+                    active
+                    colorClass="bg-green-500/20 text-green-400"
+                    onClick={() => setOpen(false)}
+                    isActiveOrg
+                    projects={projects}
+                    activeProject={activeProject}
+                    onSwitchProject={(p) => { onSwitchProject(p); setOpen(false) }}
+                    onNewProject={() => { setShowProjectManagerModal(true); setOpen(false) }}
+                  />
+                </div>
+              </>
+            )}
+
+            {platformMultiTenant && (
               <>
                 <div className="mx-2 border-t border-border my-1" />
                 <div className="px-3 pt-2 pb-1">
@@ -1128,139 +1139,6 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
                       </Button>
                     )
                   })}
-                </div>
-                <div className="px-1 pb-1">
-                  {!createMode ? (
-                    <Button
-                      variant="ghost"
-                      disabled
-                      title="Temporarily disabled — not functional yet"
-                      className="w-full flex items-center gap-2 px-2 py-1.5 h-auto rounded-md text-xs justify-start text-muted-foreground/40 cursor-not-allowed"
-                    >
-                      <div className="w-5 h-5 flex items-center justify-center text-muted-foreground/40">
-                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="w-3.5 h-3.5">
-                          <path d="M8 3v10M3 8h10" />
-                        </svg>
-                      </div>
-                      {tcs('newOrganization')}
-                    </Button>
-                  ) : (
-                    <div className="px-1 pt-1 pb-1 space-y-1.5">
-                      <input
-                        value={createForm.username}
-                        onChange={(e) => setCreateForm(f => ({ ...f, username: e.target.value }))}
-                        placeholder={tcs('usernamePlaceholder')}
-                        autoFocus
-                        className="w-full h-7 px-2 rounded bg-secondary border border-border text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
-                      />
-                      <input
-                        value={createForm.display_name}
-                        onChange={(e) => setCreateForm(f => ({ ...f, display_name: e.target.value }))}
-                        placeholder={tcs('displayNamePlaceholder')}
-                        className="w-full h-7 px-2 rounded bg-secondary border border-border text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
-                      />
-                      {!isLocal && (
-                        <input
-                          value={createForm.gateway_port}
-                          onChange={(e) => setCreateForm(f => ({ ...f, gateway_port: e.target.value }))}
-                          placeholder={tcs('gatewayPortPlaceholder')}
-                          className="w-full h-7 px-2 rounded bg-secondary border border-border text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
-                        />
-                      )}
-                      {/* Tool installation checkboxes */}
-                      {isLocal && (
-                        <div className="space-y-1 px-0.5">
-                          <div className="text-[10px] text-muted-foreground/60 font-semibold tracking-wider">{tcs('installTools')}</div>
-                          <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-                            <label className="flex items-center gap-1 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={createForm.install_openclaw}
-                                onChange={(e) => setCreateForm(f => ({ ...f, install_openclaw: e.target.checked }))}
-                                className="w-3 h-3 rounded accent-primary"
-                              />
-                              <span className="text-[10px] text-foreground">openclaw</span>
-                            </label>
-                            <label className={`flex items-center gap-1 ${createForm.install_openclaw ? 'opacity-50' : ''} cursor-pointer`}>
-                              <input
-                                type="checkbox"
-                                checked={createForm.install_claude || createForm.install_openclaw}
-                                onChange={(e) => setCreateForm(f => ({ ...f, install_claude: e.target.checked }))}
-                                disabled={createForm.install_openclaw}
-                                className="w-3 h-3 rounded accent-primary"
-                              />
-                              <span className="text-[10px] text-foreground">claude</span>
-                              {createForm.install_openclaw && <span className="text-[9px] text-muted-foreground/50 italic">included</span>}
-                            </label>
-                            <label className={`flex items-center gap-1 ${createForm.install_openclaw ? 'opacity-50' : ''} cursor-pointer`}>
-                              <input
-                                type="checkbox"
-                                checked={createForm.install_codex || createForm.install_openclaw}
-                                onChange={(e) => setCreateForm(f => ({ ...f, install_codex: e.target.checked }))}
-                                disabled={createForm.install_openclaw}
-                                className="w-3 h-3 rounded accent-primary"
-                              />
-                              <span className="text-[10px] text-foreground">codex</span>
-                              {createForm.install_openclaw && <span className="text-[9px] text-muted-foreground/50 italic">included</span>}
-                            </label>
-                          </div>
-                        </div>
-                      )}
-                      {createError && (
-                        <div className="text-[10px] text-red-400 px-0.5">{createError}</div>
-                      )}
-                      <div className="flex gap-1.5">
-                        <Button
-                          size="xs"
-                          disabled={creating}
-                          onClick={async () => {
-                            const username = createForm.username.trim().toLowerCase()
-                            const display_name = createForm.display_name.trim()
-                            if (!username || !display_name) { setCreateError(tcs('usernameAndDisplayRequired')); return }
-                            if (!/^[a-z][a-z0-9_-]{1,30}[a-z0-9]$/.test(username)) { setCreateError(tcs('invalidUsernameFormat')); return }
-                            if (!isLocal && !createForm.gateway_port) { setCreateError(tcs('gatewayPortRequired')); return }
-                            setCreating(true)
-                            setCreateError(null)
-                            try {
-                              const res = await fetch('/api/super/os-users', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                  username,
-                                  display_name,
-                                  gateway_mode: !isLocal,
-                                  gateway_port: createForm.gateway_port ? Number(createForm.gateway_port) : undefined,
-                                  install_openclaw: createForm.install_openclaw,
-                                  install_claude: createForm.install_claude,
-                                  install_codex: createForm.install_codex,
-                                }),
-                              })
-                              const json = await res.json().catch(() => ({}))
-                              if (!res.ok) throw new Error(json?.error || 'Failed to create organization')
-                              setCreateForm({ username: '', display_name: '', gateway_port: '', install_openclaw: true, install_claude: false, install_codex: false })
-                              setCreateMode(false)
-                              await Promise.all([fetchTenants(), fetchOsUsers()])
-                            } catch (e: any) {
-                              setCreateError(e?.message || 'Failed to create')
-                            } finally {
-                              setCreating(false)
-                            }
-                          }}
-                          className="flex-1 text-[11px]"
-                        >
-                          {creating ? tcs('creating') : isLocal ? tcs('createUser') : tcs('createAndQueue')}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="xs"
-                          onClick={() => { setCreateMode(false); setCreateError(null) }}
-                          className="text-[11px]"
-                        >
-                          {tc('cancel')}
-                        </Button>
-                      </div>
-                    </div>
-                  )}
                 </div>
               </>
             )}

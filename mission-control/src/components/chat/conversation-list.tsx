@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useTranslations } from 'next-intl'
 import { useAgentCenterStore, type Conversation } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
@@ -13,6 +13,7 @@ import {
   getMainAgentRuntimeMeta,
   MAIN_AGENT_RUNTIME_ORDER,
 } from '@/lib/runtime-agents'
+import { isHumanWatchAgent } from '@/lib/human-watch-helpers'
 
 const log = createClientLogger('ConversationList')
 
@@ -39,7 +40,7 @@ type SessionRecord = {
   runtimeGroup?: string
 }
 
-type SessionPrefs = Record<string, { name?: string; color?: string }>
+type SessionPrefs = Record<string, { name?: string; color?: string; historyExpanded?: boolean }>
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null
@@ -64,6 +65,7 @@ function readSessionPrefs(payload: unknown): SessionPrefs {
       return [key, {
         name: readString(pref?.name),
         color: readString(pref?.color),
+        historyExpanded: pref?.historyExpanded === true,
       }]
     })
   )
@@ -151,7 +153,18 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
     setActiveConversation,
     markConversationRead,
     centralMode,
+    agents,
   } = useAgentCenterStore()
+
+  const hiddenStewardSessionIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const agent of agents) {
+      if (!isHumanWatchAgent(agent)) continue
+      const key = String(agent.session_key || '').trim()
+      if (key) ids.add(key)
+    }
+    return ids
+  }, [agents])
   const [search, setSearch] = useState('')
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
   const [sessionListReady, setSessionListReady] = useState(false)
@@ -305,6 +318,8 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
             ? `${kindLabel} • ${s.key || s.id}`
             : `${s.agent || kindLabel} • ${s.key || s.id}`
           const sessionName = pref.name || defaultName
+          const displayModel =
+            s.model && s.model.trim() && s.model.toLowerCase() !== 'unknown' ? s.model : null
 
           return {
             id: `session:${sessionKind}:${s.id}`,
@@ -322,7 +337,8 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
               nodeLabel: nodeLabel || undefined,
               displayName: sessionName,
               colorTag: typeof pref.color === 'string' ? pref.color : undefined,
-              model: s.model,
+              historyExpanded: pref.historyExpanded === true,
+              model: displayModel || undefined,
               tokens: s.tokens,
               workingDir: s.workingDir || null,
               lastUserPrompt: s.lastUserPrompt || null,
@@ -335,7 +351,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
               conversation_id: `session:${sessionKind}:${s.id}`,
               from_agent: 'system',
               to_agent: null,
-              content: `${s.model || kindLabel} • ${s.tokens || ''}`.trim(),
+              content: `${displayModel || kindLabel} • ${s.tokens || ''}`.trim(),
               message_type: 'system' as const,
               created_at: updatedAt || Math.floor(Date.now() / 1000),
             },
@@ -384,6 +400,10 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
   }
 
   const filteredConversations = conversations.filter((c) => {
+    if (c.source === 'session') {
+      const sessionId = c.session?.sessionId || ''
+      if (sessionId && hiddenStewardSessionIds.has(sessionId)) return false
+    }
     if (!search) return true
     const s = search.toLowerCase()
     return (

@@ -9,6 +9,7 @@ const ALLOWED_COLORS = new Set(['slate', 'blue', 'green', 'amber', 'red', 'purpl
 type SessionPref = {
   name?: string
   color?: string
+  historyExpanded?: boolean
 }
 
 type SessionPrefs = Record<string, SessionPref>
@@ -74,6 +75,8 @@ export async function PATCH(request: NextRequest) {
 
     const nextName = body?.name === null ? '' : (typeof body?.name === 'string' ? body.name.trim() : undefined)
     const nextColor = body?.color === null ? '' : (typeof body?.color === 'string' ? body.color.trim().toLowerCase() : undefined)
+    const historyExpanded =
+      typeof body?.historyExpanded === 'boolean' ? body.historyExpanded : undefined
 
     if (typeof nextName === 'string' && nextName.length > 80) {
       return NextResponse.json({ error: 'name must be <= 80 chars' }, { status: 400 })
@@ -88,9 +91,10 @@ export async function PATCH(request: NextRequest) {
       ...existing,
       ...(typeof nextName === 'string' ? { name: nextName || undefined } : {}),
       ...(typeof nextColor === 'string' ? { color: nextColor || undefined } : {}),
+      ...(typeof historyExpanded === 'boolean' ? { historyExpanded } : {}),
     }
 
-    if (!updated.name && !updated.color) {
+    if (!updated.name && !updated.color && updated.historyExpanded !== true) {
       delete prefs[key]
     } else {
       prefs[key] = updated

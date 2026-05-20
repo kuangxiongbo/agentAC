@@ -14,8 +14,24 @@ import { ConversationList } from './conversation-list'
 import { MessageList } from './message-list'
 import { ChatInput } from './chat-input'
 import { Button } from '@/components/ui/button'
-import { SessionMessage, shouldShowTimestamp, type SessionTranscriptMessage } from './session-message'
+import {
+  SessionMessage,
+  SessionReplyStatusRow,
+  shouldShowTimestamp,
+  type SessionTranscriptMessage,
+} from './session-message'
+import {
+  continuingProgressLabel,
+  isReplyCycleComplete,
+  resolveReplyProgressUi,
+  thinkingProgressLabel,
+  transcriptsEqual,
+} from './session-thinking-progress'
 import { getSessionKindLabel, SessionKindAvatar } from './session-kind-brand'
+import {
+  getAgentLocalSessionKind,
+  validateAgentSessionKindBinding,
+} from '@/lib/agent-session-binding'
 
 const log = createClientLogger('ChatWorkspace')
 const ACTIVE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS = 5000
@@ -65,6 +81,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
   const [transcriptLoadingOlder, setTranscriptLoadingOlder] = useState(false)
   const transcriptOlderCursorRef = useRef<string | null>(null)
   const transcriptSourceMtimeRef = useRef(0)
+  const autoExpandHistoryInFlightRef = useRef(false)
   const isOverlay = mode === 'overlay'
   const selectedConversation = conversations.find((c) => c.id === activeConversation)
   const selectedSession = selectedConversation?.session
@@ -269,7 +286,11 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
     !!activeConversation &&
     !activeConversation.startsWith('session:')
 
-  const loadSessionTranscript = useCallback(async (options?: { background?: boolean; older?: boolean }) => {
+  const loadSessionTranscript = useCallback(async (options?: {
+    background?: boolean
+    older?: boolean
+    forceFresh?: boolean
+  }) => {
     const sessionMeta = selectedSession
     const cacheKey = activeConversation
     if (!sessionMeta) {
@@ -299,10 +320,13 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
 
     const messageLimit = sessionMeta.sessionKind === 'codex-cli' ? 80 : 40
     const beforeParam = isOlder && beforeCursor ? `&before=${encodeURIComponent(beforeCursor)}` : ''
-    const nocacheParam = background && !isOlder ? '' : '&nocache=1'
+    const nocacheParam = background && !isOlder && !options?.forceFresh ? '' : '&nocache=1'
+    const clientIdParam = sessionMeta.nodeId
+      ? `&client_id=${encodeURIComponent(sessionMeta.nodeId)}`
+      : ''
     const url = sessionMeta.sessionKind === 'gateway'
       ? `/api/sessions/transcript/gateway?key=${encodeURIComponent(sessionMeta.sessionKey || sessionMeta.sessionId)}&limit=50${nocacheParam}`
-      : `/api/sessions/transcript?kind=${encodeURIComponent(sessionMeta.sessionKind)}&id=${encodeURIComponent(sessionMeta.sessionId)}&limit=${messageLimit}${nocacheParam}${beforeParam}`
+      : `/api/sessions/transcript?kind=${encodeURIComponent(sessionMeta.sessionKind)}&id=${encodeURIComponent(sessionMeta.sessionId)}&limit=${messageLimit}${nocacheParam}${beforeParam}${clientIdParam}`
 
     try {
       const res = await fetch(url)
@@ -317,9 +341,38 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
       const hasMore = Boolean(data?.hasMoreOlder)
       const nextCursor = typeof data?.nextOlderCursor === 'string' ? data.nextOlderCursor : null
       const sourceMtime = typeof data?.sourceMtimeMs === 'number' ? data.sourceMtimeMs : 0
+      const prevMessages = sessionTranscriptRef.current
+
+      if (
+        background
+        && !isOlder
+        && sourceMtime > 0
+        && sourceMtime === transcriptSourceMtimeRef.current
+        && transcriptsEqual(prevMessages, nextMessages)
+      ) {
+        return
+      }
 
       if (isOlder) {
         setSessionTranscript((prev) => [...nextMessages, ...prev])
+        const prefKey = sessionMeta.prefKey
+        if (prefKey && !sessionMeta.historyExpanded) {
+          void fetch('/api/chat/session-prefs', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: prefKey, historyExpanded: true }),
+          }).catch(() => {})
+          const currentConversations = useAgentCenterStore.getState().conversations
+          setConversations(
+            currentConversations.map((conv) => {
+              if (conv.id !== cacheKey || !conv.session) return conv
+              return {
+                ...conv,
+                session: { ...conv.session, historyExpanded: true },
+              }
+            }),
+          )
+        }
       } else if (background && transcriptOlderCursorRef.current) {
         setSessionTranscript((prev) => {
           const merged =
@@ -329,6 +382,9 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
           if (cacheKey) transcriptCacheRef.current.set(cacheKey, merged)
           return merged
         })
+      } else if (background && transcriptsEqual(prevMessages, nextMessages)) {
+        if (cacheKey) transcriptCacheRef.current.set(cacheKey, nextMessages)
+        if (sourceMtime > 0) transcriptSourceMtimeRef.current = sourceMtime
       } else {
         if (cacheKey) transcriptCacheRef.current.set(cacheKey, nextMessages)
         setSessionTranscript(nextMessages)
@@ -352,11 +408,33 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
         }
       }
     }
-  }, [selectedSession, activeConversation])
+  }, [selectedSession, activeConversation, setConversations])
 
   useEffect(() => {
     void loadSessionTranscript({ background: false })
   }, [loadSessionTranscript])
+
+  useEffect(() => {
+    if (!selectedSession?.historyExpanded) {
+      autoExpandHistoryInFlightRef.current = false
+      return
+    }
+    if (sessionTranscriptLoading || transcriptLoadingOlder) return
+    if (!transcriptHasMoreOlder || !transcriptOlderCursor) return
+    if (autoExpandHistoryInFlightRef.current) return
+    autoExpandHistoryInFlightRef.current = true
+    void loadSessionTranscript({ background: true, older: true }).finally(() => {
+      autoExpandHistoryInFlightRef.current = false
+    })
+  }, [
+    selectedSession?.historyExpanded,
+    selectedSession?.prefKey,
+    sessionTranscriptLoading,
+    transcriptLoadingOlder,
+    transcriptHasMoreOlder,
+    transcriptOlderCursor,
+    loadSessionTranscript,
+  ])
 
   useEffect(() => {
     if (!selectedSession) return
@@ -372,16 +450,17 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
   }, [selectedSession, loadSessionTranscript])
 
   useSmartPoll(
-    () => loadSessionTranscript({ background: true }),
+    () => loadSessionTranscript({ background: true, forceFresh: true }),
     selectedSession?.active ? ACTIVE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS : IDLE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS,
     {
       enabled: !!selectedSession,
-      pauseWhenSseConnected: true,
+      // Remote edge transcripts may not get prompt_completed on the center host.
+      pauseWhenSseConnected: !selectedSession?.nodeId,
     }
   )
 
   const refreshSessionTranscript = useCallback(
-    (options?: { background?: boolean }) => {
+    (options?: { background?: boolean; forceFresh?: boolean }) => {
       const background = options?.background ?? false
       if (!background && activeConversation) {
         transcriptCacheRef.current.delete(activeConversation)
@@ -389,7 +468,10 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
         setTranscriptOlderCursor(null)
         transcriptOlderCursorRef.current = null
       }
-      void loadSessionTranscript({ background })
+      void loadSessionTranscript({
+        background,
+        forceFresh: options?.forceFresh,
+      })
     },
     [activeConversation, loadSessionTranscript]
   )
@@ -398,12 +480,12 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
     prefKey: string
     displayName?: string
     colorTag?: string
+    historyExpanded?: boolean
   }) => {
-    const body = {
-      key: payload.prefKey,
-      name: payload.displayName || null,
-      color: payload.colorTag || null,
-    }
+    const body: Record<string, unknown> = { key: payload.prefKey }
+    if (payload.displayName !== undefined) body.name = payload.displayName || null
+    if (payload.colorTag !== undefined) body.color = payload.colorTag || null
+    if (payload.historyExpanded !== undefined) body.historyExpanded = payload.historyExpanded
 
     const res = await fetch('/api/chat/session-prefs', {
       method: 'PATCH',
@@ -424,8 +506,15 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
           name: payload.displayName || conv.name,
           session: {
             ...conv.session,
-            displayName: payload.displayName || conv.session.displayName,
-            colorTag: payload.colorTag || undefined,
+            displayName:
+              payload.displayName !== undefined
+                ? payload.displayName || conv.session.displayName
+                : conv.session.displayName,
+            colorTag: payload.colorTag !== undefined ? payload.colorTag || undefined : conv.session.colorTag,
+            historyExpanded:
+              payload.historyExpanded !== undefined
+                ? payload.historyExpanded
+                : conv.session.historyExpanded,
           },
         }
       })
@@ -598,11 +687,12 @@ function SessionConversationView({
   hasMoreOlder: boolean
   loadingOlder: boolean
   onLoadOlder: () => void
-  onRefreshTranscript: (options?: { background?: boolean }) => void
+  onRefreshTranscript: (options?: { background?: boolean; forceFresh?: boolean }) => void
   onSavePreferences: (payload: { prefKey: string; displayName?: string; colorTag?: string }) => Promise<void>
 }) {
   const t = useTranslations('chat')
-  const { centralMode } = useAgentCenterStore()
+  const { centralMode, agents: storeAgents } = useAgentCenterStore()
+  const [bindAgentName, setBindAgentName] = useState('')
   const isGatewaySession = session.sessionKind === 'gateway'
   const isRemoteEdgeSession = Boolean(session.nodeId)
   const needsEdgeClientForContinue =
@@ -614,17 +704,35 @@ function SessionConversationView({
   const [showNewTranscript, setShowNewTranscript] = useState(false)
   const [continuePrompt, setContinuePrompt] = useState('')
   const [continueBusy, setContinueBusy] = useState(false)
+  const [awaitingReplySeconds, setAwaitingReplySeconds] = useState(0)
   const [continueError, setContinueError] = useState<string | null>(null)
+  const continueSendLockRef = useRef(false)
   const [pendingUserMessage, setPendingUserMessage] = useState<SessionTranscriptMessage | null>(null)
-  const continuePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [backgroundPromptBusy, setBackgroundPromptBusy] = useState(false)
+  const awaitingReplyPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const transcriptBaselineRef = useRef(0)
   const [nameDraft, setNameDraft] = useState(session.displayName || '')
   const [colorDraft, setColorDraft] = useState(session.colorTag || '')
   const [prefBusy, setPrefBusy] = useState(false)
   const [prefError, setPrefError] = useState<string | null>(null)
+  const [linkedAgents, setLinkedAgents] = useState<Array<{ id: number; name: string; session_key: string | null }>>([])
+  const [bindingDraft, setBindingDraft] = useState<Record<number, string>>({})
+  const [bindingBusy, setBindingBusy] = useState(false)
+  const [bindingMessage, setBindingMessage] = useState<string | null>(null)
+  const [copiedSessionId, setCopiedSessionId] = useState(false)
   const hasPrefChanges =
     nameDraft.trim() !== (session.displayName || '').trim() ||
     colorDraft !== (session.colorTag || '')
+
+  const bindableAgents = useMemo(() => {
+    if (isGatewaySession) return []
+    return storeAgents.filter((agent) => {
+      const agentKind = getAgentLocalSessionKind(
+        String((agent as { framework?: string }).framework || ''),
+      )
+      return agentKind === session.sessionKind
+    })
+  }, [isGatewaySession, storeAgents, session.sessionKind])
 
   useEffect(() => {
     setNameDraft(session.displayName || '')
@@ -632,7 +740,122 @@ function SessionConversationView({
     setPrefError(null)
     setContinueError(null)
     setPendingUserMessage(null)
+    setBackgroundPromptBusy(false)
+    setBindingMessage(null)
   }, [session.prefKey, session.displayName, session.colorTag])
+
+  const sessionMatchesRealtimeEvent = useCallback((detail?: SessionRealtimePayload) => {
+    if (shouldRefreshSelectedSession(session, detail)) return true
+    if (detail?.agentId != null && linkedAgents.some((agent) => agent.id === detail.agentId)) {
+      return true
+    }
+    return false
+  }, [session, linkedAgents])
+
+  const applyPendingPromptFromRealtime = useCallback((detail?: SessionRealtimePayload) => {
+    if (!detail) return false
+    const text = detail.pendingPrompt?.trim()
+    if (!text) return false
+    if (detail.reason !== 'prompt_queued' && detail.reason !== 'continue_queued') return false
+    if (!sessionMatchesRealtimeEvent(detail)) return false
+    setPendingUserMessage({
+      role: 'user',
+      parts: [{ type: 'text', text }],
+      timestamp: new Date().toISOString(),
+    })
+    setBackgroundPromptBusy(true)
+    transcriptBaselineRef.current = messages.length
+    stickToBottomRef.current = true
+    return true
+  }, [session, messages.length, sessionMatchesRealtimeEvent])
+
+  useEffect(() => {
+    const handleTranscriptUpdated = (rawEvent: Event) => {
+      const detail = (rawEvent as CustomEvent<SessionRealtimePayload | undefined>).detail
+      if (!sessionMatchesRealtimeEvent(detail)) return
+
+      if (
+        detail?.reason === 'prompt_completed'
+        || detail?.reason === 'prompt_failed'
+        || detail?.reason === 'bridge_continue'
+      ) {
+        setBackgroundPromptBusy(false)
+      } else {
+        applyPendingPromptFromRealtime(detail)
+      }
+      onRefreshTranscript({ background: true, forceFresh: true })
+    }
+
+    window.addEventListener(SESSION_TRANSCRIPT_UPDATED_EVENT, handleTranscriptUpdated)
+    return () => window.removeEventListener(SESSION_TRANSCRIPT_UPDATED_EVENT, handleTranscriptUpdated)
+  }, [session, onRefreshTranscript, applyPendingPromptFromRealtime, sessionMatchesRealtimeEvent])
+
+  const reloadLinkedAgents = useCallback(async () => {
+    if (isGatewaySession) {
+      setLinkedAgents([])
+      return
+    }
+    const params = new URLSearchParams({ session_id: session.sessionId })
+    if (session.sessionKey) params.set('session_key', session.sessionKey)
+    if (session.nodeId) params.set('client_id', session.nodeId)
+    try {
+      const res = await fetch(`/api/agents/by-session?${params}`)
+      const data = res.ok ? await res.json() : { agents: [] }
+      const agents = Array.isArray(data.agents) ? data.agents : []
+      setLinkedAgents(agents)
+      const drafts: Record<number, string> = {}
+      for (const agent of agents) {
+        drafts[agent.id] = agent.session_key || session.sessionId
+      }
+      setBindingDraft(drafts)
+
+      if (agents.length === 0) {
+        const workingDir = session.workingDir?.trim()
+        if (workingDir) {
+          const normalizedDir = workingDir.replace(/\\/g, '/').replace(/\/+$/, '')
+          const candidates = storeAgents.filter((agent) => {
+            if (String(agent.session_key || '').trim()) return false
+            const agentKind = getAgentLocalSessionKind(
+              String((agent as { framework?: string }).framework || ''),
+            )
+            if (agentKind !== session.sessionKind) return false
+            const agentPath = String((agent as { workspace_path?: string }).workspace_path || '').trim()
+            if (!agentPath) return false
+            return agentPath.replace(/\\/g, '/').replace(/\/+$/, '') === normalizedDir
+          })
+          if (candidates.length === 1) {
+            const bindRes = await fetch('/api/agents', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: candidates[0].name,
+                session_key: session.sessionId,
+                session_kind: session.sessionKind,
+              }),
+            })
+            if (bindRes.ok) {
+              const rebound = await fetch(`/api/agents/by-session?${params}`)
+              const reboundData = rebound.ok ? await rebound.json() : { agents: [] }
+              const reboundAgents = Array.isArray(reboundData.agents) ? reboundData.agents : []
+              setLinkedAgents(reboundAgents)
+              for (const agent of reboundAgents) {
+                drafts[agent.id] = agent.session_key || session.sessionId
+              }
+              setBindingDraft(drafts)
+            }
+          }
+        }
+      }
+    } catch {
+      setLinkedAgents([])
+    }
+  }, [isGatewaySession, session.sessionId, session.sessionKey, session.workingDir, storeAgents])
+
+  useEffect(() => {
+    void reloadLinkedAgents()
+  }, [reloadLinkedAgents])
+
+  const awaitingReply = continueBusy || backgroundPromptBusy
 
   const displayMessages = useMemo(() => {
     const merged = [...messages]
@@ -642,20 +865,39 @@ function SessionConversationView({
         merged.push(pendingUserMessage)
       }
     }
-    if (continueBusy) {
-      const last = messages[messages.length - 1]
-      const gotAssistantReply =
-        messages.length > transcriptBaselineRef.current && last?.role === 'assistant'
-      if (!gotAssistantReply) {
-        merged.push({
-          role: 'assistant',
-          parts: [{ type: 'text', text: t('assistantThinking') }],
-          timestamp: new Date().toISOString(),
-        })
-      }
-    }
     return merged
-  }, [messages, pendingUserMessage, continueBusy, t])
+  }, [messages, pendingUserMessage])
+
+  const replyProgressUi = useMemo(
+    () =>
+      resolveReplyProgressUi(
+        awaitingReply,
+        messages,
+        transcriptBaselineRef.current,
+        awaitingReplySeconds,
+      ),
+    [awaitingReply, messages, awaitingReplySeconds],
+  )
+
+  const waitingProgressText = useMemo(() => {
+    if (replyProgressUi.mode !== 'waiting' || !replyProgressUi.progress) return ''
+    return thinkingProgressLabel(replyProgressUi.progress, {
+      thinking: (seconds) => t('assistantThinkingProgress', { seconds }),
+      tool: (tool, seconds) => t('assistantToolProgress', { tool, seconds }),
+      responding: (seconds) => t('assistantRespondingProgress', { seconds }),
+    })
+  }, [replyProgressUi, t])
+
+  const continuingProgressText = useMemo(() => {
+    if (replyProgressUi.mode !== 'continuing' || !replyProgressUi.progress) return ''
+    return continuingProgressLabel(replyProgressUi.progress, {
+      continuing: (seconds) => t('assistantNextReplyProgress', { seconds }),
+      tool: (tool, seconds) => t('assistantContinuingToolProgress', { tool, seconds }),
+    })
+  }, [replyProgressUi, t])
+
+  const showReplyProgressBanner =
+    replyProgressUi.mode === 'waiting' || replyProgressUi.mode === 'continuing'
 
   useEffect(() => {
     if (!pendingUserMessage) return
@@ -666,22 +908,39 @@ function SessionConversationView({
   }, [messages, pendingUserMessage])
 
   useEffect(() => {
-    if (!continueBusy) {
-      if (continuePollRef.current) {
-        clearInterval(continuePollRef.current)
-        continuePollRef.current = null
+    if (!awaitingReply) {
+      setAwaitingReplySeconds(0)
+      if (awaitingReplyPollRef.current) {
+        clearInterval(awaitingReplyPollRef.current)
+        awaitingReplyPollRef.current = null
       }
       return
     }
-    onRefreshTranscript({ background: true })
-    continuePollRef.current = setInterval(() => onRefreshTranscript({ background: true }), 2000)
+    const started = Date.now()
+    const tickSeconds = setInterval(() => {
+      setAwaitingReplySeconds(Math.floor((Date.now() - started) / 1000))
+    }, 1000)
+    onRefreshTranscript({ background: true, forceFresh: true })
+    awaitingReplyPollRef.current = setInterval(
+      () => onRefreshTranscript({ background: true, forceFresh: true }),
+      2000,
+    )
     return () => {
-      if (continuePollRef.current) {
-        clearInterval(continuePollRef.current)
-        continuePollRef.current = null
+      clearInterval(tickSeconds)
+      if (awaitingReplyPollRef.current) {
+        clearInterval(awaitingReplyPollRef.current)
+        awaitingReplyPollRef.current = null
       }
     }
-  }, [continueBusy, onRefreshTranscript])
+  }, [awaitingReply, onRefreshTranscript])
+
+  // End send lock when transcript shows a complete reply (esp. remote/bridge without prompt_completed).
+  useEffect(() => {
+    if (!backgroundPromptBusy) return
+    if (isReplyCycleComplete(messages, transcriptBaselineRef.current)) {
+      setBackgroundPromptBusy(false)
+    }
+  }, [messages, backgroundPromptBusy])
 
   const isTranscriptNearBottom = useCallback(() => {
     const container = transcriptScrollRef.current
@@ -700,12 +959,12 @@ function SessionConversationView({
 
   useLayoutEffect(() => {
     if (!stickToBottomRef.current) return
-    if (!pendingUserMessage && !continueBusy) return
+    if (!pendingUserMessage && !awaitingReply && !showReplyProgressBanner) return
     scrollTranscriptToBottom('auto')
     requestAnimationFrame(() => {
       if (stickToBottomRef.current) scrollTranscriptToBottom('auto')
     })
-  }, [pendingUserMessage, continueBusy, scrollTranscriptToBottom])
+  }, [pendingUserMessage, awaitingReply, showReplyProgressBanner, awaitingReplySeconds, scrollTranscriptToBottom])
 
   // Open / switch session: always land on latest messages at the bottom
   useEffect(() => {
@@ -732,7 +991,6 @@ function SessionConversationView({
       if (stickToBottomRef.current || isTranscriptNearBottom()) {
         requestAnimationFrame(() => {
           scrollTranscriptToBottom(count - prevTranscriptCountRef.current > 5 ? 'auto' : 'smooth')
-          if (stickToBottomRef.current) stickToBottomRef.current = false
         })
         setShowNewTranscript(false)
       } else if (count > 0) {
@@ -744,15 +1002,28 @@ function SessionConversationView({
 
   const handleTranscriptScroll = useCallback(() => {
     if (isTranscriptNearBottom()) {
+      stickToBottomRef.current = true
       setShowNewTranscript(false)
     } else {
       stickToBottomRef.current = false
     }
   }, [isTranscriptNearBottom])
 
+  const prevHasMoreOlderForExpandRef = useRef(hasMoreOlder)
+  useEffect(() => {
+    const finishedHistoryRestore =
+      session.historyExpanded && prevHasMoreOlderForExpandRef.current && !hasMoreOlder
+    prevHasMoreOlderForExpandRef.current = hasMoreOlder
+    if (!finishedHistoryRestore || loadingOlder || loading) return
+    stickToBottomRef.current = true
+    scrollTranscriptToBottom('auto')
+    requestAnimationFrame(() => scrollTranscriptToBottom('auto'))
+  }, [session.historyExpanded, hasMoreOlder, loadingOlder, loading, scrollTranscriptToBottom])
+
   const handleContinueSession = async () => {
     const prompt = continuePrompt.trim()
-    if (!prompt || continueBusy) return
+    if (!prompt || continueBusy || continueSendLockRef.current) return
+    continueSendLockRef.current = true
     if (needsEdgeClientForContinue) {
       setContinueError(t('remoteClientRequired'))
       return
@@ -796,6 +1067,7 @@ function SessionConversationView({
           setContinueError(t('messageSavedNotDelivered', { reason: fwd.reason || t('reasonUnknown') }))
         }
         stickToBottomRef.current = true
+        setBackgroundPromptBusy(true)
         setTimeout(() => onRefreshTranscript({ background: true }), 2000)
       } else {
         if (isRemoteEdgeSession && !session.nodeId) {
@@ -825,16 +1097,92 @@ function SessionConversationView({
           throw new Error(data?.error || t('failedToContinueSession'))
         }
         stickToBottomRef.current = true
+        setBackgroundPromptBusy(true)
         onRefreshTranscript({ background: true })
+        await tryAutoBindAgentToSession()
       }
     } catch (err) {
       setContinueError(err instanceof Error ? err.message : t('failedToContinueSession'))
       setPendingUserMessage(null)
+      setBackgroundPromptBusy(false)
     } finally {
+      continueSendLockRef.current = false
       setContinueBusy(false)
-      onRefreshTranscript({ background: true })
     }
   }
+
+  const handleCopySessionId = async () => {
+    try {
+      await navigator.clipboard.writeText(session.sessionId)
+      setCopiedSessionId(true)
+      setTimeout(() => setCopiedSessionId(false), 2000)
+    } catch {
+      setCopiedSessionId(false)
+    }
+  }
+
+  const updateAgentSessionKey = async (agentName: string, sessionKey: string, options?: { silent?: boolean }) => {
+    setBindingBusy(true)
+    if (!options?.silent) setBindingMessage(null)
+    try {
+      const trimmedKey = sessionKey.trim()
+      if (trimmedKey) {
+        const targetAgent = storeAgents.find((agent) => agent.name === agentName)
+        const kindCheck = validateAgentSessionKindBinding(
+          String((targetAgent as { framework?: string } | undefined)?.framework || ''),
+          session.sessionKind,
+        )
+        if (!kindCheck.ok) {
+          throw new Error(kindCheck.message)
+        }
+      }
+
+      const res = await fetch('/api/agents', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: agentName,
+          session_key: sessionKey,
+          ...(trimmedKey ? { session_kind: session.sessionKind } : {}),
+          ...(session.nodeId ? { client_id: session.nodeId } : {}),
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || t('sessionBindingFailed'))
+      if (!options?.silent) setBindingMessage(t('sessionBindingSaved'))
+    } catch (err) {
+      if (!options?.silent) {
+        setBindingMessage(err instanceof Error ? err.message : t('sessionBindingFailed'))
+      }
+    } finally {
+      setBindingBusy(false)
+    }
+  }
+
+  const tryAutoBindAgentToSession = useCallback(async () => {
+    if (isGatewaySession) return
+    const sessionId = session.sessionId
+    const unboundLinked = linkedAgents.filter((agent) => !agent.session_key)
+    if (unboundLinked.length === 1) {
+      await updateAgentSessionKey(unboundLinked[0].name, sessionId, { silent: true })
+      await reloadLinkedAgents()
+      return
+    }
+    if (linkedAgents.length > 0) return
+    const workingDir = session.workingDir?.trim()
+    if (!workingDir) return
+    const normalizedDir = workingDir.replace(/\\/g, '/').replace(/\/+$/, '')
+    const candidates = storeAgents.filter((agent) => {
+      if (agent.session_key) return false
+      const agentPath = String((agent as { workspace_path?: string }).workspace_path || '').trim()
+      if (!agentPath) return false
+      return agentPath.replace(/\\/g, '/').replace(/\/+$/, '') === normalizedDir
+    })
+    if (candidates.length === 1) {
+      await updateAgentSessionKey(candidates[0].name, sessionId, { silent: true })
+      await reloadLinkedAgents()
+    }
+  }, [isGatewaySession, linkedAgents, session.sessionId, session.workingDir, storeAgents, reloadLinkedAgents])
 
   const handleSavePrefs = async () => {
     if (!session.prefKey || prefBusy) return
@@ -869,7 +1217,9 @@ function SessionConversationView({
             {session.active ? t('sessionActive') : t('sessionIdle')}
           </span>
           <span className="font-mono-tight">{getSessionKindLabel(session.sessionKind)}</span>
-          {session.model && <span className="text-muted-foreground/60">{session.model}</span>}
+          {session.model && session.model.toLowerCase() !== 'unknown' && (
+            <span className="text-muted-foreground/60">{session.model}</span>
+          )}
           {session.tokens && <span className="text-muted-foreground/60">{session.tokens}</span>}
           {session.workingDir && <span className="hidden truncate text-muted-foreground/50 sm:inline max-w-[200px]">{session.workingDir}</span>}
           {session.age && <span className="text-muted-foreground/40">{t('ageAgo', { age: session.age })}</span>}
@@ -917,6 +1267,109 @@ function SessionConversationView({
             {prefError && <div className="mt-2 text-xs text-red-400">{prefError}</div>}
           </details>
         )}
+
+        {!isGatewaySession && (
+          <details className="mt-2">
+            <summary className="cursor-pointer select-none text-[10px] uppercase tracking-wider text-muted-foreground/60 hover:text-muted-foreground/80">
+              {t('sessionBindingTitle')}
+            </summary>
+            <div className="mt-2 space-y-2 rounded-md border border-border/40 bg-surface-1/40 p-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] uppercase tracking-wide text-muted-foreground/60">{t('sessionIdLabel')}</span>
+                <code className="min-w-0 flex-1 truncate rounded bg-surface-0 px-2 py-1 text-[11px] text-foreground">{session.sessionId}</code>
+                <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => void handleCopySessionId()}>
+                  {copiedSessionId ? t('copied') : t('copySessionId')}
+                </Button>
+              </div>
+              {session.sessionKey && session.sessionKey !== session.sessionId && (
+                <div className="text-[11px] text-muted-foreground">
+                  <span className="text-muted-foreground/60">{t('sessionKeyLabel')}: </span>
+                  <span className="font-mono text-foreground/80">{session.sessionKey}</span>
+                </div>
+              )}
+              <p className="text-[11px] leading-relaxed text-muted-foreground/70">{t('sessionKeyHintChat')}</p>
+              {linkedAgents.length === 0 ? (
+                <div className="space-y-2">
+                  <p className="text-[11px] text-muted-foreground/60">{t('noLinkedAgents')}</p>
+                  {bindableAgents.length > 0 ? (
+                    <div className="flex flex-wrap items-end gap-1.5">
+                      <label className="flex flex-col gap-1 text-[10px] text-muted-foreground/60">
+                        {t('bindAgentLabel')}
+                        <select
+                          value={bindAgentName}
+                          onChange={(e) => setBindAgentName(e.target.value)}
+                          className="h-7 min-w-[140px] rounded border border-border/60 bg-background px-2 text-[11px] text-foreground"
+                        >
+                          <option value="">{t('bindAgentPlaceholder')}</option>
+                          {bindableAgents.map((a) => (
+                            <option key={a.id} value={a.name}>{a.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-7 px-2 text-[11px]"
+                        disabled={bindingBusy || !bindAgentName}
+                        onClick={() => void updateAgentSessionKey(bindAgentName, session.sessionId)}
+                      >
+                        {t('bindAgentAction')}
+                      </Button>
+                    </div>
+                  ) : storeAgents.length > 0 ? (
+                    <p className="text-[11px] text-amber-200/80">{t('noCompatibleAgentsForSession', { kind: getSessionKindLabel(session.sessionKind) })}</p>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-[10px] uppercase tracking-wide text-muted-foreground/50">{t('linkedAgents')}</p>
+                  {linkedAgents.map((agent) => (
+                    <div key={agent.id} className="space-y-1.5 rounded border border-border/30 bg-surface-0/50 p-2">
+                      <div className="text-xs font-medium text-foreground">{agent.name}</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <input
+                          value={bindingDraft[agent.id] ?? ''}
+                          onChange={(e) => setBindingDraft((prev) => ({ ...prev, [agent.id]: e.target.value }))}
+                          className="h-7 min-w-0 flex-1 rounded border border-border/60 bg-background px-2 text-[11px] font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary/30"
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-[11px]"
+                          disabled={bindingBusy}
+                          onClick={() => setBindingDraft((prev) => ({ ...prev, [agent.id]: session.sessionId }))}
+                        >
+                          {t('useCurrentSessionId')}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-[11px]"
+                          disabled={bindingBusy}
+                          onClick={() => void updateAgentSessionKey(agent.name, '')}
+                        >
+                          {t('clearAgentSessionBinding')}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-7 px-2 text-[11px]"
+                          disabled={bindingBusy}
+                          onClick={() => void updateAgentSessionKey(agent.name, (bindingDraft[agent.id] ?? '').trim())}
+                        >
+                          {bindingBusy ? t('saving') : t('saveAgentSessionBinding')}
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {bindingMessage && <p className="text-[11px] text-primary/80">{bindingMessage}</p>}
+            </div>
+          </details>
+        )}
       </div>
 
       {/* Transcript */}
@@ -962,21 +1415,30 @@ function SessionConversationView({
                 {t('transcriptSyncHint')}
               </p>
             )}
-            {displayMessages.map((msg, idx) => {
-              const isThinkingPlaceholder =
-                continueBusy &&
-                idx === displayMessages.length - 1 &&
-                msg.role === 'assistant' &&
-                msg.parts.some((p) => p.type === 'text' && p.text === t('assistantThinking'))
-              return (
-                <SessionMessage
-                  key={`${msg.timestamp || 'no-ts'}-${idx}`}
-                  message={msg}
-                  showTimestamp={shouldShowTimestamp(msg, displayMessages[idx - 1])}
-                  pending={isThinkingPlaceholder}
-                />
-              )
-            })}
+            {displayMessages.map((msg, idx) => (
+              <SessionMessage
+                key={`${msg.timestamp || 'no-ts'}-${idx}`}
+                message={msg}
+                showTimestamp={shouldShowTimestamp(msg, displayMessages[idx - 1])}
+                pending={
+                  Boolean(pendingUserMessage)
+                  && idx === displayMessages.length - 1
+                  && msg.role === 'user'
+                }
+              />
+            ))}
+            {replyProgressUi.mode !== 'hidden' && replyProgressUi.progress && (
+              <SessionReplyStatusRow
+                label={
+                  replyProgressUi.mode === 'waiting'
+                    ? waitingProgressText
+                    : continuingProgressText
+                }
+                phase={replyProgressUi.progress.phase}
+                variant={replyProgressUi.mode === 'waiting' ? 'waiting' : 'continuing'}
+                showTimestamp={false}
+              />
+            )}
             <div ref={transcriptBottomRef} className="h-px" />
           </div>
         )}
@@ -1016,7 +1478,7 @@ function SessionConversationView({
             value={continuePrompt}
             onChange={(e) => setContinuePrompt(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              if (e.key === 'Enter' && !e.shiftKey && !continueBusy && !backgroundPromptBusy) {
                 e.preventDefault()
                 void handleContinueSession()
               }
@@ -1024,21 +1486,25 @@ function SessionConversationView({
             placeholder={
               needsEdgeClientForContinue
                 ? t('remoteClientRequired')
+                : continueBusy || backgroundPromptBusy
+                  ? t('continueSending')
                 : isGatewaySession
                   ? t('sendMessageToSession')
                   : t('sendPromptToLocalSession')
             }
-            disabled={needsEdgeClientForContinue}
+            disabled={needsEdgeClientForContinue || continueBusy || backgroundPromptBusy}
             className="h-7 flex-1 rounded border border-border/40 bg-surface-1 px-2 font-mono-tight text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-50"
           />
           <Button
             onClick={handleContinueSession}
             size="sm"
             variant="ghost"
-            disabled={continueBusy || !continuePrompt.trim() || needsEdgeClientForContinue}
+            disabled={continueBusy || backgroundPromptBusy || !continuePrompt.trim() || needsEdgeClientForContinue}
             className="h-7 px-3 text-xs"
           >
-            {continueBusy ? '...' : t('send')}
+            {continueBusy || backgroundPromptBusy
+              ? `${t('continueSending')}${awaitingReplySeconds > 0 ? ` (${awaitingReplySeconds}s)` : ''}`
+              : t('send')}
           </Button>
         </div>
         {continueError && <div className="mt-1 text-xs text-red-400">{continueError}</div>}
@@ -1136,13 +1602,24 @@ function getUserTextFromTranscriptMessage(message: SessionTranscriptMessage): st
     .trim()
 }
 
-function transcriptHasUserPrompt(messages: SessionTranscriptMessage[], prompt: string): boolean {
+function promptMatchVariants(prompt: string): string[] {
   const target = prompt.trim()
-  if (!target) return false
+  if (!target) return []
+  const variants = new Set<string>([target])
+  const stripped = target.match(/^Message from .+?:\s*([\s\S]+)$/i)?.[1]?.trim()
+  if (stripped) variants.add(stripped)
+  return [...variants]
+}
+
+function transcriptHasUserPrompt(messages: SessionTranscriptMessage[], prompt: string): boolean {
+  const variants = promptMatchVariants(prompt)
+  if (variants.length === 0) return false
   const start = Math.max(0, messages.length - 6)
   for (let i = messages.length - 1; i >= start; i--) {
     const msg = messages[i]
-    if (msg.role === 'user' && getUserTextFromTranscriptMessage(msg) === target) return true
+    if (msg.role !== 'user') continue
+    const text = getUserTextFromTranscriptMessage(msg)
+    if (variants.some((variant) => text === variant || text.includes(variant))) return true
   }
   return false
 }
@@ -1166,6 +1643,11 @@ function shouldRefreshSelectedSession(
     && detail.sessionId
     && detail.sessionId !== session.sessionId
   ) {
+    return false
+  }
+
+  // Agent-only events (no session id yet) are matched via linkedAgents in the chat view.
+  if (!detail.sessionId && !detail.sessionKey && detail.agentId != null) {
     return false
   }
 

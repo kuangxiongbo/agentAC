@@ -1,7 +1,156 @@
 # 操作日志 (operatelog)
 
+## 2026-05-20
+
+- **服务端镜像推送 ACR（人工值守创建绑定 + 默认规则 + 会话绑定）**：buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:da5e17ca518179eb8543c374f89ad7e1488e3deb3c75e08499b023f074c8ac39`**。生产：`docker compose pull && docker compose up -d --force-recreate`。
+- **添加人工值守支持创建时绑定 Worker**：弹窗增加「同时绑定 Worker」下拉；`POST /api/human-watch/stewards` 支持 `worker_local_agent_id`；绑定解析在索引未同步时经 Bridge 拉取 agent 详情兜底。
+- **添加人工值守弹窗展示默认规则**：`human-watch-create-steward-modal` 嵌入 `HumanWatchRulesConfig` 与创建后绑定说明。
+- **人工值守默认规则**：`human-watch-defaults.ts` 统一默认 L1–L3 规则、跟进话术、静默期与每小时上限；创建值守 Agent（边缘）与新建 binding 自动写入 `rules_override`；值守/Worker 绑定 Tab 展示「默认值守规则」卡片。
+- **值守 Agent 绑定 Worker UI**：值守智能体详情新增 **「绑定 Worker」** Tab（`human-watch-steward-bind-tab.tsx`），可列出已绑定 Worker 并新增绑定；Worker 侧「人工值守」Tab 仍可用；策略接口改用 `available`。
+- **服务端镜像推送 ACR（订阅授权 + 人工值守关联 + 设置 Tab）**：buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:5b62b72ed8783fad2850bdc14a8d71eed0ef68f80205bd7168b3533b68418106`**。构建前修复 `human-watch/interventions/route.ts` TS。生产：`docker compose pull && docker compose up -d --force-recreate`。
+- **服务端镜像构建修复**：`human-watch/interventions/route.ts` 修复 `limit` 可能为 `undefined` 的 TS 错误，以便 Docker `pnpm build` 通过。
+- **客户端构建修复**：`mission-control-client/src/lib/human-watch-judge.ts` 将 `isHumanWatchAgent` 改为从 `human-watch-helpers` 导入（原误从 `human-watch-steward` 导入导致 5001 Turbopack 编译失败）。
+- **设置页「自定义」Tab 常显**：无 `custom` 类 settings 时也显示 Tab，避免「订阅与授权」区块无法进入。
+- **人工值守与订阅授权关联修复**：`resolveHumanWatchAvailability` 合并 `enableHumanWatch` 订阅权益与 `tenants.human_watch_enabled`；`GET /api/human-watch/policy` 返回 `subscription_entitled` / `available`；创建值守弹窗按订阅与租户分别提示。
+- **订阅授权（对齐 1sheng-console）**：
+  - 新增 `mission-control/license-schema.json`（`appId=mission-control`、`enableHumanWatch` 增值项、`requiresSubscription`）。
+  - 服务端：`license-verifier` / `effective-license` / `license-settings-store`（SQLite `settings` 存离线 lic 与用户中心 URL）；API `GET /api/license/status|config`、`PATCH config`、`POST import`、`GET schema-template`（admin 下载隐藏模板）；`GET /api/auth/me` 返回 `license` 快照。
+  - 策略：`requireHumanWatchEntitlement`（未订阅 `enableHumanWatch` → 402）；订阅过期且 `requiresSubscription` → 登录后全屏 `SubscriptionLicenseGate` 引导用户中心。
+  - 前端：设置「自定义」Tab `LicenseSettingsSection`；智能体页人工值守按钮与 `HumanWatchEntitlementNotice`；Zustand `license` 状态。
+  - 环境变量：`LICENSE_APP_ID`、`USER_CENTER_API_URL`、`USER_CENTER_INTERNAL_SECRET`、`USER_CENTER_PORTAL_URL`、`MC_LICENSE_ENFORCE`（默认 true；未配置用户中心 API 时开发环境放行）。
+- **关闭中心服免登以恢复统一登录与单位信息**：`mission-control/.env.local` 设 `MC_DISABLE_AUTH=false`、注释 `MISSION_CONTROL_DISABLE_AUTH`；重启 5000。客户端 `.env.local` 增加 `NEXT_PUBLIC_MC_AUTH_LOGIN_URL=http://127.0.0.1:5000/login`。
+- **人工值守入口迁至智能体页**：中心服 `agent-squad-panel-phase3` 增加「添加人工值守」与创建弹窗；Worker 详情增加「人工值守」绑定 Tab；值守 Agent 保留「干预记录」Tab；侧栏移除「人工值守」；`/human-watch` 页仅保留绑定列表与 CSV 导出。
+- **中心服重启**：释放 5000 端口后 `mission-control` 执行 `pnpm dev`；`http://127.0.0.1:5000` Ready，`GET /api/init` 200。
+- **本地客户端启动**：`mission-control-client` 执行 `pnpm dev`；`http://127.0.0.1:5001` Ready（Next.js 16.1.6，`.env.local`）；`GET /` 200。
+- **人工值守 HW-018/019（Phase 2：L4 判官 + LLM 扫漏）**：
+  - **Bridge**：`steward_judge_request` / `steward_judge_response`（中心 `requestBridgeClientStewardJudge`；边缘 `human-watch-judge.ts` + `remote-server-bridge`）。
+  - **编排**：`human-watch-judge.ts`（摘要裁剪、`parseStewardConfigFromAgent`）；`llm_enabled` 时 Worker 摘要 → 值守 session 判官 → `reply` 代发 Worker；失败回退 `prompt_template`。
+  - **扫漏**：`llm_sweep_enabled` + `llm_sweep_interval_minutes`（默认 30min）；60s 轮询 `pollLlmSweepBindings`；`event_type=llm_sweep` 留痕。
+  - 单测 **23 条**通过（新增 `human-watch-judge` 3 条、编排 2 条）；修复 steward 配置缓存仅在 agent 存在时写入。
+- **人工值守 E2E 联调文档**：`文档/06-测试报告/联调步骤-人工值守.md`；冒烟脚本 `mission-control/scripts/human-watch-e2e-smoke.sh`。
+- **本地客户端重启**：释放 5001 端口后在 `mission-control-client` 执行 `pnpm dev`；`http://127.0.0.1:5001` Ready（Next.js 16.1.6，`.env.local`），`GET /api/init` 200。
+
+## 2026-05-19
+
+- **人工值守 HW-016/020 收尾**：
+  - **HW-020**：`GET /api/export?type=human_watch_interventions&format=csv`（admin，按 workspace + tenant 过滤）。
+  - **HW-016**：编排 `bridge_offline` 写入 `intervention_skipped`；查询 API / 导出按 `tenant_id` 隔离；`POST /api/human-watch/evaluate` 手动触发评估。
+  - 单测增至 **18 条**（含租户隔离、bridge 离线、continue 失败）；测试报告与需求状态已更新。
+- **人工值守 HW-011～014（编排骨架 + audit 全链路 + Bridge 代发）**：
+  - `human-watch-orchestrator.ts`：订阅 `session.transcript.updated` + 60s 活跃 binding 轮询；规则评估 → 指纹/静默期/限流 → `session_continue` 代发。
+  - 全事件留痕：`rule_evaluated`、`intervention_attempt`、`intervention_completed`、`intervention_skipped`（`fingerprint_duplicate` / `grace_after_prompt` / `rate_limited` / `suggest_only`）。
+  - `human-watch-audit` 扩展：`hasSuccessfulInterventionFingerprint`、`getLastInterventionCompletedAt`、`countSuccessfulInterventionsSince`。
+  - `human-watch-bindings` 扩展：`listEnabledBindingsForWorkerSession`、`listAllEnabledHumanWatchBindings`。
+  - `human-watch-transcript.ts`：transcript → 规则输入行。
+  - `scheduler` 在 `centralMode` 下 `initHumanWatchOrchestrator()`；单测 3 条通过。
+- **人工值守 HW-009/010/015 部分（中心 UI + 规则引擎 + 干预 Tab）**：
+  - **HW-009**：`HumanWatchPanel`（侧栏「人工值守」、创建值守、bindings）；舰队卡片「值守」徽标；编排栏排除值守 Agent；聊天会话列表隐藏判官 `session_key`。
+  - **HW-015**：智能体详情「干预记录」Tab（`human-watch-interventions-tab.tsx`）；`GET /api/human-watch/interventions` 支持 `steward_local_agent_id`。
+  - **HW-010**：`human-watch-rules.ts`（L1–L3 浅规则 + 指纹）+ 单测 2 条。
+  - 双端 i18n `humanWatch` / `agentSquadPhase3.humanWatchBadge`；`mission-control-client` 同步 `human-watch-helpers`、会话过滤、编排排除。
+- **人工值守 HW-005～008（租户开关 + Bridge 创建值守 + bindings API）**：
+  - **HW-005**：migration `061_human_watch_tenant_flag`（`tenants.human_watch_enabled`）；`human-watch-policy.ts`（租户开关 + `MC_HUMAN_WATCH_ENABLED` 环境变量兜底）；`GET/PATCH /api/human-watch/policy`。
+  - **HW-006**：边缘 `human-watch-steward.ts` + Bridge `steward_create_request`/`steward_create_response`（`mission-control-client/src/lib/remote-server-bridge.ts`）。
+  - **HW-007**：中心 `requestBridgeClientStewardCreate`（`bridge-server.ts`）+ `POST /api/human-watch/stewards`（经 Bridge 在边缘创建 `agent_kind=human_watch` 并 provision）。
+  - **HW-008**：`human-watch-bindings.ts` + `GET/POST /api/human-watch/bindings`、`GET/PATCH /api/human-watch/bindings/[id]`（同 `client_id`、framework 一致、禁止共用 `session_key` 校验）。
+  - 单测：`human-watch-policy` 3 条、`human-watch-bindings` 2 条、`human-watch-steward` 2 条（与既有 audit 5 条合计通过）。
+- **人工值守 干预留痕实现（HW-002～004）**：`mission-control` migration `060_human_watch`（`human_watch_bindings` + `human_watch_interventions`）；`human-watch-audit.ts`（log/list/幂等）；`GET /api/human-watch/interventions`；单测 5 条通过。
+- **人工值守 干预留痕（PRD V1.3 + 任务拆解）**：FR-008 强化为 Phase 1 必做；`human_watch_interventions` 表与 API/UI；新增 `框架设计-人工值守.md`、`任务拆解-人工值守.md`、`测试用例-人工值守.md`（HW-TC-A01～A06）。
+- **人工值守 PRD V1.2**：控制面/执行面分离；中心高级服务+选 client 经 Bridge 在边缘创建值守；`human_watch_bindings` 中心监视绑定；中心编排；上下文窗口默认值；API 代发（模拟 user）。见 `文档/01-PRD/PRD-人工值守.md`。
+- **人工值守 PRD V1.1**：值守 Agent 可选 Claude/Codex 运行时，智能体列表归对应类型分组 +「值守」徽标；Worker 绑定须 framework 一致。见 `文档/01-PRD/PRD-人工值守.md`。
+- **人工值守 PRD**：新增 `文档/01-PRD/PRD-人工值守.md`（V1.0 草案）、`文档/07-状态跟踪/需求状态-人工值守.md`；专用值守 Agent + Worker 绑定 + 值守 Tab 规则配置；架构/测试用例待 PRD 评审后编写。
+- **服务端镜像推送 ACR（聊天首条回复后隐藏状态 + 远程结束检测）**：buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:8bc2231d5f34be5fe1ddc3860dd3fc81793f8237c72737722a601593a5879b85`**。生产：`docker compose pull && docker compose up -d --force-recreate`。
+- **本地客户端重启**：释放 5001 端口后在 `mission-control-client` 执行 `pnpm dev`；`http://127.0.0.1:5001` Ready，`GET /api/init` 200。
+- **聊天回复状态：首条可见后隐藏 + 远程会话结束检测**：
+  - 首条 assistant 正文出现后不再显示「下一条回复生成中」（`resolveReplyProgressUi` → `hidden`）。
+  - 所有会话类型在 transcript 显示完整回复且无进行中 tool 时结束 `backgroundPromptBusy`（`isReplyCycleComplete`）；远程/中心服额外识别 `bridge_continue`。
+  - 等待回复期间 transcript 轮询带 `forceFresh`（`nocache=1`）；远程会话（`nodeId`）在 SSE 已连接时仍保留 5s 兜底轮询。
+  - 同步 **mission-control** / **mission-control-client** 与单测。
+- **服务端镜像推送 ACR（聊天回复状态 + 构建修复）**：
+  - 构建前修复 `chat-workspace.tsx`：`applyPendingPromptFromRealtime` 对 `detail` 做空值收窄；`promptMatchVariants` 正则去掉 `s` 标志（改用 `[\s\S]`），满足生产 TS 目标。
+  - buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:790f9bae6c989cf18cd196b826b13be31311225cee2529623625f73549ebf377`**。生产：`docker compose pull && docker compose up -d --force-recreate`。
+- **聊天窗口回复状态（与人工值守无关）**：
+  - 修复「已有 assistant 正文但仍在底部显示正在思考」：改为扫描 baseline 之后**任意** assistant 文本，不再只看最后一条消息。
+  - 分两档 UI：**等待首条回复** / **已有回复后续跑**，统一用 `SessionReplyStatusRow` 排在消息流中（与 assistant 回复同一行样式 ◆），不再使用独立横幅条。
+  - 一问多答：状态行始终在**最后一条消息下方**（下一条回复位置）；本地会话仅在 `prompt_completed` 后结束，避免第一段文字出现后状态过早消失；续写文案 `assistantNextReplyProgress`。
+  - 结束 `backgroundPromptBusy`：在 `prompt_completed` 之外，当本轮已有可见回复且无未完成 tool 时也可结束（`isReplyCycleComplete`）。
+  - 新增 i18n `assistantContinuingProgress` / `assistantContinuingToolProgress`；单测 `session-thinking-progress.test.ts`；同步 **mission-control** 与 **mission-control-client**。
+- **服务端镜像推送 ACR（品牌主色青 + 近期服务端改动）**：buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:0073171f1d1201bfc85145ccd62d08462c19f35e2663ad260881221d9a96cdf1`**。生产：`docker compose pull && docker compose up -d --force-recreate`。
+- **品牌主色：红 → 青（与「实时」一致）**：
+  - `--primary` / `--ring` 由 Technical Red 改为与 `--void-cyan` 同色（浅色 `190 80% 45%`，深色 `190 80% 65%`），避免主按钮/焦点环被误解为错误态。
+  - 错误/危险仍用 `--destructive` 与 `--void-crimson`（红）；顶栏 SSE「事件 · 实时」徽标改用 `void-cyan` 与设计令牌一致。
+  - 同步 **mission-control**、**mission-control-client** 的 `globals.css` 与双端 `header-bar.tsx` `SseBadge`。
+- **服务端镜像推送 ACR（会话绑定 Bridge 同步 + 思考进展条）**：buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:fd1631d92e128da6676d0b5e8e1bf8437c79fdf8615768058d2179b98975fe0a`**。构建前修复 `bridge-server.ts` `requestBridgeClientAgentsBySession` 的 TypeScript Promise 类型。生产：`docker compose pull && docker compose up -d --force-recreate`。
+- **中心服会话绑定同步修复（Bridge 查边缘 DB）**：
+  - 根因：生产站 `GET /api/agents/by-session` 只查中心 SQLite；`session_key` 绑定在 Mac 边缘库，Bridge 索引不含 `session_key`，故显示「没有智能体绑定」但 transcript 正常。
+  - 新增 Bridge RPC：`agents_by_session_request/response`、`agent_session_update_request/response`；边缘 client 实现查询/更新本地绑定。
+  - `by-session` 支持 `client_id`，Bridge 在线时以边缘库为准；SQL 同时匹配 `session_id` 与 `session_key`（如 `test`）。
+  - 中心服 `PUT /api/agents` 绑定：对仅存在于 `sync_agent_index` 的智能体转发至边缘更新。
+  - 聊天页 `reloadLinkedAgents` / 绑定请求携带 `session.nodeId`。
+  - 涉及 `agents-by-session.ts`、`bridge-server.ts`、`remote-server-bridge.ts`、双端 `by-session/route.ts`、`chat-workspace.tsx`。
+- **服务端镜像推送 ACR（聊天思考进展条 + 局部 transcript 刷新）**：buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:05ca63b5cf1585d99a54a8a158ee7b5dc17378f2c327645d1c7c3dcdd7d409bb`**。生产：`docker compose pull && docker compose up -d --force-recreate`。
+- **聊天「正在思考」进展条 + 局部刷新 transcript**：
+  - 发送/继续会话后保持 `backgroundPromptBusy` 直至 assistant 文本落盘或 `prompt_completed`；底部独立 `ThinkingProgressBanner` 显示耗时，并按 transcript 推断阶段（思考 / 调用工具 `tool` / 生成回复）。
+  - 等待期间秒数用本地 `setInterval` 更新，不再把占位 assistant 消息塞进列表。
+  - 后台拉 transcript：若 `sourceMtimeMs` 与内容快照均未变则跳过 `setSessionTranscript`，避免整段消息列表无意义重渲染。
+  - 新增 `session-thinking-progress.tsx`、i18n `assistantThinkingProgress` / `assistantToolProgress` / `assistantRespondingProgress`；同步 **mission-control** 与 **mission-control-client**。
+- **编排栏「选择智能体」补全子智能体**：下拉不再要求 `parent_id` 为空；挂在 Main 下的子智能体（如 claude/codex 安全员）一并可选。`isSelectableOperativeAgent`。
+- **智能体列表/下拉：隐藏 IDE Main + 远程按客户端分组**：新增 `isRuntimeMainAnchorAgent` / `isOperativeUserAgent`；智能体舰队、编排栏「选择智能体」下拉仅展示用户创建的智能体（名称无类型后缀）；中心服下拉用 `<optgroup>` 按边缘客户端分组并显示 `original_name`；挂靠在 Main 下的子智能体仍显示在舰队网格。同步 client/server。
+- **本地客户端重启**：释放 5001 端口后于 `mission-control-client` 执行 `pnpm dev`；`http://127.0.0.1:5001` Ready，`GET /api/init` 返回 200。
+- **服务端镜像推送 ACR（智能体下拉/隐藏 Main + 子智能体可选）**：buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:d98326e206d0d662427cc73aff05fb4c9f6f52d42d9c43143bfc0a57b9e50dfd`**。生产：`docker compose pull && docker compose up -d --force-recreate`。
+- **服务端镜像推送 ACR（智能体远程展示 + 聊天 UX）**：manifest **`sha256:a596824bccc5fd99f6d01051d49851f86374e92eb325c165faf55aee0cc2a445`**（已被上条取代）。构建前修复 `chat-workspace` 中 `setConversations` 类型错误。生产：`docker compose pull && docker compose up -d --force-recreate`。
+- **中心服智能体列表（对齐本地展示 + 按客户端筛选）**：
+  - 远程卡片显示边缘 `original_name`（如 Claude Code (Main)），不再展示 `mc-local-…` 远程别名；分组标题使用 CLAUDE/CODEX 等友好标签。
+  - `centralMode` 下隐藏「添加智能体」及本地/配置同步按钮；`POST /api/agents` 返回 403。
+  - 顶栏增加「节点」下拉：所有节点 / 按 `client_id` 筛选；「所有节点」视图按客户端分块后再按框架分组。
+  - 来源徽标显示客户端名称或 `runtime`，替代 `bridge_index`。
+  - 涉及 `agent-squad-panel-phase3.tsx`、`agent-card-helpers.ts`、`agents/route.ts`、i18n。
+- **聊天 UX：unknown 模型名 / 记住「加载更早」/ 默认滚到底**：
+  - **unknown**：Codex JSONL 常用 `model_provider`+`model_id` 而非 `model`；`codex-sessions.ts` 增加 `resolveCodexModelFromPayload` / `normalizeCodexDisplayModel`；`sync-sessions` 不再写入字面量 `unknown`；列表与详情栏对 `unknown` 回退为运行时标签（Claude/Codex）。
+  - **加载更早记住**：`chat.session_prefs` 增加 `historyExpanded`；用户点击「加载更早」后 PATCH 持久化；再次打开同会话自动链式拉取历史页直至无更多。
+  - **默认滚到底**：修复新消息到达后误将 `stickToBottom` 置 `false`；仅用户上滚离开底部时取消跟随；滚回底部恢复跟随；历史全部加载完成后再次定位到底部。
+  - 同步 **mission-control** 与 **mission-control-client**。
+- **服务端镜像推送 ACR（聊天 transcript client_id + 智能体混合同步）**：buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:f8df8553369672a3d5f8fdb305a2ed0cbf2e64cba059dca6c27e53b48b53af54`**。生产：`docker compose pull && docker compose up -d --force-recreate`。
+- **中心服聊天无 transcript（Codex/Claude 边缘会话）**：`chat-workspace` 拉取 `/api/sessions/transcript` 未带 `client_id`，中心服误读本机空 JSONL 而显示「此会话暂无转录片段」。已补 `nodeId` → `client_id` 查询参数（client/server）。需边缘 Bridge 在线；生产中心服需重新部署镜像后生效。
+- **智能体一致性强优先（方案 1）**：Bridge 推送索引后 `reconcileClientAgentInventory` 清理陈旧 `source=client` 镜像；列表合并时若 `bridge_online` 则用 `bridge_index` 覆盖同 key 的 HTTP 镜像，离线则仍用 client 镜像、无镜像时才展示索引缓存。
+- **智能体混合同步（Bridge 索引 + 按需详情）**：中心服新增 `sync_agent_index` 表与 `sync-agent-index.ts`；Bridge `hello`/`agent_status` 写入轻量索引并全量对账删除；`agent_detail_request/response` 按需拉边缘详情；`GET /api/agents` 在 `centralMode` 合并 `bridge_index` 行；`GET /api/agents/[id]` 对索引 ID 在线走 Bridge、离线返回缓存摘要；client 在 Bridge 已连接时跳过 HTTP `register` 循环（仍保留 heartbeat `agent_inventory`）。单测：`sync-agent-index-bridge.test.ts`。
+- **服务端镜像推送 ACR（方案 A 智能体对账 + 页脚移除等）**：buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:34f23534323133e218f541d95b49128c6a5f97ad8e490704546e79f0b35c647c`**。生产：`docker compose pull && docker compose up -d --force-recreate`。
+- **方案 A：heartbeat 智能体全量对账（网盘式删除）**：`mission-control-client` 的 `gateway-sync` 在 `POST /api/server-sync/heartbeat` 请求体增加 `agent_inventory`（`original_name`、status、role、framework）；`mission-control` 新增 `sync-agent-inventory.ts`，在 `full` 模式下按 `source=client` + `node_id` 删除清单外镜像，匹配 `config.original_name` 或注册用远端 `name`；`centralMode` 时仍返回 `clients-only` 且不对账。单测：`sync-agent-inventory.test.ts`。
+
 ## 2026-05-17
 
+- **移除 nyk 页脚推广文案**：删除 `mission-control` 主布局底部「用心构建，来自 nyk」footer；删除未使用的 `promo-banner.tsx`（client/server）。
+- **同步 mission-control（服务端）聊天与智能体详情**：从 mission-control-client 同步 `local-session-executor`（异步入队 + pendingPrompt/agentId）、`session-realtime-events`、`session-realtime`、`agents/message`、`chat-workspace`、`agent-session-binding`、`by-session`、`sessions-list-cache`；服务端 `agent-detail-tabs` / `orchestration-bar` 增加 `dispatchSessionPendingPrompt`；`sessions/continue` 本地路径改异步入队（保留 Bridge）；补 i18n `messageAccepted`/`messageSending`/`continueSending`。
+- **Codex/Cursor/OpenCode 发消息聊天乐观更新**：`sessionSourceFromKind` 原先不支持 cursor/opencode，服务端 `notifySessionTranscriptUpdated` 直接 return；无 `session_key` 时不发 `prompt_queued`。现扩展 realtime 类型、入队带 `agentId`、聊天按绑定智能体匹配；Codex 用户行去掉 `Message from` 前缀也能对齐 transcript；Codex 执行后刷新会话索引。涉及 `session-realtime-events.ts`、`local-session-executor.ts`、`chat-workspace.tsx`、`agents/message/route.ts`、概览/编排栏。
+- **智能体发消息后聊天即时显示**：根因是消息异步入队 CLI，用户行要等 JSONL 落盘才出现在 transcript；从智能体概览/编排栏发送时聊天页也无乐观更新。修复：`prompt_queued` SSE/窗口事件携带 `pendingPrompt`；`SessionConversationView` 监听并展示待发送用户行 +「正在思考」+ 2s 轮询；API 返回 `queued_prompt`/`session_kind`，概览与编排栏成功后 `dispatchSessionPendingPrompt` 即时刷新已打开的会话。涉及 `session-realtime-events.ts`、`session-realtime.ts`、`local-session-executor.ts`、`agents/message/route.ts`、`chat-workspace.tsx`、`agent-detail-tabs.tsx`、`orchestration-bar.tsx`。
+- **会话绑定类型校验**：Claude 智能体只能绑定 Claude 会话，Codex 只能绑定 Codex（`agent-session-binding.ts` + `PUT /api/agents` + 聊天绑定下拉过滤）；混绑返回 409 `session_kind_mismatch`。
+- **会话绑定查询与自动关联**：`GET /api/agents/by-session` 按会话 UUID 匹配 `session_key` 与 `primary_session_key`（不再误用 project slug）；聊天打开未绑定会话时，若仅有一个同工作空间且无会话的智能体则自动绑定；`PUT` 绑定时写入 `mc_bound_agent_id`；持久化绑定后广播 `agent.updated`。
+- **创建智能体后自动建会话**：`POST /api/agents` 成功后对本地运行时智能体后台调用 `enqueueProvisionAgentDedicatedSession`（bootstrap 专用 CLI 会话并绑定）；默认 `session_mode: dedicated`；概览轮询直至 `session_key` 就绪；`manual` 模式仍保留「创建会话」按钮。首条发消息不再等待完整建会话。
+- **Claude 新建智能体会话未出现在聊天列表**：首次发消息时 CLI 进程异常退出（`code: null`）但 JSONL 已落盘，导致 `session_key` 未写入、智能体状态 `broken`。修复：`recoverClaudeSessionStart` 从磁盘 JSONL 恢复会话绑定；`runCommand` 默认 `stdin: ignore` 避免 Claude 等待 stdin；建会话/续聊后 `syncClaudeSessions` 刷新聊天列表缓存。已将 agent 37 绑定到 `36103471-dc31-4835-8f24-1e8bbd6e9fbe`。
+- **Claude 智能体发消息会话不起（测试专家）**：根因是 `claude --resume` 必须在创建会话时的项目 cwd 下执行，而智能体 `workspace_path`（如 `/Users/kuangxb/Desktop/test`）与 bootstrap 时实际 cwd（如 `mission-control-client`）不一致导致 resume 失败。修复：`findClaudeSessionProjectPath` 从 JSONL 解析真实 cwd；`resolveLocalExecutionWorkingDirectory` 优先使用该路径；绑定会话时持久化 `mc_session_project_path`；`no conversation found` 视为可恢复错误以便自动重建会话。
+- **聊天页切换与会话列表分页**：左侧点「聊天」即时切换（`ChatPagePanel`/`ChatWorkspace` 动态加载 + 骨架屏）；`/api/sessions` 支持 `limit`/`offset`/`skip_sync`，首屏默认 40 条；会话列表「加载更多」+ 加载中骨架；首次列表请求跳过 Claude 全量 sync 以加快首屏。
+- **新建智能体 openclaw_id 校验修复**：中文显示名/智能体 ID 自动规范为 kebab-case 或生成 `agent-xxxx` 后备 ID，避免 `openclaw_id must be kebab-case` 导致创建失败。涉及 `validation.ts`、`agent-detail-tabs.tsx`、`api/agents/route.ts`。
+- **删除智能体不再拖垮服务**：删除时 `releaseAgentExecutionQueues` 释放 CLI 执行队列，避免后续请求卡在已删智能体的 Codex 任务后；后台任务检测智能体已删则静默退出；删除菜单 UI 改为单一「删除中」提示并防重复点击。
+- **首次建会话加速**：合并角色 bootstrap 与用户首条消息为**单次** Codex/Claude CLI 调用（不再先 `READY` 再发用户话），首次等待时间约减半。
+- **本地智能体消息异步投递**：`POST /api/agents/message`、`POST /api/sessions/continue`、聊天转发与 Bridge continue 改为后台队列执行 CLI，HTTP 在「已接受投递」后立即返回；回复与进度在聊天 transcript 中通过轮询/SSE 更新。新增 `enqueueBoundLocalAgentPrompt`、`enqueueLocalSessionPrompt`；同步 `executeBoundLocalAgentPrompt` 仍供任务派发等使用。
+- **发消息操作流畅性**：智能体概览「消息」区增加发送中锁定（防重复点击/Enter）、禁用输入、耗时秒数与首次建会话提示；编排栏命令发送同样防重复；聊天页继续会话输入发送中禁用并显示「发送中 (Ns)」。i18n：`messageSending`、`messageProvisioning`、`messageProvisionHint`、`continueSending`、`orchestration.sending`。涉及 `agent-detail-tabs.tsx`、`orchestration-bar.tsx`、`chat-workspace.tsx`。
+- **智能体发消息失败修复**：Codex `exec` 在 stderr 含 rollout 噪声但 stdout 已返回 `thread.started` 时不再误判失败；概览发消息后即时更新 `session_key`；聊天会话绑定默认收起；首次会话成功后自动绑定智能体（单候选时）。
+- **智能体概览保存后即时刷新**：保存成功后用 API 返回数据更新 `agentState` 并重新拉取详情；`fetchAgents(true)` 强制刷新列表；同步 `selectedAgent`。
+- **智能体详情概览展示工作空间**：概览 Tab 在「会话键」上方显示 `workspace_path`；编辑时可从已注册工作空间选择或自定义路径；`PUT /api/agents` 支持更新 `workspace_path`。
+- **修复新建智能体配置步 React 报错**：工作空间加载逻辑改为独立 `useEffect`，避免在 `setFormData` 回调内调用 `setState` 导致页面崩溃。
+- **新建智能体配置：工作空间选择**：创建向导第 3 步「配置」增加工作空间下拉（读取 `/api/workspaces`）与自定义路径；`POST /api/agents` 持久化 `workspace_path`。
+- **工作空间自动建目录**：保存工作空间时若路径不存在且勾选「若目录不存在则自动创建」，服务端 `mkdir -p` 创建目录；禁止文件系统根路径；路径已存在但非目录时报错。默认勾选。
+- **编排栏「工作空间」Tab**：在「工作流」之前新增 **工作空间** 标签页，可注册/编辑/删除本地目录路径（名称、绝对路径、默认标记）；数据存 `settings.general.agent_workspaces`；`GET/POST/PUT/DELETE /api/workspaces`；列表展示关联智能体数量。涉及 `workspace-tab.tsx`、`agent-workspaces.ts`、`orchestration-bar.tsx`、中英文 i18n。同步 **mission-control** 与 **mission-control-client**。
+- **会话 ID 查看/编辑 + 智能体详情中文**：聊天页 Codex/Claude 会话展开「会话绑定」可查看/复制会话 ID、解除或保存智能体 `session_key` 绑定；无绑定时可从下拉选择智能体绑定当前会话。新增 `GET /api/agents/by-session`。智能体详情弹窗标签/删除/状态等改中文；概览「会话键」支持清空绑定与说明文案。同步 mission-control。
+- **i18n（弹窗/文档操作菜单）**：修复 `messages/en.json` / `zh.json` 中重复的 `agentDetail` 键（后者覆盖前者导致智能体详情弹窗显示 `agentDetail.xxx` 原始参数）；补全 `agentDetail` 中文约 100+ 项；新增 `documents` / `documents.operations`（文档检查、抽取原子知识、智能整理、知识问答等）；补全 `documents`、`agentHistory`、`pipeline`、`debug`、`taskBoard` 的 zh 键；`documents-panel.tsx` 增加「操作」下拉菜单与结果弹窗。同步 **mission-control** 与 **mission-control-client**。
+- **mission-control-client（智能体会话绑定防串线）**：`local-session-executor.ts` 发消息前校验 `session_key`（是否被其他智能体占用、cwd 是否与 `workspace_path` 一致）；Codex 自动建会话时排除已占用 ID、移除宽松回退；绑定写入 `mc_bound_agent_id`；新建向导说明「留空则首次发送时自动分配」。
+- **服务端镜像推送 ACR（移除侧栏推广链接）**：buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:f0663cca7415af738549689ef89b72ef721c9a44432c002d56bc3b5ab0ac594b`**（linux/amd64）。生产：`docker compose pull && docker compose up -d --force-recreate`。
+- **服务端侧栏**：移除 xint / builderz 外部推广链接卡片（`nav-rail.tsx`）。
+- **服务端镜像推送 ACR（SSO 单组织租户）**：buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:7b8bc14928f30f3e849e70d8547c964c340f5ed7587c5aa034d73c6223a9f5b3`**（linux/amd64）。生产：`docker compose pull && docker compose up -d --force-recreate`。
+- **SSO 单组织租户（mission-control）**：
+  - 新增 `tenant-auth-scope.ts`：IdP（Zitadel/Google）用户永不走平台多租户；`canManageAllTenants` 仅本地 admin 且 `MC_PLATFORM_MULTI_TENANT_UI=1` 时启用。
+  - `nav-rail.tsx`：IdP 用户侧栏只展示 `/api/auth/me` 返回的 `organization`（单位名）及下属项目，不再 `fetchTenants()` 列出全部租户；移除「+ 新建组织」入口。
+  - `auth/callback`：登录时若用户中心无租户且 `MC_AUTO_PROVISION_ORG_ON_LOGIN`（默认开）则自动 `createUsercenterTenant`；未配用户中心时 `ensureOrganizationBindingForUser` 按单位名本地建租户并绑定工作区；已有租户则 `syncExistingUserWithUsercenterPortal` 对齐展示名与同租户数据。
 - **服务端镜像推送 ACR（侧栏版本号布局）**：提交 **`5fc0fa6`** 后 buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:8cfca7f7445de3fc6559b62e758e9cd98f391b44cc162003260b29295694656c`**（linux/amd64）。已 **`git push origin main`**。
 - **侧栏底部布局（客户端/服务端一致）**：移除底部单独版本号空白区；版本号移至顶部 Logo 名称下方；收紧 ContextSwitcher 底部内边距。
 - **服务端镜像推送 ACR（transcript 分页 + 移动底栏顺序）**：提交 **`6ca1867`** 后 buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**，manifest **`sha256:d75b02cf892a515c6e3f6d465e85cd399f8c74dee7c0788ff09baa7b049cafe6`**（linux/amd64）。已 **`git push origin main`**。生产：`docker compose pull && docker compose up -d --force-recreate`。

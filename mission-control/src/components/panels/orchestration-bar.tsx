@@ -1,9 +1,21 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { PipelineTab } from './pipeline-tab'
+import { WorkspaceTab } from './workspace-tab'
+import {
+  dispatchSessionPendingPrompt,
+  type SessionRealtimeKind,
+} from '@/lib/session-realtime-events'
+import { useAgentCenterStore } from '@/store'
+import {
+  getAgentClientId,
+  getAgentClientLabel,
+  getAgentDisplayName,
+  isSelectableOperativeAgent,
+} from '@/lib/agent-card-helpers'
 
 interface Agent {
   id: number
@@ -11,6 +23,12 @@ interface Agent {
   role: string
   status: string
   session_key?: string
+  framework?: string
+  config?: unknown
+  node_id?: string | null
+  source?: string
+  hidden?: number | boolean
+  parent_id?: number | null
 }
 
 interface WorkflowTemplate {
@@ -43,9 +61,11 @@ const emptyForm: TemplateFormData = {
 
 export function OrchestrationBar() {
   const t = useTranslations('orchestration')
+  const { centralMode } = useAgentCenterStore()
   const [agents, setAgents] = useState<Agent[]>([])
+  const [clientNameById, setClientNameById] = useState<Map<string, string>>(new Map())
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([])
-  const [activeTab, setActiveTab] = useState<'command' | 'templates' | 'pipelines' | 'fleet'>('command')
+  const [activeTab, setActiveTab] = useState<'command' | 'workspaces' | 'templates' | 'pipelines' | 'fleet'>('command')
 
   // Command state
   const [selectedAgent, setSelectedAgent] = useState('')
@@ -63,13 +83,33 @@ export function OrchestrationBar() {
   const [spawning, setSpawning] = useState<number | null>(null)
 
   const fetchData = useCallback(async () => {
-    const [agentRes, templateRes] = await Promise.all([
-      fetch('/api/agents').then(r => r.json()).catch(() => ({ agents: [] })),
-      fetch('/api/workflows').then(r => r.json()).catch(() => ({ templates: [] })),
+    const agentUrl = centralMode ? '/api/agents?include_bridge=1' : '/api/agents'
+    const [agentRes, templateRes, syncRes, bridgeRes] = await Promise.all([
+      fetch(agentUrl).then((r) => r.json()).catch(() => ({ agents: [] })),
+      fetch('/api/workflows').then((r) => r.json()).catch(() => ({ templates: [] })),
+      centralMode
+        ? fetch('/api/server-sync/status').then((r) => r.json()).catch(() => ({ clients: [] }))
+        : Promise.resolve({ clients: [] }),
+      centralMode
+        ? fetch('/api/bridge/clients').then((r) => r.json()).catch(() => ({ clients: [] }))
+        : Promise.resolve({ clients: [] }),
     ])
     setAgents(agentRes.agents || [])
     setTemplates(templateRes.templates || [])
-  }, [])
+
+    if (centralMode) {
+      const map = new Map<string, string>()
+      for (const client of Array.isArray(syncRes?.clients) ? syncRes.clients : []) {
+        const id = String(client?.client_id || '').trim()
+        if (id) map.set(id, String(client?.client_name || id))
+      }
+      for (const client of Array.isArray(bridgeRes?.clients) ? bridgeRes.clients : []) {
+        const id = String(client?.id || '').trim()
+        if (id) map.set(id, String(client?.name || id))
+      }
+      setClientNameById(map)
+    }
+  }, [centralMode])
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -91,12 +131,22 @@ export function OrchestrationBar() {
       const res = await fetch('/api/agents/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: selectedAgent, content: message, from: 'operator' })
+        body: JSON.stringify({ to: selectedAgent, message })
       })
       const data = await res.json()
       if (res.ok) {
         setCommandResult({ ok: true, text: `Message sent to ${selectedAgent}` })
         setMessage('')
+        if (data.accepted && data.session_kind && data.queued_prompt) {
+          const bound = agents.find((a) => a.name === selectedAgent)
+          dispatchSessionPendingPrompt(
+            data.session_kind as SessionRealtimeKind,
+            data.session_key || bound?.session_key || '',
+            data.queued_prompt,
+            'prompt_queued',
+            data.agent_id ?? bound?.id,
+          )
+        }
       } else {
         setCommandResult({ ok: false, text: data.error || 'Failed to send' })
       }
@@ -221,15 +271,36 @@ export function OrchestrationBar() {
   }
 
   // Fleet metrics
-  const onlineCount = agents.filter(a => a.status === 'idle' || a.status === 'busy').length
-  const busyCount = agents.filter(a => a.status === 'busy').length
-  const errorCount = agents.filter(a => a.status === 'error').length
+  const operativeAgents = useMemo(
+    () => agents.filter((agent) => isSelectableOperativeAgent(agent, agents)),
+    [agents],
+  )
+
+  const operativeAgentsByClient = useMemo(() => {
+    if (!centralMode) return null
+    const grouped = new Map<string, { label: string; agents: Agent[] }>()
+    for (const agent of operativeAgents) {
+      const clientId = getAgentClientId(agent) || '__gateway__'
+      const label =
+        getAgentClientLabel(agent, clientNameById) ||
+        (clientId === '__gateway__' ? 'Gateway' : clientId)
+      if (!grouped.has(clientId)) grouped.set(clientId, { label, agents: [] })
+      grouped.get(clientId)!.agents.push(agent)
+    }
+    return Array.from(grouped.entries()).sort((a, b) =>
+      a[1].label.localeCompare(b[1].label, 'zh-CN'),
+    )
+  }, [operativeAgents, centralMode, clientNameById])
+
+  const onlineCount = operativeAgents.filter((a) => a.status === 'idle' || a.status === 'busy').length
+  const busyCount = operativeAgents.filter((a) => a.status === 'busy').length
+  const errorCount = operativeAgents.filter((a) => a.status === 'error').length
 
   return (
     <div className="border-b border-border bg-card/50">
       {/* Tab bar */}
       <div className="flex items-center gap-1 px-4 pt-2">
-        {(['command', 'templates', 'pipelines', 'fleet'] as const).map(tab => (
+        {(['command', 'workspaces', 'templates', 'pipelines', 'fleet'] as const).map(tab => (
           <Button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -241,10 +312,14 @@ export function OrchestrationBar() {
                 : ''
             }`}
           >
-            {tab === 'command' ? t('tabCommand') : tab === 'templates' ? t('tabWorkflows') : tab === 'pipelines' ? t('tabPipelines') : t('tabFleet')}
+            {tab === 'command' ? t('tabCommand')
+              : tab === 'workspaces' ? t('tabWorkspaces')
+              : tab === 'templates' ? t('tabWorkflows')
+              : tab === 'pipelines' ? t('tabPipelines')
+              : t('tabFleet')}
             {tab === 'fleet' && (
               <span className={`ml-1.5 text-2xs ${errorCount > 0 ? 'text-red-400' : 'text-green-400'}`}>
-                {onlineCount}/{agents.length}
+                {onlineCount}/{operativeAgents.length}
               </span>
             )}
           </Button>
@@ -268,14 +343,32 @@ export function OrchestrationBar() {
               className="h-9 px-2 rounded-md bg-secondary border border-border text-sm text-foreground min-w-[140px]"
             >
               <option value="">{t('selectAgent')}</option>
-              {agents.length === 0 && (
+              {operativeAgents.length === 0 && (
                 <option value="" disabled>{t('noAgentsRegistered')}</option>
               )}
-              {agents.map(a => (
-                <option key={a.name} value={a.name} disabled={!a.session_key} title={!a.session_key ? 'Agent has no active session' : undefined}>
-                  {a.name} ({a.status}){!a.session_key ? ` — ${t('noSessionSuffix')}` : ''}
-                </option>
-              ))}
+              {centralMode && operativeAgentsByClient
+                ? operativeAgentsByClient.map(([clientId, group]) => (
+                    <optgroup key={clientId} label={group.label}>
+                      {group.agents
+                        .sort((a, b) =>
+                          getAgentDisplayName(a).localeCompare(getAgentDisplayName(b), 'zh-CN'),
+                        )
+                        .map((a) => (
+                          <option key={a.name} value={a.name} title={a.status}>
+                            {getAgentDisplayName(a)}
+                          </option>
+                        ))}
+                    </optgroup>
+                  ))
+                : operativeAgents
+                    .sort((a, b) =>
+                      getAgentDisplayName(a).localeCompare(getAgentDisplayName(b), 'zh-CN'),
+                    )
+                    .map((a) => (
+                      <option key={a.name} value={a.name} title={a.status}>
+                        {getAgentDisplayName(a)}
+                      </option>
+                    ))}
             </select>
             <input
               value={message}
@@ -291,6 +384,13 @@ export function OrchestrationBar() {
               {sending ? '...' : t('send')}
             </Button>
           </div>
+        </div>
+      )}
+
+      {/* Workspaces Tab */}
+      {activeTab === 'workspaces' && (
+        <div className="p-4 pt-3">
+          <WorkspaceTab />
         </div>
       )}
 
@@ -537,26 +637,25 @@ export function OrchestrationBar() {
       {activeTab === 'fleet' && (
         <div className="p-4 pt-3">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <FleetCard label={t('totalAgents')} value={agents.length} />
+            <FleetCard label={t('totalAgents')} value={operativeAgents.length} />
             <FleetCard label={t('online')} value={onlineCount} color="green" />
             <FleetCard label={t('busy')} value={busyCount} color="amber" />
             <FleetCard label={t('errors')} value={errorCount} color={errorCount > 0 ? 'red' : undefined} />
           </div>
-          {agents.length > 0 && (
+          {operativeAgents.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1.5">
-              {agents.map(a => (
+              {operativeAgents.map((a) => (
                 <div
                   key={a.id}
                   className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-secondary/50 text-xs"
-                  title={`${a.name} - ${a.role} - ${a.status}`}
+                  title={`${getAgentDisplayName(a)} - ${a.status}`}
                 >
                   <span className={`w-1.5 h-1.5 rounded-full ${
                     a.status === 'busy' ? 'bg-amber-500' :
                     a.status === 'idle' ? 'bg-green-500' :
                     a.status === 'error' ? 'bg-red-500' : 'bg-gray-500'
                   }`} />
-                  <span className="text-foreground font-medium">{a.name}</span>
-                  <span className="text-muted-foreground">{a.role}</span>
+                  <span className="text-foreground font-medium">{getAgentDisplayName(a)}</span>
                 </div>
               ))}
             </div>

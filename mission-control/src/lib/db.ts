@@ -86,6 +86,7 @@ function initializeSchema() {
           // Silent - scheduler is optional
         });
 
+        // Start remote server bridge to sync with master central server
         import('./remote-server-bridge').then(({ startRemoteBridge }) => {
           startRemoteBridge();
         }).catch(() => {
@@ -225,6 +226,7 @@ export interface Agent {
   name: string;
   role: string;
   session_key?: string;
+  workspace_path?: string | null;
   soul_content?: string;
   status: 'offline' | 'idle' | 'busy' | 'error';
   last_seen?: number;

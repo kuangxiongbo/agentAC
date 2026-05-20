@@ -37,6 +37,7 @@ import { NodesPanel } from '@/components/panels/nodes-panel'
 import { ExecApprovalPanel } from '@/components/panels/exec-approval-panel'
 import { SystemMonitorPanel } from '@/components/panels/system-monitor-panel'
 import { ChatPagePanel } from '@/components/panels/chat-page-panel'
+import { HumanWatchPanel } from '@/components/panels/human-watch-panel'
 import { ChatPanel } from '@/components/chat/chat-panel'
 import { getPluginPanel } from '@/lib/plugins'
 import { shouldRedirectDashboardToHttps } from '@/lib/browser-security'
@@ -56,7 +57,8 @@ import { completeNavigationTiming } from '@/lib/navigation-metrics'
 import { panelHref, useNavigateToPanel } from '@/lib/navigation'
 import { clearOnboardingDismissedThisSession, clearOnboardingReplayFromStart, getOnboardingSessionDecision, markOnboardingReplayFromStart, readOnboardingDismissedThisSession } from '@/lib/onboarding-session'
 import { Button } from '@/components/ui/button'
-import { useAgentCenterStore } from '@/store'
+import { useAgentCenterStore, type LicenseSnapshot } from '@/store'
+import { SubscriptionLicenseGate } from '@/components/subscription-license-gate'
 
 interface GatewaySummary {
   id: number
@@ -88,7 +90,7 @@ export default function Home() {
   const tb = useTranslations('boot')
   const tp = useTranslations('page')
   const tc = useTranslations('common')
-  const { activeTab, setActiveTab, setCurrentUser, setDashboardMode, setGatewayAvailable, setLocalSessionsAvailable, setCapabilitiesChecked, setSubscription, setDefaultOrgName, setCentralMode, setUpdateAvailable, setOpenclawUpdate, showOnboarding, setShowOnboarding, liveFeedOpen, toggleLiveFeed, showProjectManagerModal, setShowProjectManagerModal, fetchProjects, setChatPanelOpen, bootComplete, setBootComplete, setAgents, setSessions, setProjects, setInterfaceMode, setMemoryGraphAgents, setSkillsData } = useAgentCenterStore()
+  const { activeTab, setActiveTab, setCurrentUser, setLicense, setDashboardMode, setGatewayAvailable, setLocalSessionsAvailable, setCapabilitiesChecked, setSubscription, setDefaultOrgName, setCentralMode, setUpdateAvailable, setOpenclawUpdate, showOnboarding, setShowOnboarding, liveFeedOpen, toggleLiveFeed, showProjectManagerModal, setShowProjectManagerModal, fetchProjects, setChatPanelOpen, bootComplete, setBootComplete, setAgents, setSessions, setProjects, setInterfaceMode, setMemoryGraphAgents, setSkillsData } = useAgentCenterStore()
 
   // Sync URL → Zustand activeTab
   const pathname = usePathname()
@@ -237,6 +239,12 @@ export default function Home() {
         }
         if (result.kind === 'ok' && result.data?.user) {
           setCurrentUser(result.data.user)
+          const lic = result.data?.license
+          if (lic && typeof lic === 'object') {
+            setLicense(lic as LicenseSnapshot)
+          } else {
+            setLicense(null)
+          }
         }
         markStep('auth')
       })
@@ -420,11 +428,6 @@ export default function Home() {
               <ContentRouter tab={activeTab} />
             </ErrorBoundary>
           </div>
-          <footer className="px-4 pb-4 pt-2">
-            <p className="text-2xs text-muted-foreground/50 text-center">
-              {tc('builtWithCareBy')} <a href="https://x.com/nyk_builderz" target="_blank" rel="noopener noreferrer" className="text-muted-foreground/70 hover:text-primary transition-colors duration-200">nyk</a>.
-            </p>
-          </footer>
         </main>
       </div>
 
@@ -463,6 +466,7 @@ export default function Home() {
       )}
 
       <OnboardingWizard />
+      {!showOnboarding && <SubscriptionLicenseGate />}
     </div>
   )
 }
@@ -581,6 +585,8 @@ function ContentRouter({ tab }: { tab: string }) {
     case 'channels':
       if (isLocal) return <LocalModeUnavailable panel={tab} />
       return <ChannelsPanel />
+    case 'human-watch':
+      return <HumanWatchPanel />
     case 'nodes':
       if (isLocal) return <LocalModeUnavailable panel={tab} />
       return <NodesPanel />

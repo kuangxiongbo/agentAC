@@ -1,9 +1,15 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { PipelineTab } from './pipeline-tab'
+import { WorkspaceTab } from './workspace-tab'
+import {
+  dispatchSessionPendingPrompt,
+  type SessionRealtimeKind,
+} from '@/lib/session-realtime-events'
+import { getAgentDisplayName, isSelectableOperativeAgent } from '@/lib/agent-card-helpers'
 
 interface Agent {
   id: number
@@ -12,6 +18,9 @@ interface Agent {
   status: string
   session_key?: string
   framework?: string
+  config?: unknown
+  parent_id?: number | null
+  hidden?: number | boolean
 }
 
 interface WorkflowTemplate {
@@ -46,12 +55,13 @@ export function OrchestrationBar() {
   const t = useTranslations('orchestration')
   const [agents, setAgents] = useState<Agent[]>([])
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([])
-  const [activeTab, setActiveTab] = useState<'command' | 'templates' | 'pipelines' | 'fleet'>('command')
+  const [activeTab, setActiveTab] = useState<'command' | 'workspaces' | 'templates' | 'pipelines' | 'fleet'>('command')
 
   // Command state
   const [selectedAgent, setSelectedAgent] = useState('')
   const [message, setMessage] = useState('')
   const [sending, setSending] = useState(false)
+  const sendCommandLockRef = useRef(false)
   const [commandResult, setCommandResult] = useState<{ ok: boolean; text: string } | null>(null)
 
   // Template state
@@ -84,7 +94,9 @@ export function OrchestrationBar() {
 
   // Send message to agent
   const sendCommand = async () => {
-    if (!selectedAgent || !message.trim()) return
+    const payload = message.trim()
+    if (!selectedAgent || !payload || sendCommandLockRef.current) return
+    sendCommandLockRef.current = true
     setSending(true)
     setCommandResult(null)
 
@@ -92,18 +104,29 @@ export function OrchestrationBar() {
       const res = await fetch('/api/agents/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: selectedAgent, message })
+        body: JSON.stringify({ to: selectedAgent, message: payload })
       })
       const data = await res.json()
       if (res.ok) {
         setCommandResult({ ok: true, text: `Message sent to ${selectedAgent}` })
         setMessage('')
+        if (data.accepted && data.session_kind && data.queued_prompt) {
+          const bound = agents.find((a) => a.name === selectedAgent)
+          dispatchSessionPendingPrompt(
+            data.session_kind as SessionRealtimeKind,
+            data.session_key || bound?.session_key || '',
+            data.queued_prompt,
+            'prompt_queued',
+            data.agent_id ?? bound?.id,
+          )
+        }
       } else {
         setCommandResult({ ok: false, text: data.error || 'Failed to send' })
       }
     } catch {
       setCommandResult({ ok: false, text: 'Network error' })
     } finally {
+      sendCommandLockRef.current = false
       setSending(false)
     }
   }
@@ -221,16 +244,21 @@ export function OrchestrationBar() {
     setTemplateForm(f => ({ ...f, tags: f.tags.filter(t => t !== tag) }))
   }
 
+  const operativeAgents = useMemo(
+    () => agents.filter((agent) => isSelectableOperativeAgent(agent, agents)),
+    [agents],
+  )
+
   // Fleet metrics
-  const onlineCount = agents.filter(a => a.status === 'idle' || a.status === 'busy').length
-  const busyCount = agents.filter(a => a.status === 'busy').length
-  const errorCount = agents.filter(a => a.status === 'error').length
+  const onlineCount = operativeAgents.filter((a) => a.status === 'idle' || a.status === 'busy').length
+  const busyCount = operativeAgents.filter((a) => a.status === 'busy').length
+  const errorCount = operativeAgents.filter((a) => a.status === 'error').length
 
   return (
     <div className="border-b border-border bg-card/50">
       {/* Tab bar */}
       <div className="flex items-center gap-1 px-4 pt-2">
-        {(['command', 'templates', 'pipelines', 'fleet'] as const).map(tab => (
+        {(['command', 'workspaces', 'templates', 'pipelines', 'fleet'] as const).map(tab => (
           <Button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -242,10 +270,14 @@ export function OrchestrationBar() {
                 : ''
             }`}
           >
-            {tab === 'command' ? t('tabCommand') : tab === 'templates' ? t('tabWorkflows') : tab === 'pipelines' ? t('tabPipelines') : t('tabFleet')}
+            {tab === 'command' ? t('tabCommand')
+              : tab === 'workspaces' ? t('tabWorkspaces')
+              : tab === 'templates' ? t('tabWorkflows')
+              : tab === 'pipelines' ? t('tabPipelines')
+              : t('tabFleet')}
             {tab === 'fleet' && (
               <span className={`ml-1.5 text-2xs ${errorCount > 0 ? 'text-red-400' : 'text-green-400'}`}>
-                {onlineCount}/{agents.length}
+                {onlineCount}/{operativeAgents.length}
               </span>
             )}
           </Button>
@@ -269,33 +301,44 @@ export function OrchestrationBar() {
               className="h-9 px-2 rounded-md bg-secondary border border-border text-sm text-foreground min-w-[140px]"
             >
               <option value="">{t('selectAgent')}</option>
-              {agents.length === 0 && (
+              {operativeAgents.length === 0 && (
                 <option value="" disabled>{t('noAgentsRegistered')}</option>
               )}
-              {agents.map(a => (
-                <option 
-                  key={a.name} 
-                  value={a.name} 
-                  title={!a.session_key ? (a.framework === 'openclaw' ? 'Agent has no active session' : 'Framework monitored agent') : undefined}
-                >
-                  {a.name} ({a.framework || 'oc'}) {a.status}
-                </option>
-              ))}
+              {operativeAgents
+                .sort((a, b) => getAgentDisplayName(a).localeCompare(getAgentDisplayName(b), 'zh-CN'))
+                .map((a) => (
+                  <option key={a.name} value={a.name} title={a.status}>
+                    {getAgentDisplayName(a)}
+                  </option>
+                ))}
             </select>
             <input
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && sendCommand()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !sending) {
+                  e.preventDefault()
+                  void sendCommand()
+                }
+              }}
+              disabled={sending}
               placeholder={t('commandPlaceholder')}
-              className="flex-1 h-9 px-3 rounded-md bg-secondary border border-border text-sm text-foreground placeholder:text-muted-foreground"
+              className="flex-1 h-9 px-3 rounded-md bg-secondary border border-border text-sm text-foreground placeholder:text-muted-foreground disabled:opacity-50"
             />
             <Button
-              onClick={sendCommand}
+              onClick={() => void sendCommand()}
               disabled={!selectedAgent || !message.trim() || sending}
             >
-              {sending ? '...' : t('send')}
+              {sending ? t('sending') : t('send')}
             </Button>
           </div>
+        </div>
+      )}
+
+      {/* Workspaces Tab */}
+      {activeTab === 'workspaces' && (
+        <div className="p-4 pt-3">
+          <WorkspaceTab />
         </div>
       )}
 
@@ -542,26 +585,25 @@ export function OrchestrationBar() {
       {activeTab === 'fleet' && (
         <div className="p-4 pt-3">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <FleetCard label={t('totalAgents')} value={agents.length} />
+            <FleetCard label={t('totalAgents')} value={operativeAgents.length} />
             <FleetCard label={t('online')} value={onlineCount} color="green" />
             <FleetCard label={t('busy')} value={busyCount} color="amber" />
             <FleetCard label={t('errors')} value={errorCount} color={errorCount > 0 ? 'red' : undefined} />
           </div>
-          {agents.length > 0 && (
+          {operativeAgents.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1.5">
-              {agents.map(a => (
+              {operativeAgents.map((a) => (
                 <div
                   key={a.id}
                   className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-secondary/50 text-xs"
-                  title={`${a.name} - ${a.role} - ${a.status}`}
+                  title={`${getAgentDisplayName(a)} - ${a.status}`}
                 >
                   <span className={`w-1.5 h-1.5 rounded-full ${
                     a.status === 'busy' ? 'bg-amber-500' :
                     a.status === 'idle' ? 'bg-green-500' :
                     a.status === 'error' ? 'bg-red-500' : 'bg-gray-500'
                   }`} />
-                  <span className="text-foreground font-medium">{a.name}</span>
-                  <span className="text-muted-foreground">{a.role}</span>
+                  <span className="text-foreground font-medium">{getAgentDisplayName(a)}</span>
                 </div>
               ))}
             </div>

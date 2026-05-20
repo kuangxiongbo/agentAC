@@ -40,6 +40,26 @@ function asNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
+/** Codex JSONL may use model, model_provider, model_id, or rate_limits.limit_name. */
+function resolveCodexModelFromPayload(payload: Record<string, unknown>): string | null {
+  const direct = asString(payload.model)
+  if (direct) return direct
+
+  const provider = asString(payload.model_provider)
+  const modelId = asString(payload.model_id)
+  if (provider && modelId) return `${provider}/${modelId}`
+  if (provider) return provider
+  if (modelId) return modelId
+
+  return asString(payload.model_name) || asString(payload.model_slug)
+}
+
+export function normalizeCodexDisplayModel(model: string | null | undefined): string | null {
+  const trimmed = typeof model === 'string' ? model.trim() : ''
+  if (!trimmed || trimmed.toLowerCase() === 'unknown') return null
+  return trimmed
+}
+
 function deriveSessionId(filePath: string): string {
   const name = basename(filePath, '.jsonl')
   const match = name.match(/([0-9a-f]{8,}-[0-9a-f-]{8,})$/i)
@@ -142,7 +162,7 @@ function parseCodexSessionFile(filePath: string, fileMtimeMs: number): CodexSess
       const cwd = asString(payload.cwd)
       if (cwd) projectPath = cwd
 
-      const metaModel = asString(payload.model)
+      const metaModel = resolveCodexModelFromPayload(payload)
       if (metaModel) model = metaModel
 
       const startedAt = asString(payload.timestamp)

@@ -3,11 +3,9 @@ import { requireRole } from '@/lib/auth'
 import { logger } from '@/lib/logger'
 import {
   isLocalSessionKind,
-  executeLocalSessionPrompt,
+  enqueueLocalSessionPrompt,
   type LocalSessionKind,
 } from '@/lib/local-session-executor'
-import { notifySessionTranscriptUpdated } from '@/lib/session-realtime'
-
 /**
  * POST /api/sessions/continue
  * Body: { kind: 'claude-code'|'codex-cli'|'cursor'|'opencode'|'hermes', id: string, prompt: string }
@@ -27,12 +25,11 @@ export async function POST(request: NextRequest) {
     if (!isLocalSessionKind(kind)) {
       return NextResponse.json({ error: 'Invalid kind' }, { status: 400 })
     }
-    const result = await executeLocalSessionPrompt(kind, sessionId, prompt, {
+    enqueueLocalSessionPrompt(kind, sessionId, prompt, {
       workingDirectory: workingDir || null,
     })
-    notifySessionTranscriptUpdated(kind, result.sessionId || sessionId, 'continue_api')
 
-    return NextResponse.json({ ok: true, reply: result.reply })
+    return NextResponse.json({ ok: true, accepted: true, sessionId })
   } catch (error: any) {
     logger.error({ err: error }, 'POST /api/sessions/continue error')
     const message = error?.message || 'Failed to continue session'

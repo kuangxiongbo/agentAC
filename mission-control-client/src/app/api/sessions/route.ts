@@ -8,33 +8,70 @@ import { requireRole } from '@/lib/auth'
 import { callOpenClawGateway } from '@/lib/openclaw-gateway'
 import { mutationLimiter } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
+import {
+  getMergedSessionsCache,
+  invalidateMergedSessionsCache,
+  MERGED_SESSIONS_CACHE_MS,
+  setMergedSessionsCache,
+} from '@/lib/sessions-list-cache'
+
+export { invalidateMergedSessionsCache }
 
 const LOCAL_SESSION_ACTIVE_WINDOW_MS = 90 * 60 * 1000
+const DEFAULT_SESSION_PAGE_SIZE = 40
+const MAX_SESSION_PAGE_SIZE = 100
+const MAX_SESSION_LIST_TOTAL = 500
+
+function parsePositiveInt(value: string | null, fallback: number, max: number): number {
+  const parsed = Number.parseInt(String(value ?? ''), 10)
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback
+  return Math.min(parsed, max)
+}
+
+async function collectMergedSessions(options: { skipSync?: boolean; refresh?: boolean } = {}) {
+  const now = Date.now()
+  const cached = getMergedSessionsCache()
+  if (!options.refresh && cached && now - cached.at < MERGED_SESSIONS_CACHE_MS) {
+    return cached.sessions
+  }
+
+  const mappedGatewaySessions = mapGatewaySessions(getAllGatewaySessions())
+  if (!options.skipSync) {
+    await syncClaudeSessions()
+  }
+  const claudeSessions = getLocalClaudeSessions()
+  const codexSessions = getLocalCodexSessions()
+  const hermesSessions = getLocalHermesSessions()
+  const localMerged = mergeLocalSessions(claudeSessions, codexSessions, hermesSessions)
+  const merged = dedupeAndSortSessions([...mappedGatewaySessions, ...localMerged]).slice(0, MAX_SESSION_LIST_TOTAL)
+
+  setMergedSessionsCache(merged)
+  return merged
+}
 
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
 
   try {
-    const gatewaySessions = getAllGatewaySessions()
-    const mappedGatewaySessions = mapGatewaySessions(gatewaySessions)
+    const { searchParams } = new URL(request.url)
+    const limit = parsePositiveInt(searchParams.get('limit'), DEFAULT_SESSION_PAGE_SIZE, MAX_SESSION_PAGE_SIZE)
+    const offset = parsePositiveInt(searchParams.get('offset'), 0, MAX_SESSION_LIST_TOTAL)
+    const skipSync = searchParams.get('skip_sync') === '1'
+    const refresh = searchParams.get('refresh') === '1'
 
-    // Always include local sessions alongside gateway sessions
-    await syncClaudeSessions()
-    const claudeSessions = getLocalClaudeSessions()
-    const codexSessions = getLocalCodexSessions()
-    const hermesSessions = getLocalHermesSessions()
-    const localMerged = mergeLocalSessions(claudeSessions, codexSessions, hermesSessions)
+    const merged = await collectMergedSessions({ skipSync, refresh })
+    const page = merged.slice(offset, offset + limit)
 
-    if (mappedGatewaySessions.length === 0 && localMerged.length === 0) {
-      return NextResponse.json({ sessions: [] })
-    }
-
-    const merged = dedupeAndSortSessions([...mappedGatewaySessions, ...localMerged])
-    return NextResponse.json({ sessions: merged })
+    return NextResponse.json({
+      sessions: page,
+      total: merged.length,
+      hasMore: offset + limit < merged.length,
+      nextOffset: offset + limit < merged.length ? offset + limit : null,
+    })
   } catch (error) {
     logger.error({ err: error }, 'Sessions API error')
-    return NextResponse.json({ sessions: [] })
+    return NextResponse.json({ sessions: [], total: 0, hasMore: false, nextOffset: null })
   }
 }
 
@@ -340,7 +377,6 @@ function dedupeAndSortSessions(merged: Array<Record<string, any>>) {
 
   return Array.from(deduped.values())
     .sort((a, b) => Number(b?.lastActivity || 0) - Number(a?.lastActivity || 0))
-    .slice(0, 100)
 }
 
 function formatTokens(n: number): string {

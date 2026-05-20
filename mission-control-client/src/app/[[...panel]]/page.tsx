@@ -36,7 +36,19 @@ import { SecurityAuditPanel } from '@/components/panels/security-audit-panel'
 import { NodesPanel } from '@/components/panels/nodes-panel'
 import { ExecApprovalPanel } from '@/components/panels/exec-approval-panel'
 import { SystemMonitorPanel } from '@/components/panels/system-monitor-panel'
-import { ChatPagePanel } from '@/components/panels/chat-page-panel'
+import dynamic from 'next/dynamic'
+
+const ChatPagePanel = dynamic(
+  () => import('@/components/panels/chat-page-panel').then((m) => ({ default: m.ChatPagePanel })),
+  {
+    loading: () => (
+      <div className="m-4 flex h-[calc(100vh-8.75rem)] min-h-[560px] items-center justify-center rounded-lg border border-border bg-card">
+        <Loader variant="inline" label="正在打开聊天…" />
+      </div>
+    ),
+    ssr: false,
+  },
+)
 import { ChatPanel } from '@/components/chat/chat-panel'
 import { getPluginPanel } from '@/lib/plugins'
 import { shouldRedirectDashboardToHttps } from '@/lib/browser-security'

@@ -137,7 +137,50 @@ function formatTime(ts: string): string {
   }
 }
 
-/** Should timestamps be shown? Only when gap > 30s from previous. */
+/** In-progress reply placeholder aligned with assistant message rows. */
+export function SessionReplyStatusRow({
+  label,
+  phase,
+  variant,
+  showTimestamp = false,
+}: {
+  label: string
+  phase: 'thinking' | 'tool' | 'responding'
+  variant: 'waiting' | 'continuing'
+  showTimestamp?: boolean
+}) {
+  const isWaiting = variant === 'waiting'
+  const borderClass = isWaiting ? 'border-l-primary/40' : 'border-l-void-cyan/35'
+  const indicatorClass = isWaiting ? 'text-primary' : 'text-void-cyan'
+  const dotClass = isWaiting ? 'bg-primary/80' : 'bg-void-cyan/80'
+
+  return (
+    <div
+      className={`flex gap-0 border-l-2 ${borderClass} pl-3 py-1.5`}
+      role="status"
+      aria-live="polite"
+    >
+      <div className="hidden w-16 flex-shrink-0 text-right sm:block">
+        {showTimestamp ? (
+          <span className="font-mono-tight text-[10px] tabular-nums text-muted-foreground/50">
+            {formatTime(new Date().toISOString())}
+          </span>
+        ) : null}
+      </div>
+      <div className={`w-5 flex-shrink-0 text-center font-mono-tight text-xs ${indicatorClass}`}>
+        {'\u25C6'}
+      </div>
+      <div className="min-w-0 flex-1 flex items-center gap-2">
+        <span className={`inline-flex h-1.5 w-1.5 flex-shrink-0 animate-pulse rounded-full ${dotClass}`} />
+        <span className="font-mono-tight text-xs leading-relaxed text-muted-foreground">{label}</span>
+        {phase === 'tool' ? (
+          <span className="font-mono-tight text-[10px] text-amber-400/80">{'\u2699'}</span>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 export function shouldShowTimestamp(
   current: SessionTranscriptMessage,
   previous: SessionTranscriptMessage | undefined,

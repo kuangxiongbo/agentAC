@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useTranslations } from 'next-intl'
 import { useAgentCenterStore, Conversation } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
@@ -13,6 +13,7 @@ import {
   getMainAgentRuntimeMeta,
   MAIN_AGENT_RUNTIME_ORDER,
 } from '@/lib/runtime-agents'
+import { isHumanWatchAgent } from '@/lib/human-watch-helpers'
 
 const log = createClientLogger('ConversationList')
 
@@ -35,7 +36,7 @@ type SessionRecord = {
   lastUserPrompt?: string | null
 }
 
-type SessionPrefs = Record<string, { name?: string; color?: string }>
+type SessionPrefs = Record<string, { name?: string; color?: string; historyExpanded?: boolean }>
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null
@@ -60,6 +61,7 @@ function readSessionPrefs(payload: unknown): SessionPrefs {
       return [key, {
         name: readString(pref?.name),
         color: readString(pref?.color),
+        historyExpanded: pref?.historyExpanded === true,
       }]
     })
   )
@@ -130,6 +132,7 @@ const TAG_COLORS: Record<string, string> = {
   teal: 'bg-teal-500',
 }
 const SESSION_LIST_FALLBACK_POLL_MS = 60000
+const SESSION_PAGE_SIZE = 40
 
 interface ConversationListProps {
   onNewConversation: (agentName: string) => void
@@ -144,10 +147,26 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
     setActiveConversation,
     markConversationRead,
     centralMode,
+    agents,
   } = useAgentCenterStore()
+
+  const hiddenStewardSessionIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const agent of agents) {
+      if (!isHumanWatchAgent(agent)) continue
+      const key = String(agent.session_key || '').trim()
+      if (key) ids.add(key)
+    }
+    return ids
+  }, [agents])
   const [search, setSearch] = useState('')
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
   const [sessionListReady, setSessionListReady] = useState(false)
+  const [sessionListLoading, setSessionListLoading] = useState(false)
+  const [sessionListLoadingMore, setSessionListLoadingMore] = useState(false)
+  const [sessionsHasMore, setSessionsHasMore] = useState(false)
+  const [sessionsNextOffset, setSessionsNextOffset] = useState(0)
+  const sessionsNextOffsetRef = useRef(0)
 
   // Context menu state
   const [ctxMenu, setCtxMenu] = useState<{ convId: string; x: number; y: number } | null>(null)
@@ -267,19 +286,12 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
     void saveSessionPref(conv, undefined, color)
   }
 
-  const loadConversations = useCallback(async () => {
-    try {
-      const sessionsUrl = '/api/sessions'
-      const requests: Promise<Response>[] = [
-        fetch(sessionsUrl),
-        fetch('/api/chat/session-prefs'),
-      ]
-
-      const [sessionsRes, prefsRes] = await Promise.all(requests)
-      const sessionsData = sessionsRes.ok ? readSessions(await sessionsRes.json()) : []
-      const prefs = prefsRes.ok ? readSessionPrefs(await prefsRes.json().catch(() => null)) : {}
-
-      const providerSessions = sessionsData
+  const mapSessionsToConversations = useCallback((
+    sessionsData: SessionRecord[],
+    prefs: SessionPrefs,
+    idOffset = 0,
+  ): Conversation[] => {
+    return sessionsData
         .map((s, idx: number) => {
           const lastActivityMs = Number(s.lastActivity || s.startTime || 0)
           const updatedAt = lastActivityMs > 1_000_000_000_000
@@ -297,6 +309,8 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
             ? `${kindLabel} • ${s.key || s.id}`
             : `${s.agent || kindLabel} • ${s.key || s.id}`
           const sessionName = pref.name || defaultName
+          const displayModel =
+            s.model && s.model.trim() && s.model.toLowerCase() !== 'unknown' ? s.model : null
 
           return {
             id: `session:${sessionKind}:${s.id}`,
@@ -312,7 +326,8 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
               agent: s.agent || undefined,
               displayName: sessionName,
               colorTag: typeof pref.color === 'string' ? pref.color : undefined,
-              model: s.model,
+              historyExpanded: pref.historyExpanded === true,
+              model: displayModel || undefined,
               tokens: s.tokens,
               workingDir: s.workingDir || null,
               lastUserPrompt: s.lastUserPrompt || null,
@@ -321,11 +336,11 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
             },
             participants: [],
             lastMessage: {
-              id: Date.now() + idx,
+              id: Date.now() + idOffset + idx,
               conversation_id: `session:${sessionKind}:${s.id}`,
               from_agent: 'system',
               to_agent: null,
-              content: `${s.model || kindLabel} • ${s.tokens || ''}`.trim(),
+              content: `${displayModel || kindLabel} • ${s.tokens || ''}`.trim(),
               message_type: 'system' as const,
               created_at: updatedAt || Math.floor(Date.now() / 1000),
             },
@@ -333,39 +348,95 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
             updatedAt,
           }
         })
+        .sort((a: Conversation, b: Conversation) => b.updatedAt - a.updatedAt)
+  }, [])
 
-      setConversations(
-        providerSessions.sort((a: Conversation, b: Conversation) => b.updatedAt - a.updatedAt)
+  const loadConversations = useCallback(async (options?: { append?: boolean; refresh?: boolean }) => {
+    const append = options?.append === true
+    const refresh = options?.refresh === true
+    const offset = append ? sessionsNextOffsetRef.current : 0
+
+    if (append) {
+      setSessionListLoadingMore(true)
+    } else {
+      setSessionListLoading(true)
+    }
+
+    try {
+      const params = new URLSearchParams({
+        limit: String(SESSION_PAGE_SIZE),
+        offset: String(offset),
+      })
+      if (!append && !refresh) params.set('skip_sync', '1')
+      if (refresh) params.set('refresh', '1')
+
+      const [sessionsRes, prefsRes] = await Promise.all([
+        fetch(`/api/sessions?${params}`),
+        append ? Promise.resolve(null) : fetch('/api/chat/session-prefs'),
+      ])
+
+      const sessionsPayload = sessionsRes.ok ? await sessionsRes.json() : null
+      const sessionsData = readSessions(sessionsPayload)
+      const prefs = !append && prefsRes?.ok
+        ? readSessionPrefs(await prefsRes.json().catch(() => null))
+        : {}
+
+      const providerSessions = mapSessionsToConversations(sessionsData, prefs, offset)
+
+      if (append) {
+        const prev = useAgentCenterStore.getState().conversations
+        const seen = new Set(prev.map((c) => c.id))
+        const merged = [...prev]
+        for (const row of providerSessions) {
+          if (!seen.has(row.id)) merged.push(row)
+        }
+        setConversations(merged.sort((a, b) => b.updatedAt - a.updatedAt))
+      } else {
+        setConversations(providerSessions)
+      }
+
+      const hasMore = Boolean(
+        sessionsPayload &&
+        typeof sessionsPayload === 'object' &&
+        (sessionsPayload as { hasMore?: boolean }).hasMore,
       )
+      const nextOffset =
+        sessionsPayload &&
+        typeof sessionsPayload === 'object' &&
+        typeof (sessionsPayload as { nextOffset?: number | null }).nextOffset === 'number'
+          ? (sessionsPayload as { nextOffset: number }).nextOffset
+          : offset + providerSessions.length
+
+      setSessionsHasMore(hasMore)
+      setSessionsNextOffset(nextOffset)
+      sessionsNextOffsetRef.current = nextOffset
     } catch (err) {
       log.error('Failed to load conversations:', err)
+    } finally {
+      if (append) {
+        setSessionListLoadingMore(false)
+      } else {
+        setSessionListLoading(false)
+        setSessionListReady(true)
+      }
     }
-  }, [setConversations])
+  }, [mapSessionsToConversations, setConversations])
 
   useEffect(() => {
     const handleSessionListUpdated = () => {
-      void loadConversations()
+      void loadConversations({ refresh: true })
     }
 
     window.addEventListener(SESSION_LIST_UPDATED_EVENT, handleSessionListUpdated)
     return () => window.removeEventListener(SESSION_LIST_UPDATED_EVENT, handleSessionListUpdated)
   }, [loadConversations])
 
-  // Lazy-load session list after first paint (avoids blocking sidebar render)
   useEffect(() => {
-    const run = () => {
-      void loadConversations().finally(() => setSessionListReady(true))
-    }
-    if (typeof requestIdleCallback === 'function') {
-      const id = requestIdleCallback(run, { timeout: 1500 })
-      return () => cancelIdleCallback(id)
-    }
-    const timer = setTimeout(run, 0)
-    return () => clearTimeout(timer)
+    void loadConversations()
   }, [loadConversations])
 
   // Low-frequency fallback in case the OS drops a file notification.
-  useSmartPoll(loadConversations, SESSION_LIST_FALLBACK_POLL_MS, {
+  useSmartPoll(() => void loadConversations({ refresh: true }), SESSION_LIST_FALLBACK_POLL_MS, {
     enabled: sessionListReady,
     pauseWhenSseConnected: true,
   })
@@ -376,6 +447,10 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
   }
 
   const filteredConversations = conversations.filter((c) => {
+    if (c.source === 'session') {
+      const sessionId = c.session?.sessionId || ''
+      if (sessionId && hiddenStewardSessionIds.has(sessionId)) return false
+    }
     if (!search) return true
     const s = search.toLowerCase()
     return (
@@ -547,7 +622,14 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
 
       {/* Conversation list */}
       <div className="flex-1 overflow-y-auto">
-        {filteredConversations.length === 0 ? (
+        {sessionListLoading && conversations.length === 0 ? (
+          <div className="p-4 space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="h-12 animate-pulse rounded-md bg-surface-1/80" />
+            ))}
+            <p className="pt-1 text-center text-[11px] text-muted-foreground/60">{t('loadingSessionsList')}</p>
+          </div>
+        ) : filteredConversations.length === 0 ? (
           <div className="p-4 text-center text-xs text-muted-foreground/50">
             {t('noConversations')}
           </div>
@@ -592,6 +674,20 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
               </div>
             ))}
           </>
+        )}
+        {sessionsHasMore && !search.trim() && (
+          <div className="p-3 border-t border-border/40">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="w-full text-xs"
+              disabled={sessionListLoadingMore}
+              onClick={() => void loadConversations({ append: true })}
+            >
+              {sessionListLoadingMore ? t('loadingSessionsList') : t('loadMoreSessions')}
+            </Button>
+          </div>
         )}
       </div>
 

@@ -21,7 +21,16 @@ import {
   ModelsTab,
   CreateAgentModal
 } from './agent-detail-tabs'
-import { formatModelName, buildTaskStatParts } from '@/lib/agent-card-helpers'
+import {
+  formatModelName,
+  buildTaskStatParts,
+  getAgentDisplayName,
+  getAgentClientId,
+  getAgentClientLabel,
+  getFrameworkSectionLabel,
+  isOperativeUserAgent,
+  isRuntimeMainAnchorAgent,
+} from '@/lib/agent-card-helpers'
 import { useAgentCenterStore, type Agent } from '@/store'
 import { isRuntimeManagedAgent } from '@/lib/runtime-agents'
 
@@ -212,6 +221,20 @@ export function AgentSquadPanelPhase3() {
   // Smart polling with visibility pause
   useSmartPoll(fetchAgents, 30000, { enabled: autoRefresh, pauseWhenSseConnected: true })
 
+  useEffect(() => {
+    if (!selectedAgent) return
+    const fresh = agents.find((item) => item.id === selectedAgent.id)
+    if (!fresh) return
+    if (
+      fresh.updated_at !== selectedAgent.updated_at ||
+      fresh.session_key !== selectedAgent.session_key ||
+      (fresh as any).workspace_path !== (selectedAgent as any).workspace_path ||
+      fresh.role !== selectedAgent.role
+    ) {
+      setSelectedAgent(fresh)
+    }
+  }, [agents, selectedAgent])
+
   // Update agent status
   const updateAgentStatus = async (agentName: string, status: Agent['status'], activity?: string) => {
     try {
@@ -315,7 +338,16 @@ export function AgentSquadPanelPhase3() {
   // Get status distribution for summary
 
   // Get status distribution for summary
-  const mainLayerAgents = agents.filter(agent => !isDiskImportedAgent(agent))
+  const shouldShowAgentInSquadGrid = useCallback((agent: Agent, all: Agent[]) => {
+    if (!isOperativeUserAgent(agent)) return false
+    if (!agent.parent_id) return true
+    const parent = all.find((item) => item.id === agent.parent_id)
+    return Boolean(parent && isRuntimeMainAnchorAgent(parent))
+  }, [])
+
+  const mainLayerAgents = agents.filter(
+    (agent) => isOperativeUserAgent(agent) && !isDiskImportedAgent(agent),
+  )
   const statusCounts = mainLayerAgents.reduce((acc, agent) => {
     acc[agent.status] = (acc[agent.status] || 0) + 1
     return acc
@@ -435,7 +467,7 @@ export function AgentSquadPanelPhase3() {
         ) : (
           Object.entries(
             agents.reduce((acc, a) => {
-              if (a.parent_id) return acc
+              if (!shouldShowAgentInSquadGrid(a, agents)) return acc
               const sectionKey = isDiskImportedAgent(a) ? '__disk_imports__' : getAgentFrameworkLabel(a)
               if (!acc[sectionKey]) acc[sectionKey] = []
               acc[sectionKey].push(a)
@@ -452,7 +484,7 @@ export function AgentSquadPanelPhase3() {
               <div className="flex items-center gap-4 px-1">
                  <div className="h-px flex-1 bg-border/20" />
                  <span className="text-[10px] font-bold tracking-[0.2em] text-muted-foreground/40 uppercase bg-surface-2/30 px-3 py-1 rounded-full border border-border/10">
-                   {fw === '__disk_imports__' ? 'disk imports' : fw}
+                   {getFrameworkSectionLabel(fw)}
                  </span>
                  <div className="h-px flex-1 bg-border/20" />
               </div>
@@ -461,8 +493,7 @@ export function AgentSquadPanelPhase3() {
                 {fwAgents
                   .filter(agent => showHidden || !agent.hidden)
                   .sort((a, b) =>
-                    Number(isRuntimeManagedAgent(b)) - Number(isRuntimeManagedAgent(a)) ||
-                    a.name.localeCompare(b.name)
+                    getAgentDisplayName(a).localeCompare(getAgentDisplayName(b))
                   )
                   .map(agent => (
                     <AgentCardWithSubAgents 
@@ -486,7 +517,7 @@ export function AgentSquadPanelPhase3() {
         <AgentDetailModalPhase3
           agent={selectedAgent}
           onClose={() => setSelectedAgent(null)}
-          onUpdate={fetchAgents}
+          onUpdate={() => fetchAgents(true)}
           onStatusUpdate={updateAgentStatus}
           onWakeAgent={wakeAgent}
           onDelete={deleteAgent}
@@ -538,6 +569,7 @@ function AgentDetailModalPhase3({
   const [formData, setFormData] = useState({
     role: agent.role,
     session_key: agent.session_key || '',
+    workspace_path: (agent as any).workspace_path || '',
     soul_content: agent.soul_content || '',
     working_memory: agent.working_memory || '',
     model: (() => { const p = (agent as any).config?.model?.primary; return (typeof p === 'string' ? p : p?.primary) || '' })(),
@@ -554,6 +586,7 @@ function AgentDetailModalPhase3({
   const [showDeleteMenu, setShowDeleteMenu] = useState(false)
   const [saveBusy, setSaveBusy] = useState(false)
   const deleteMenuRef = useRef<HTMLDivElement>(null)
+  const t = useTranslations('agentDetail')
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -573,6 +606,7 @@ function AgentDetailModalPhase3({
     setFormData({
       role: agent.role,
       session_key: agent.session_key || '',
+      workspace_path: (agent as any).workspace_path || '',
       soul_content: agent.soul_content || '',
       working_memory: (agent as any).working_memory || '',
       model: (() => { const p = (agent as any).config?.model?.primary; return (typeof p === 'string' ? p : p?.primary) || '' })(),
@@ -598,6 +632,7 @@ function AgentDetailModalPhase3({
               ...prev,
               role: freshAgent.role || prev.role,
               session_key: freshAgent.session_key || '',
+              workspace_path: (freshAgent as any).workspace_path || '',
               model: (freshAgent as any).config?.model?.primary || prev.model,
             }))
           }
@@ -629,13 +664,13 @@ function AgentDetailModalPhase3({
   }, [agent.id])
 
   const formatLastSeen = (timestamp?: number) => {
-    if (!timestamp) return 'Never'
+    if (!timestamp) return t('never')
     const diffMs = Date.now() - (timestamp * 1000)
     const diffMinutes = Math.floor(diffMs / (1000 * 60))
     const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
-    if (diffMinutes < 1) return 'Just now'
-    if (diffMinutes < 60) return `${diffMinutes}m ago`
-    if (diffHours < 24) return `${diffHours}h ago`
+    if (diffMinutes < 1) return t('justNow')
+    if (diffMinutes < 60) return t('minutesAgo', { count: diffMinutes })
+    if (diffHours < 24) return t('hoursAgo', { count: diffHours })
     return new Date(timestamp * 1000).toLocaleDateString()
   }
 
@@ -676,22 +711,85 @@ function AgentDetailModalPhase3({
     }
   }
 
+  const applyAgentToForm = (source: Agent & { config?: any; working_memory?: string }) => {
+    setFormData({
+      role: source.role,
+      session_key: source.session_key || '',
+      workspace_path: (source as any).workspace_path || '',
+      soul_content: source.soul_content || '',
+      working_memory: source.working_memory || '',
+      model: (() => {
+        const p = source.config?.model?.primary
+        return typeof p === 'string' ? p : p?.primary || ''
+      })(),
+    })
+  }
+
+  const reloadAgentFromServer = async (): Promise<boolean> => {
+    try {
+      const response = await fetch(`/api/agents/${agentState.id}`)
+      if (!response.ok) return false
+      const payload = await response.json()
+      const fresh = payload?.agent as (Agent & { config?: any; working_memory?: string }) | undefined
+      if (!fresh) return false
+      setAgentState((prev) => ({ ...prev, ...fresh }))
+      applyAgentToForm(fresh)
+      return true
+    } catch (error) {
+      log.error('Failed to reload agent after save:', error)
+      return false
+    }
+  }
+
   const handleSave = async () => {
     setSaveBusy(true)
     try {
+      const existingConfig = agentState.config || {}
+      const configPayload = formData.model
+        ? {
+            ...existingConfig,
+            model: {
+              ...(typeof existingConfig.model === 'object' ? existingConfig.model : {}),
+              primary: formData.model,
+            },
+          }
+        : undefined
+
       const response = await fetch('/api/agents', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: agentState.name,
-          ...formData
-        })
+          role: formData.role,
+          session_key: formData.session_key,
+          workspace_path: formData.workspace_path,
+          ...(configPayload ? { config: configPayload } : {}),
+        }),
       })
 
       if (!response.ok) throw new Error('Failed to update agent')
 
+      const payload = await response.json().catch(() => ({}))
+      const savedAgent = payload?.agent as (Agent & { config?: any; working_memory?: string }) | undefined
+      if (savedAgent) {
+        setAgentState((prev) => ({ ...prev, ...savedAgent }))
+        applyAgentToForm(savedAgent)
+      }
+
+      const reloaded = savedAgent ? true : await reloadAgentFromServer()
+      if (!reloaded && !savedAgent) {
+        setAgentState((prev) => ({
+          ...prev,
+          role: formData.role,
+          session_key: formData.session_key,
+          workspace_path: formData.workspace_path || null,
+          ...(configPayload ? { config: configPayload } : {}),
+          updated_at: Math.floor(Date.now() / 1000),
+        }))
+      }
+
       setEditing(false)
-      onUpdate()
+      await onUpdate()
     } catch (error) {
       log.error('Failed to update agent:', error)
     } finally {
@@ -761,26 +859,28 @@ function AgentDetailModalPhase3({
   const isOpenClaw = (agentState.framework || 'openclaw') === 'openclaw'
 
   const tabs = [
-    { id: 'overview', label: 'Overview' },
+    { id: 'overview', label: t('overviewTab') },
     ...(isOpenClaw ? [
-      { id: 'files', label: 'Files' },
-      { id: 'tools', label: 'Tools' },
-      { id: 'models', label: 'Models' },
-      { id: 'channels', label: 'Channels' },
-      { id: 'cron', label: 'Cron' },
-      { id: 'soul', label: 'SOUL' },
-      { id: 'memory', label: 'Memory' },
+      { id: 'files', label: t('filesTab') },
+      { id: 'tools', label: t('toolsTab') },
+      { id: 'models', label: t('modelsTab') },
+      { id: 'channels', label: t('channelsTab') },
+      { id: 'cron', label: t('cronTab') },
+      { id: 'soul', label: t('soulTab') },
+      { id: 'memory', label: t('memoryTab') },
     ] : []),
-    { id: 'tasks', label: 'Tasks' },
-    { id: 'config', label: 'Config' },
-    { id: 'activity', label: 'Activity' }
+    { id: 'tasks', label: t('tasksTab') },
+    { id: 'config', label: t('configTab') },
+    { id: 'activity', label: t('activityTab') }
   ]
 
   const handleDelete = async (removeWorkspace: boolean) => {
-    const scope = removeWorkspace ? 'agent and workspace' : 'agent'
-    const confirmed = window.confirm(`Delete ${scope} for "${agentState.name}"? This cannot be undone.`)
+    if (deleteBusy) return
+    const scope = removeWorkspace ? t('deleteScopeAgentWorkspace') : t('deleteScopeAgent')
+    const confirmed = window.confirm(t('deleteAgentConfirm', { scope, name: agentState.name }))
     if (!confirmed) return
 
+    setShowDeleteMenu(false)
     setDeleteBusy(true)
     setDeleteError(null)
     try {
@@ -812,18 +912,18 @@ function AgentDetailModalPhase3({
                   <h3 className="text-lg font-semibold text-foreground leading-tight truncate">{agentState.name}</h3>
                   <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border ${statusBadgeStyles[agentState.status]}`}>
                     <span className={`w-1.5 h-1.5 rounded-full ${statusColors[agentState.status]}`} />
-                    {agentState.status}
+                    {t(agentState.status as 'idle' | 'busy' | 'offline' | 'error')}
                   </span>
                   {agentState.session_key && (
                     <span className="text-[11px] px-2 py-0.5 rounded-full border border-cyan-500/30 bg-cyan-500/10 text-cyan-300">
-                      Session
+                      {t('sessionBadge')}
                     </span>
                   )}
                 </div>
                 <div className="flex items-center gap-2 mt-0.5">
                   <span className="text-sm text-muted-foreground">{agentState.role}</span>
                   <span className="text-xs text-muted-foreground/60">·</span>
-                  <span className="text-xs text-muted-foreground/60">seen {formatLastSeen(agentState.last_seen)}</span>
+                  <span className="text-xs text-muted-foreground/60">{t('seenAgo', { time: formatLastSeen(agentState.last_seen) })}</span>
                 </div>
               </div>
             </div>
@@ -833,49 +933,41 @@ function AgentDetailModalPhase3({
                   variant="ghost"
                   size="icon-sm"
                   className="text-muted-foreground hover:text-rose-400"
-                  title="Delete agent"
+                  title={t('deleteAgentTitle')}
                   onClick={() => setShowDeleteMenu(prev => !prev)}
                 >
                   <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M2 4h12M5.33 4V2.67a1.33 1.33 0 0 1 1.34-1.34h2.66a1.33 1.33 0 0 1 1.34 1.34V4M12.67 4v9.33a1.33 1.33 0 0 1-1.34 1.34H4.67a1.33 1.33 0 0 1-1.34-1.34V4" />
                   </svg>
                 </Button>
-                {showDeleteMenu && (
+                {deleteBusy && (
+                  <span className="text-[11px] text-rose-300/90 flex items-center gap-1 mr-1">
+                    <svg className="w-3 h-3 animate-spin" viewBox="0 0 16 16" fill="none">
+                      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" />
+                    </svg>
+                    {t('deleting')}
+                  </span>
+                )}
+                {showDeleteMenu && !deleteBusy && (
                   <div className="absolute right-0 top-full mt-1 flex flex-col gap-1 bg-card border border-border rounded-md shadow-xl p-1.5 z-10 min-w-[180px]">
                     <button
-                      onClick={() => handleDelete(false)}
-                      disabled={deleteBusy}
-                      className="text-left text-xs px-2.5 py-1.5 rounded text-rose-300 hover:bg-rose-500/10 transition-colors disabled:opacity-50"
+                      onClick={() => void handleDelete(false)}
+                      className="text-left text-xs px-2.5 py-1.5 rounded text-rose-300 hover:bg-rose-500/10 transition-colors"
                     >
-                      {deleteBusy ? (
-                        <span className="flex items-center gap-1.5">
-                          <svg className="w-3 h-3 animate-spin" viewBox="0 0 16 16" fill="none">
-                            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" />
-                          </svg>
-                          Deleting...
-                        </span>
-                      ) : 'Delete agent'}
+                      {t('deleteAgent')}
                     </button>
                     <button
-                      onClick={() => handleDelete(true)}
-                      disabled={deleteBusy}
-                      className="text-left text-xs px-2.5 py-1.5 rounded text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-50"
+                      onClick={() => void handleDelete(true)}
+                      className="text-left text-xs px-2.5 py-1.5 rounded text-rose-400 hover:bg-rose-500/10 transition-colors"
                     >
-                      {deleteBusy ? (
-                        <span className="flex items-center gap-1.5">
-                          <svg className="w-3 h-3 animate-spin" viewBox="0 0 16 16" fill="none">
-                            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" />
-                          </svg>
-                          Deleting...
-                        </span>
-                      ) : 'Delete agent + workspace'}
+                      {t('deleteAgentWorkspace')}
                     </button>
                   </div>
                 )}
               </div>
               <Button
                 onClick={onClose}
-                aria-label="Close agent details"
+                aria-label={t('closeAgentDetails')}
                 variant="ghost"
                 size="icon-sm"
                 className="text-muted-foreground hover:text-foreground"
@@ -924,10 +1016,17 @@ function AgentDetailModalPhase3({
               onStatusUpdate={onStatusUpdate}
               onWakeAgent={onWakeAgent}
               onEdit={() => setEditing(true)}
-              onCancel={() => setEditing(false)}
+              onCancel={() => {
+                setEditing(false)
+                applyAgentToForm(agentState)
+              }}
               heartbeatData={heartbeatData}
               loadingHeartbeat={loadingHeartbeat}
               onPerformHeartbeat={performHeartbeat}
+              onAgentSessionBound={(sessionKey) => {
+                setAgentState((prev) => ({ ...prev, session_key: sessionKey }))
+                setFormData((prev) => ({ ...prev, session_key: sessionKey }))
+              }}
             />
           )}
           
@@ -1181,6 +1280,7 @@ function AgentCardWithSubAgents({
 }) {
   const t = useTranslations('agentSquadPhase3')
   const subAgents = allAgents.filter(a => a.parent_id === agent.id)
+  const displayName = getAgentDisplayName(agent)
   
   const modelName = formatModelName(agent.config)
   const taskStatsLine = buildTaskStatParts(agent.taskStats)
@@ -1196,10 +1296,10 @@ function AgentCardWithSubAgents({
 
         <div className="flex items-start justify-between mb-2">
           <div className="flex items-center gap-2.5 min-w-0">
-            <AgentAvatar name={agent.name} size="md" />
+            <AgentAvatar name={displayName} size="md" />
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
-                <h3 className="font-semibold text-foreground truncate text-sm">{agent.name}</h3>
+                <h3 className="font-semibold text-foreground truncate text-sm">{displayName}</h3>
                 {getAgentSourceLabel(agent) && (
                   <span className={`text-[9px] px-1.5 py-0.5 rounded-full border ${
                     (agent as any).source === 'local'

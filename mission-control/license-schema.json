@@ -1,0 +1,19 @@
+{
+  "$schema": "https://1sheng.io/schemas/license-entitlements/v1",
+  "appId": "mission-control",
+  "displayName": "Agent 指挥仓",
+  "version": "1.0.0",
+  "requiresSubscription": true,
+  "description": "本文件声明 Agent 指挥仓（Mission Control）支持的授权维度。用户中心创建 SKU 时按 key 填写权益值；平台按 expiresAt 控制使用时长，按 entitlements 控制增值功能。",
+  "entitlements": [
+    {
+      "key": "enableHumanWatch",
+      "type": "boolean",
+      "label": "人工值守",
+      "description": "是否开通人工值守（专用值守 Agent、Worker 绑定、自动跟进与干预留痕）。",
+      "default": false,
+      "enforcement": "server",
+      "enforcementPoint": "GET/POST /api/human-watch/* — requireHumanWatchEntitlement"
+    }
+  ]
+}

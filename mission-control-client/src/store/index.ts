@@ -248,6 +248,7 @@ export interface Conversation {
     nodeLabel?: string
     displayName?: string
     colorTag?: string
+    historyExpanded?: boolean
     model?: string
     tokens?: string
     workingDir?: string | null

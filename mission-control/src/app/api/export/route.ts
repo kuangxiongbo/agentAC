@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { getDatabase, logAuditEvent } from '@/lib/db'
+import { listHumanWatchInterventions } from '@/lib/human-watch-audit'
 import { heavyLimiter } from '@/lib/rate-limit'
 
 /**
- * GET /api/export?type=audit|tasks|activities|pipelines&format=csv|json&since=UNIX&until=UNIX
+ * GET /api/export?type=audit|tasks|activities|pipelines|human_watch_interventions&format=csv|json&since=UNIX&until=UNIX
  * Admin-only data export endpoint.
  */
 export async function GET(request: NextRequest) {
@@ -20,15 +21,16 @@ export async function GET(request: NextRequest) {
   const since = searchParams.get('since')
   const until = searchParams.get('until')
 
-  if (!type || !['audit', 'tasks', 'activities', 'pipelines'].includes(type)) {
+  if (!type || !['audit', 'tasks', 'activities', 'pipelines', 'human_watch_interventions'].includes(type)) {
     return NextResponse.json(
-      { error: 'type required: audit, tasks, activities, pipelines' },
+      { error: 'type required: audit, tasks, activities, pipelines, human_watch_interventions' },
       { status: 400 }
     )
   }
 
   const db = getDatabase()
   const workspaceId = auth.user.workspace_id ?? 1
+  const tenantId = auth.user.tenant_id ?? 1
   const conditions: string[] = []
   const params: any[] = []
 
@@ -84,6 +86,31 @@ export async function GET(request: NextRequest) {
       rows = db.prepare(`SELECT pr.*, wp.name as pipeline_name FROM pipeline_runs pr LEFT JOIN workflow_pipelines wp ON pr.pipeline_id = wp.id ${scopedWhere} ORDER BY pr.created_at DESC LIMIT ?`).all(...params, limit)
       headers = ['id', 'pipeline_id', 'pipeline_name', 'status', 'current_step', 'steps_snapshot', 'started_at', 'completed_at', 'triggered_by', 'created_at']
       filename = 'pipeline-runs'
+      break
+    }
+    case 'human_watch_interventions': {
+      const sinceSec = since ? parseInt(since, 10) : undefined
+      const untilSec = until ? parseInt(until, 10) : undefined
+      const listed = listHumanWatchInterventions({
+        workspaceId,
+        tenantId,
+        since: sinceSec,
+        limit,
+      })
+      rows = listed
+        .filter((row) => (untilSec ? row.created_at <= untilSec : true))
+        .map((row) => ({
+          ...row,
+          llm_sweep: row.llm_sweep ? 1 : 0,
+        }))
+      headers = [
+        'id', 'workspace_id', 'tenant_id', 'client_id', 'binding_id',
+        'worker_local_agent_id', 'worker_name', 'steward_local_agent_id', 'steward_name',
+        'worker_session_id', 'event_type', 'decision', 'rules_hit', 'fingerprint',
+        'prompt_preview', 'prompt_sha256', 'outcome', 'error_message', 'skip_reason',
+        'bridge_request_id', 'llm_sweep', 'created_at',
+      ]
+      filename = 'human-watch-interventions'
       break
     }
   }

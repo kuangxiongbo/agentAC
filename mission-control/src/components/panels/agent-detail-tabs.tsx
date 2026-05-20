@@ -1,11 +1,22 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { createClientLogger } from '@/lib/client-logger'
 import Link from 'next/link'
+import {
+  getMainAgentRuntimeMeta,
+  isRuntimeManagedAgent,
+  MAIN_AGENT_RUNTIME_ORDER,
+  type MainAgentRuntimeId,
+} from '@/lib/runtime-agents'
+import {
+  dispatchSessionPendingPrompt,
+  type SessionRealtimeKind,
+} from '@/lib/session-realtime-events'
+import { getAgentDisplayName } from '@/lib/agent-card-helpers'
 
 const log = createClientLogger('AgentDetailTabs')
 
@@ -14,6 +25,7 @@ interface Agent {
   name: string
   role: string
   session_key?: string
+  workspace_path?: string | null
   soul_content?: string
   working_memory?: string
   status: 'offline' | 'idle' | 'busy' | 'error'
@@ -21,6 +33,10 @@ interface Agent {
   last_activity?: string
   created_at: number
   updated_at: number
+  hidden?: number
+  framework?: string
+  parent_id?: number
+  config?: any
   taskStats?: {
     total: number
     assigned: number
@@ -50,6 +66,19 @@ interface SoulTemplate {
   size: number
 }
 
+interface RuntimeStatus {
+  id: MainAgentRuntimeId
+  name: string
+  description: string
+  installed: boolean
+  version: string | null
+  running: boolean
+  authRequired: boolean
+  authHint: string
+  authenticated: boolean
+  installSupported: boolean
+}
+
 const statusColors: Record<string, string> = {
   offline: 'bg-gray-500',
   idle: 'bg-green-500',
@@ -62,6 +91,54 @@ const statusIcons: Record<string, string> = {
   idle: 'o',
   busy: '~',
   error: '!',
+}
+
+function Dialog({
+  open,
+  onOpenChange,
+  children,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  children: ReactNode
+}) {
+  if (!open) return null
+  return (
+    <div
+      className="fixed inset-0 z-50 overflow-y-auto bg-black/60 p-4"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onOpenChange(false)
+      }}
+    >
+      <div className="flex min-h-full items-center justify-center">
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function DialogContent({
+  children,
+  className = '',
+}: {
+  children: ReactNode
+  className?: string
+}) {
+  return (
+    <div className={`relative flex w-full max-h-[90vh] min-h-0 flex-col overflow-hidden ${className}`}>
+      {children}
+    </div>
+  )
+}
+
+function DialogTitle({
+  children,
+  className = '',
+}: {
+  children: ReactNode
+  className?: string
+}) {
+  return <h2 className={className}>{children}</h2>
 }
 
 // Overview Tab Component
@@ -78,7 +155,8 @@ export function OverviewTab({
   onCancel,
   heartbeatData,
   loadingHeartbeat,
-  onPerformHeartbeat
+  onPerformHeartbeat,
+  onAgentSessionBound,
 }: {
   agent: Agent
   editing: boolean
@@ -93,12 +171,42 @@ export function OverviewTab({
   heartbeatData: HeartbeatResponse | null
   loadingHeartbeat: boolean
   onPerformHeartbeat: () => Promise<void>
+  onAgentSessionBound?: (sessionKey: string) => void
 }) {
   const t = useTranslations('agentDetail')
   const [messageFrom, setMessageFrom] = useState('system')
   const [directMessage, setDirectMessage] = useState('')
   const [messageStatus, setMessageStatus] = useState<string | null>(null)
   const [availableModels, setAvailableModels] = useState<Array<{ alias: string; description?: string }>>([])
+  const [registeredWorkspaces, setRegisteredWorkspaces] = useState<Array<{
+    id: string
+    name: string
+    path: string
+    isDefault: boolean
+  }>>([])
+  const [workspacePicker, setWorkspacePicker] = useState<'registry' | 'custom'>('custom')
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('')
+
+  useEffect(() => {
+    if (!editing) return
+    fetch('/api/workspaces')
+      .then((res) => (res.ok ? res.json() : { workspaces: [] }))
+      .then((data) => {
+        const list = Array.isArray(data.workspaces) ? data.workspaces : []
+        setRegisteredWorkspaces(list)
+        const currentPath = String(formData.workspace_path || '').trim()
+        if (!currentPath) return
+        const matched = list.find((ws: { path: string }) => ws.path === currentPath)
+        if (matched) {
+          setSelectedWorkspaceId(matched.id)
+          setWorkspacePicker('registry')
+        } else {
+          setSelectedWorkspaceId('')
+          setWorkspacePicker('custom')
+        }
+      })
+      .catch(() => setRegisteredWorkspaces([]))
+  }, [editing, formData.workspace_path])
 
   useEffect(() => {
     fetch('/api/status?action=models')
@@ -111,25 +219,39 @@ export function OverviewTab({
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!directMessage.trim()) return
+    const payload = directMessage.trim()
+    if (!payload) return
     try {
       setMessageStatus(null)
+      setMessageStatus(t('messageSending'))
       const response = await fetch('/api/agents/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           from: messageFrom || 'system',
           to: agent.name,
-          message: directMessage
-        })
+          message: payload,
+        }),
       })
       const data = await response.json()
-      if (!response.ok) throw new Error(data.error || 'Failed to send message')
+      if (!response.ok) throw new Error(data.error || t('messageFailed'))
       setDirectMessage('')
-      setMessageStatus(t('messageSent'))
-      setTimeout(() => setMessageStatus(null), 2000)
+      setMessageStatus(data.accepted ? t('messageAccepted') : t('messageSent'))
+      if (data.session_key && onAgentSessionBound) {
+        onAgentSessionBound(data.session_key)
+      }
+      if (data.accepted && data.session_kind && data.queued_prompt) {
+        dispatchSessionPendingPrompt(
+          data.session_kind as SessionRealtimeKind,
+          data.session_key || '',
+          data.queued_prompt,
+          'prompt_queued',
+          data.agent_id ?? agent.id,
+        )
+      }
+      setTimeout(() => setMessageStatus(null), 3000)
     } catch (error) {
-      setMessageStatus(t('messageFailed'))
+      setMessageStatus(error instanceof Error ? error.message : t('messageFailed'))
     }
   }
 
@@ -152,7 +274,7 @@ export function OverviewTab({
                     : 'bg-transparent text-muted-foreground border-border hover:border-foreground/30 hover:text-foreground'
                 }`}
               >
-                {status}
+                {t(status)}
               </button>
             ))}
             {agent.session_key && (
@@ -160,7 +282,7 @@ export function OverviewTab({
                 onClick={() => onWakeAgent(agent.name, agent.session_key!)}
                 className="ml-auto px-3 py-1 text-xs rounded-full border border-cyan-500/30 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 transition-colors"
               >
-                Wake
+                {t('wake')}
               </button>
             )}
             <button
@@ -219,18 +341,82 @@ export function OverviewTab({
               )}
             </div>
 
-            <div className="grid grid-cols-[100px_1fr] gap-2 items-center text-sm">
-              <span className="text-muted-foreground">{t('sessionKey')}</span>
+            <div className="grid grid-cols-[100px_1fr] gap-2 items-start text-sm">
+              <span className="text-muted-foreground pt-1.5">{t('localWorkspace')}</span>
               {editing ? (
-                <input
-                  type="text"
-                  value={formData.session_key}
-                  onChange={(e) => setFormData((prev: any) => ({ ...prev, session_key: e.target.value }))}
-                  className="bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
-                  placeholder={t('sessionKeyPlaceholder')}
-                />
+                <div className="space-y-1.5">
+                  {registeredWorkspaces.length > 0 && (
+                    <select
+                      value={workspacePicker === 'custom' ? '__custom__' : selectedWorkspaceId}
+                      onChange={(e) => {
+                        const value = e.target.value
+                        if (value === '__custom__') {
+                          setWorkspacePicker('custom')
+                          setSelectedWorkspaceId('')
+                          return
+                        }
+                        const ws = registeredWorkspaces.find((item) => item.id === value)
+                        if (!ws) return
+                        setWorkspacePicker('registry')
+                        setSelectedWorkspaceId(value)
+                        setFormData((prev: any) => ({ ...prev, workspace_path: ws.path }))
+                      }}
+                      className="w-full bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    >
+                      <option value="">{t('selectWorkspace')}</option>
+                      {registeredWorkspaces.map((ws) => (
+                        <option key={ws.id} value={ws.id}>
+                          {ws.name}{ws.isDefault ? ` (${t('defaultWorkspace')})` : ''}
+                        </option>
+                      ))}
+                      <option value="__custom__">{t('customWorkspacePath')}</option>
+                    </select>
+                  )}
+                  {(workspacePicker === 'custom' || registeredWorkspaces.length === 0) && (
+                    <input
+                      type="text"
+                      value={formData.workspace_path || ''}
+                      onChange={(e) => setFormData((prev: any) => ({ ...prev, workspace_path: e.target.value }))}
+                      className="w-full bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+                      placeholder={t('workspacePathPlaceholder')}
+                    />
+                  )}
+                  {workspacePicker === 'registry' && formData.workspace_path && (
+                    <p className="text-[11px] font-mono text-muted-foreground break-all">{formData.workspace_path}</p>
+                  )}
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">{t('localWorkspaceHint')}</p>
+                </div>
               ) : (
-                <span className="text-foreground font-mono text-xs">
+                <span className="text-foreground font-mono text-xs break-all">
+                  {agent.workspace_path || <span className="text-muted-foreground/50">{t('notSet')}</span>}
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-[100px_1fr] gap-2 items-start text-sm">
+              <span className="text-muted-foreground pt-1.5">{t('sessionKey')}</span>
+              {editing ? (
+                <div className="space-y-1.5">
+                  <input
+                    type="text"
+                    value={formData.session_key}
+                    onChange={(e) => setFormData((prev: any) => ({ ...prev, session_key: e.target.value }))}
+                    className="w-full bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    placeholder={t('sessionKeyPlaceholder')}
+                  />
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">{t('sessionKeyHint')}</p>
+                  {formData.session_key && (
+                    <button
+                      type="button"
+                      onClick={() => setFormData((prev: any) => ({ ...prev, session_key: '' }))}
+                      className="text-[11px] text-amber-400/90 hover:text-amber-300"
+                    >
+                      {t('clearSessionKey')}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <span className="text-foreground font-mono text-xs break-all">
                   {agent.session_key || <span className="text-muted-foreground/50">{t('notSet')}</span>}
                 </span>
               )}
@@ -831,7 +1017,7 @@ export function CreateAgentModal({
   onCreated: () => void
 }) {
   const t = useTranslations('agentDetail')
-  const [step, setStep] = useState<1 | 2 | 3>(1)
+  const [step, setStep] = useState<0 | 1 | 2 | 3>(0)
   const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null)
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [formData, setFormData] = useState({
@@ -845,9 +1031,32 @@ export function CreateAgentModal({
     sandboxMode: 'all' as 'all' | 'non-main',
     dockerNetwork: 'none' as 'none' | 'bridge',
     session_key: '',
+    workspace_path: '',
     write_to_gateway: true,
     provision_openclaw_workspace: true,
+    framework: 'openclaw' as MainAgentRuntimeId,
+    parent_id: '' as string | number,
   })
+  const [existingAgents, setExistingAgents] = useState<Agent[]>([])
+  const [runtimeStatuses, setRuntimeStatuses] = useState<RuntimeStatus[]>([])
+  const [registeredWorkspaces, setRegisteredWorkspaces] = useState<Array<{
+    id: string
+    name: string
+    path: string
+    isDefault: boolean
+  }>>([])
+  const [workspacePicker, setWorkspacePicker] = useState<'registry' | 'custom'>('registry')
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('')
+
+  useEffect(() => {
+    Promise.all([
+      fetch('/api/agents').then(res => res.ok ? res.json() : null).catch(() => null),
+      fetch('/api/agent-runtimes').then(res => res.ok ? res.json() : null).catch(() => null),
+    ]).then(([agentsData, runtimesData]) => {
+      if (agentsData?.agents) setExistingAgents(agentsData.agents)
+      if (Array.isArray(runtimesData?.runtimes)) setRuntimeStatuses(runtimesData.runtimes)
+    }).catch(() => {})
+  }, [step])
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -855,12 +1064,100 @@ export function CreateAgentModal({
   const [progressSteps, setProgressSteps] = useState<ProgressStep[] | null>(null)
 
   const selectedTemplateData = TEMPLATES.find(t => t.type === selectedTemplate)
+  const detectedRuntimeOptions = useMemo(
+    () => MAIN_AGENT_RUNTIME_ORDER
+      .map((id) => runtimeStatuses.find((runtime) => runtime.id === id))
+      .filter((runtime): runtime is RuntimeStatus => Boolean(runtime?.installed)),
+    [runtimeStatuses]
+  )
+  const runtimeManagedParents = useMemo(
+    () => existingAgents
+      .filter((agent) => !agent.hidden && isRuntimeManagedAgent(agent))
+      .sort((a, b) => Number(isRuntimeManagedAgent(b)) - Number(isRuntimeManagedAgent(a))),
+    [existingAgents]
+  )
+  const selectedMainAgent = useMemo(
+    () => runtimeManagedParents.find((agent) => agent.framework === formData.framework),
+    [runtimeManagedParents, formData.framework]
+  )
+  const parentCandidates = useMemo(
+    () => existingAgents
+      .filter(
+        (agent) =>
+          !agent.hidden &&
+          agent.id !== Number(formData.id) &&
+          agent.framework === formData.framework &&
+          !isRuntimeManagedAgent(agent) &&
+          agent.role !== 'main-agent',
+      )
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    [existingAgents, formData.framework, formData.id]
+  )
+
+  useEffect(() => {
+    if (detectedRuntimeOptions.length === 0) return
+    if (!detectedRuntimeOptions.some((runtime) => runtime.id === formData.framework)) {
+      setFormData((prev) => ({ ...prev, framework: detectedRuntimeOptions[0].id }))
+    }
+  }, [detectedRuntimeOptions, formData.framework])
+
+  useEffect(() => {
+    if (!selectedMainAgent) return
+    setFormData((prev) => {
+      const nextParent = String(selectedMainAgent.id)
+      if (String(prev.parent_id || '') === nextParent) return prev
+      return { ...prev, parent_id: nextParent }
+    })
+  }, [selectedMainAgent])
 
   // Auto-generate kebab-case ID from name
   const updateName = (name: string) => {
     const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
     setFormData(prev => ({ ...prev, name, id }))
   }
+
+  useEffect(() => {
+    if (step !== 2) return
+    let cancelled = false
+    fetch('/api/workspaces')
+      .then((res) => (res.ok ? res.json() : { workspaces: [] }))
+      .then((data) => {
+        if (cancelled) return
+        const list = Array.isArray(data.workspaces) ? data.workspaces : []
+        setRegisteredWorkspaces(list)
+      })
+      .catch(() => {
+        if (!cancelled) setRegisteredWorkspaces([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [step])
+
+  useEffect(() => {
+    if (step !== 2 || registeredWorkspaces.length === 0) return
+
+    const currentPath = formData.workspace_path.trim()
+    if (!currentPath) {
+      const preferred = registeredWorkspaces.find((ws) => ws.isDefault) || registeredWorkspaces[0]
+      if (!preferred) return
+      setSelectedWorkspaceId(preferred.id)
+      setWorkspacePicker('registry')
+      setFormData((prev) => (
+        prev.workspace_path === preferred.path ? prev : { ...prev, workspace_path: preferred.path }
+      ))
+      return
+    }
+
+    const matched = registeredWorkspaces.find((ws) => ws.path === currentPath)
+    if (matched) {
+      setSelectedWorkspaceId(matched.id)
+      setWorkspacePicker('registry')
+    } else {
+      setSelectedWorkspaceId('')
+      setWorkspacePicker('custom')
+    }
+  }, [step, registeredWorkspaces, formData.workspace_path])
 
   useEffect(() => {
     const loadAvailableModels = async () => {
@@ -900,6 +1197,60 @@ export function CreateAgentModal({
     }
   }
 
+  const onWorkspaceRegistryChange = (workspaceId: string) => {
+    if (workspaceId === '__custom__') {
+      setWorkspacePicker('custom')
+      setSelectedWorkspaceId('')
+      return
+    }
+    const ws = registeredWorkspaces.find((item) => item.id === workspaceId)
+    if (!ws) return
+    setWorkspacePicker('registry')
+    setSelectedWorkspaceId(workspaceId)
+    setFormData((prev) => ({ ...prev, workspace_path: ws.path }))
+  }
+
+  const renderLocalWorkspaceField = () => (
+    <div className="space-y-2">
+      <label className="block text-[10px] font-black text-muted-foreground uppercase tracking-[0.2em]">
+        {t('localWorkspace')}
+      </label>
+      {registeredWorkspaces.length > 0 ? (
+        <select
+          value={workspacePicker === 'custom' ? '__custom__' : selectedWorkspaceId}
+          onChange={(e) => onWorkspaceRegistryChange(e.target.value)}
+          className="w-full bg-surface-2 text-foreground border border-border/50 rounded-xl px-4 py-3 text-sm focus:border-primary/50 outline-none transition-all"
+        >
+          <option value="">{t('selectWorkspace')}</option>
+          {registeredWorkspaces.map((ws) => (
+            <option key={ws.id} value={ws.id}>
+              {ws.name}{ws.isDefault ? ` (${t('defaultWorkspace')})` : ''} — {ws.path}
+            </option>
+          ))}
+          <option value="__custom__">{t('customWorkspacePath')}</option>
+        </select>
+      ) : null}
+      {(workspacePicker === 'custom' || registeredWorkspaces.length === 0) && (
+        <input
+          type="text"
+          value={formData.workspace_path}
+          onChange={(e) => setFormData((prev) => ({ ...prev, workspace_path: e.target.value }))}
+          className="w-full bg-surface-2 text-foreground border border-border/50 rounded-xl px-4 py-3.5 text-sm font-mono focus:border-primary/50 outline-none transition-all shadow-inner"
+          placeholder={t('workspacePathPlaceholder')}
+        />
+      )}
+      {workspacePicker === 'registry' && formData.workspace_path && registeredWorkspaces.length > 0 && (
+        <p className="text-[10px] font-mono text-muted-foreground/80 truncate" title={formData.workspace_path}>
+          {formData.workspace_path}
+        </p>
+      )}
+      <p className="text-[10px] text-muted-foreground/60 italic flex items-center gap-1.5">
+        <span className="w-1 h-1 bg-primary rounded-full" />
+        {t('localWorkspaceHint')}
+      </p>
+    </div>
+  )
+
   const handleCreate = async () => {
     if (!formData.name.trim()) {
       setError('Name is required')
@@ -912,10 +1263,10 @@ export function CreateAgentModal({
     const steps: ProgressStep[] = [
       { label: t('stepCreatingRecord'), status: 'pending' },
     ]
-    if (formData.write_to_gateway) {
+    if (formData.write_to_gateway && formData.framework === 'openclaw') {
       steps.push({ label: t('stepWritingGateway'), status: 'pending' })
     }
-    if (formData.provision_openclaw_workspace) {
+    if (formData.provision_openclaw_workspace && formData.framework === 'openclaw') {
       steps.push({ label: t('stepProvisioningWorkspace'), status: 'pending' })
     }
     setProgressSteps([...steps])
@@ -942,10 +1293,13 @@ export function CreateAgentModal({
             openclaw_id: formData.id || undefined,
             role: formData.role,
             session_key: formData.session_key || undefined,
+            workspace_path: formData.workspace_path.trim() || undefined,
             template: selectedTemplate || undefined,
-            write_to_gateway: formData.write_to_gateway,
-            provision_openclaw_workspace: formData.provision_openclaw_workspace,
-            gateway_config: {
+            framework: formData.framework,
+            parent_id: formData.parent_id ? Number(formData.parent_id) : undefined,
+            write_to_gateway: formData.framework === 'openclaw' ? formData.write_to_gateway : false,
+            provision_openclaw_workspace: formData.framework === 'openclaw' ? formData.provision_openclaw_workspace : false,
+            gateway_config: formData.framework === 'openclaw' ? {
               model: { primary: primaryModel },
               identity: { name: formData.name, theme: formData.role, emoji: formData.emoji },
               sandbox: {
@@ -954,7 +1308,7 @@ export function CreateAgentModal({
                 scope: 'agent',
                 ...(formData.dockerNetwork === 'bridge' ? { docker: { network: 'bridge' } } : {}),
               },
-            },
+            } : undefined,
           }),
         }),
         animateSteps(),
@@ -962,7 +1316,7 @@ export function CreateAgentModal({
 
       if (!response.ok) {
         const data = await response.json()
-        const errMsg = data.error || 'Failed to create agent'
+        const errMsg = data.details ? `${data.error}: ${data.details.join(', ')}` : (data.error || 'Failed to create agent')
         // Determine which step failed based on error message
         const failIdx =
           /provision|openclaw/i.test(errMsg) ? steps.findIndex(s => s.label.includes('Provisioning')) :
@@ -993,228 +1347,266 @@ export function CreateAgentModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-card border border-border rounded-lg max-w-2xl w-full max-h-[85vh] flex flex-col">
-        {/* Header */}
-        <div className="p-6 border-b border-border flex-shrink-0">
-          <div className="flex justify-between items-center">
-            <div>
-              <h3 className="text-xl font-bold text-foreground">{t('createNewAgent')}</h3>
-              <div className="flex gap-3 mt-2">
-                {[1, 2, 3].map(s => (
-                  <div key={s} className="flex items-center gap-1.5">
-                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium ${
-                      step === s ? 'bg-primary text-primary-foreground' :
-                      step > s ? 'bg-green-500/20 text-green-400' :
-                      'bg-surface-2 text-muted-foreground'
-                    }`}>
-                      {step > s ? '\u2713' : s}
-                    </div>
-                    <span className={`text-xs ${step === s ? 'text-foreground' : 'text-muted-foreground'}`}>
-                      {s === 1 ? t('stepTemplate') : s === 2 ? t('stepConfigure') : t('stepReview')}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <Button onClick={onClose} variant="ghost" size="icon-sm" className="text-2xl">x</Button>
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-2xl p-0 overflow-hidden bg-card border-border shadow-2xl rounded-2xl">
+        {/* Header with Progress Bar */}
+        <div className="p-6 border-b border-border bg-surface-1/30">
+          <div className="flex justify-between items-center mb-6">
+            <DialogTitle className="text-2xl font-bold bg-gradient-to-r from-foreground to-muted-foreground bg-clip-text text-transparent">
+              {t('createNewAgent')}
+            </DialogTitle>
+          </div>
+          
+          <div className="flex gap-2 relative">
+             <div className="absolute top-[11px] left-4 right-4 h-[2px] bg-border/40 -z-0" />
+             {[0, 1, 2, 3].map(s => (
+               <div key={s} className="flex-1 flex flex-col items-center gap-2 relative z-10">
+                 <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold transition-all duration-300 border-2 ${
+                   step === s ? 'bg-primary border-primary text-primary-foreground scale-110 shadow-lg' :
+                   step > s ? 'bg-green-500 border-green-500 text-white' :
+                   'bg-surface-2 border-border text-muted-foreground'
+                 }`}>
+                   {step > s ? '✓' : s + 1}
+                 </div>
+                 <span className={`text-[10px] font-bold uppercase tracking-widest ${step === s ? 'text-primary' : 'text-muted-foreground'}`}>
+                   {s === 0 ? t('stepType') : s === 1 ? t('stepTemplate') : s === 2 ? t('stepConfigure') : t('stepReview')}
+                 </span>
+               </div>
+             ))}
           </div>
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 min-h-0 overflow-y-auto p-6">
+          {/* Step 0: Choose Framework & Basic Identity */}
+          {step === 0 && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+              {detectedRuntimeOptions.length > 0 ? (
+                <div className="grid grid-cols-2 gap-3">
+                  {detectedRuntimeOptions.map((runtime) => {
+                    const meta = getMainAgentRuntimeMeta(runtime.id)
+                    if (!meta) return null
+                    return (
+                      <Button
+                        key={runtime.id}
+                        onClick={() => setFormData(prev => ({ ...prev, framework: runtime.id }))}
+                        variant="outline"
+                        className={`p-4 h-auto text-left flex flex-col items-start transition-all ${
+                          formData.framework === runtime.id ? 'border-primary bg-primary/5 ring-1 ring-primary/20 scale-[1.02]' : 'hover:border-primary/50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          <div className={`w-8 h-8 rounded flex items-center justify-center font-bold text-xs ${
+                            formData.framework === runtime.id ? 'bg-primary text-primary-foreground' : 'bg-surface-2 text-primary'
+                          }`}>
+                            {meta.shortLabel}
+                          </div>
+                          <div className="min-w-0">
+                            <span className="font-semibold text-foreground block">{meta.label}</span>
+                            {runtime.version && <span className="text-[10px] text-muted-foreground/60">v{runtime.version}</span>}
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground leading-tight">{runtime.description}</p>
+                      </Button>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5">
+                  <h4 className="text-sm font-semibold text-foreground mb-1">No main runtimes detected</h4>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Install at least one main runtime first. Only detected main runtimes can be used as parent agent types for new child agents.
+                  </p>
+                </div>
+              )}
+
+              <div className="space-y-4 pt-4 border-t border-border/50">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1.5">{t('displayName')}</label>
+                    <input
+                      type="text"
+                      value={formData.name}
+                      onChange={(e) => updateName(e.target.value)}
+                      className="w-full bg-surface-1 text-foreground border border-border rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all"
+                      placeholder={t('displayNamePlaceholder')}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1.5">{t('agentId')}</label>
+                    <input
+                      type="text"
+                      value={formData.id}
+                      onChange={(e) => setFormData(prev => ({ ...prev, id: e.target.value }))}
+                      className="w-full bg-surface-1 text-foreground border border-border rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono text-xs"
+                      placeholder="e.g. backend-expert"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {error && (
-            <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 mb-4 rounded-lg text-sm">
+            <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 mb-4 rounded-lg text-sm flex items-center gap-2 animate-in shake duration-300">
+              <span className="shrink-0 text-lg">⚠️</span>
               {error}
             </div>
           )}
 
-          {/* Step 1: Choose Template */}
+          {/* Step 1: Persona & Template */}
           {step === 1 && (
-            <div className="grid grid-cols-2 gap-3">
-              {TEMPLATES.map(tmpl => (
-                <Button
-                  key={tmpl.type}
-                  onClick={() => { selectTemplate(tmpl.type); setStep(2) }}
-                  variant="outline"
-                  className={`p-4 h-auto text-left flex flex-col items-start ${
-                    selectedTemplate === tmpl.type ? 'border-primary bg-primary/5' : ''
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-2xl">{tmpl.emoji}</span>
-                    <span className="font-semibold text-foreground">{tmpl.label}</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground mb-2">{tmpl.description}</p>
-                  <div className="flex gap-2">
-                    <span className={`px-2 py-0.5 text-xs rounded border ${MODEL_TIER_COLORS[tmpl.modelTier]}`}>
-                      {MODEL_TIER_LABELS[tmpl.modelTier]}
-                    </span>
-                    <span className="px-2 py-0.5 text-xs rounded bg-surface-2 text-muted-foreground">
-                      {t('toolCount', { count: tmpl.toolCount })}
-                    </span>
-                  </div>
-                </Button>
-              ))}
-              {/* Custom option */}
-              <Button
-                onClick={() => { selectTemplate(null); setStep(2) }}
-                variant="outline"
-                className={`p-4 h-auto text-left flex flex-col items-start border-dashed ${
-                  selectedTemplate === null ? 'border-primary' : ''
-                }`}
-              >
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-2xl">+</span>
-                  <span className="font-semibold text-foreground">Custom</span>
-                </div>
-                <p className="text-xs text-muted-foreground">{t('customDesc')}</p>
-              </Button>
-            </div>
-          )}
-
-          {/* Step 2: Configure */}
-          {step === 2 && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm text-muted-foreground mb-1">{t('displayName')}</label>
-                  <input
-                    type="text"
-                    value={formData.name}
-                    onChange={(e) => updateName(e.target.value)}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                    placeholder={t('displayNamePlaceholder')}
-                    autoFocus
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm text-muted-foreground mb-1">{t('agentId')}</label>
-                  <input
-                    type="text"
-                    value={formData.id}
-                    onChange={(e) => setFormData(prev => ({ ...prev, id: e.target.value }))}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono text-sm"
-                    placeholder="frontend-dev"
-                  />
-                </div>
+            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+               <div>
+                 <label className="block text-xs font-bold text-muted-foreground uppercase tracking-widest mb-3">Choose Base Template</label>
+                 <div className="grid grid-cols-2 gap-3 max-h-[320px] overflow-y-auto pr-1 custom-scrollbar">
+                    {TEMPLATES.map(tmpl => (
+                      <Button
+                        key={tmpl.type}
+                        onClick={() => selectTemplate(tmpl.type)}
+                        variant="outline"
+                        className={`p-3 h-auto text-left flex flex-col items-start transition-smooth ${
+                          selectedTemplate === tmpl.type ? 'border-primary bg-primary/5 ring-1 ring-primary/20 scale-[1.02]' : ''
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <span className="text-xl">{tmpl.emoji}</span>
+                          <span className="font-semibold text-sm text-foreground">{tmpl.label}</span>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground leading-tight">{tmpl.description}</p>
+                      </Button>
+                    ))}
+                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-4 pt-4 border-t border-border/30">
                 <div>
-                  <label className="block text-sm text-muted-foreground mb-1">{t('roleTheme')}</label>
+                  <label className="block text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1.5">{t('roleTheme')}</label>
                   <input
                     type="text"
                     value={formData.role}
                     onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                    placeholder="builder engineer"
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-primary/20"
+                    placeholder="e.g. builder engineer"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm text-muted-foreground mb-1">{t('emoji')}</label>
-                  <input
-                    type="text"
-                    value={formData.emoji}
-                    onChange={(e) => setFormData(prev => ({ ...prev, emoji: e.target.value }))}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                    placeholder="e.g. \ud83d\udee0\ufe0f"
-                  />
+                   <label className="block text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1.5">{t('parentAgent')}</label>
+                   <select
+                     value={formData.parent_id || ''}
+                     onChange={(e) => setFormData(prev => ({ ...prev, parent_id: e.target.value || '' }))}
+                     className="w-full bg-surface-1 text-foreground border border-border rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-primary/20"
+                   >
+                     {parentCandidates.length === 0 ? (
+                       <option value="">{selectedMainAgent ? selectedMainAgent.name : 'No parent available'}</option>
+                     ) : (
+                       parentCandidates.map(a => (
+                         <option key={a.id} value={a.id}>
+                           {getAgentDisplayName(a)}
+                         </option>
+                       ))
+                     )}
+                   </select>
+                   <p className="mt-1 text-[10px] text-muted-foreground/60">
+                     Child agents are created under the selected main runtime family.
+                   </p>
                 </div>
-              </div>
-
-              <div>
-                <label className="block text-sm text-muted-foreground mb-1">{t('modelTier')}</label>
-                <div className="flex gap-2">
-                  {(['opus', 'sonnet', 'haiku'] as const).map(tier => (
-                    <Button
-                      key={tier}
-                      onClick={() => setFormData(prev => ({
-                        ...prev,
-                        modelTier: tier,
-                        modelPrimary: DEFAULT_MODEL_BY_TIER[tier],
-                      }))}
-                      variant={formData.modelTier === tier ? 'outline' : 'secondary'}
-                      className={`flex-1 ${
-                        formData.modelTier === tier ? MODEL_TIER_COLORS[tier] : ''
-                      }`}
-                    >
-                      {MODEL_TIER_LABELS[tier]}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm text-muted-foreground mb-1">{t('primaryModel')}</label>
-                <input
-                  type="text"
-                  value={formData.modelPrimary}
-                  onChange={(e) => setFormData(prev => ({ ...prev, modelPrimary: e.target.value }))}
-                  list="create-agent-model-suggestions"
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono text-sm"
-                  placeholder={DEFAULT_MODEL_BY_TIER[formData.modelTier]}
-                />
-                <datalist id="create-agent-model-suggestions">
-                  {availableModels.map((name) => (
-                    <option key={name} value={name} />
-                  ))}
-                </datalist>
-              </div>
-
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm text-muted-foreground mb-1">{t('workspace')}</label>
-                  <select
-                    value={formData.workspaceAccess}
-                    onChange={(e) => setFormData(prev => ({ ...prev, workspaceAccess: e.target.value as any }))}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                  >
-                    <option value="rw">{t('readWrite')}</option>
-                    <option value="ro">{t('readOnly')}</option>
-                    <option value="none">{t('none')}</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm text-muted-foreground mb-1">{t('sandbox')}</label>
-                  <select
-                    value={formData.sandboxMode}
-                    onChange={(e) => setFormData(prev => ({ ...prev, sandboxMode: e.target.value as any }))}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                  >
-                    <option value="all">{t('sandboxAll')}</option>
-                    <option value="non-main">{t('sandboxNonMain')}</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm text-muted-foreground mb-1">{t('network')}</label>
-                  <select
-                    value={formData.dockerNetwork}
-                    onChange={(e) => setFormData(prev => ({ ...prev, dockerNetwork: e.target.value as any }))}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                  >
-                    <option value="none">{t('networkIsolated')}</option>
-                    <option value="bridge">{t('networkBridge')}</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm text-muted-foreground mb-1">{t('sessionKeyOptional')}</label>
-                <input
-                  type="text"
-                  value={formData.session_key}
-                  onChange={(e) => setFormData(prev => ({ ...prev, session_key: e.target.value }))}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
-                  placeholder={t('sessionKeyPlaceholder')}
-                />
               </div>
             </div>
           )}
 
-          {/* Step 3: Review */}
+          {/* Step 2: Detailed Technical Config */}
+          {step === 2 && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
+              {formData.framework === 'openclaw' ? (
+                <div className="space-y-4">
+                  {renderLocalWorkspaceField()}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1.5">{t('emoji')}</label>
+                      <input
+                        type="text"
+                        value={formData.emoji}
+                        onChange={(e) => setFormData(prev => ({ ...prev, emoji: e.target.value }))}
+                        className="w-full bg-surface-1 text-foreground border border-border rounded-lg px-3 py-2.5 text-center text-xl"
+                        placeholder="🤖"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1.5">{t('modelTier')}</label>
+                      <div className="flex gap-1.5 bg-surface-1 p-1 rounded-lg border border-border">
+                        {(['opus', 'sonnet', 'haiku'] as const).map(tier => (
+                          <button
+                            key={tier}
+                            onClick={() => setFormData(prev => ({
+                              ...prev,
+                              modelTier: tier,
+                              modelPrimary: DEFAULT_MODEL_BY_TIER[tier],
+                            }))}
+                            className={`flex-1 py-1 px-2 rounded-md text-[10px] font-black uppercase transition-all ${
+                              formData.modelTier === tier ? (MODEL_TIER_COLORS[tier] + ' shadow-md scale-105') : 'text-muted-foreground hover:bg-surface-2'
+                            }`}
+                          >
+                            {tier}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1.5">{t('primaryModel')}</label>
+                    <input
+                      type="text"
+                      value={formData.modelPrimary}
+                      onChange={(e) => setFormData(prev => ({ ...prev, modelPrimary: e.target.value }))}
+                      className="w-full bg-surface-1 text-foreground border border-border rounded-lg px-3 py-2.5 font-mono text-xs"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <ConfigSelect label={t('workspace')} value={formData.workspaceAccess} onChange={v => setFormData(p => ({ ...p, workspaceAccess: v as any }))} options={[{v:'rw', l:t('readWrite')}, {v:'ro', l:t('readOnly')}, {v:'none', l:t('none')}]} />
+                    <ConfigSelect label={t('sandbox')} value={formData.sandboxMode} onChange={v => setFormData(p => ({ ...p, sandboxMode: v as any }))} options={[{v:'all', l:t('sandboxAll')}, {v:'non-main', l:t('sandboxNonMain')}]} />
+                    <ConfigSelect label={t('network')} value={formData.dockerNetwork} onChange={v => setFormData(p => ({ ...p, dockerNetwork: v as any }))} options={[{v:'none', l:t('networkIsolated')}, {v:'bridge', l:t('networkBridge')}]} />
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-blue-500/5 border border-blue-500/10 rounded-2xl p-6 space-y-5">
+                  <div className="flex items-center gap-4 mb-2">
+                    <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400 shadow-inner">
+                       <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    </div>
+                    <div>
+                      <h5 className="text-sm font-bold text-foreground capitalize">{formData.framework} Monitoring</h5>
+                      <p className="text-xs text-muted-foreground">Synchronize external activities with the Hub</p>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-4">
+                     {renderLocalWorkspaceField()}
+                     <div>
+                       <label className="block text-[10px] font-black text-muted-foreground uppercase tracking-[0.2em] mb-2">External Session / PID</label>
+                       <input
+                         type="text"
+                         value={formData.session_key}
+                         onChange={(e) => setFormData(prev => ({ ...prev, session_key: e.target.value }))}
+                         className="w-full bg-surface-2 text-foreground border border-border/50 rounded-xl px-4 py-3.5 text-sm font-mono focus:border-blue-500/50 outline-none transition-all shadow-inner"
+                         placeholder="e.g. session-abc-123"
+                       />
+                       <p className="text-[10px] text-muted-foreground/60 mt-2 italic flex items-center gap-1.5">
+                          <span className="w-1 h-1 bg-blue-500 rounded-full" />
+                          留空则在首次发送消息时自动分配专用会话；若填写须为真实 CLI 会话 ID，且勿与其他智能体重复。
+                       </p>
+                     </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Step 3: Review & Finalize */}
           {step === 3 && (
-            <div className="space-y-4">
+            <div className="space-y-4 animate-in zoom-in-95 duration-300">
               {progressSteps ? (
                 /* Progress view */
                 <div className="space-y-3 py-4">
@@ -1222,148 +1614,153 @@ export function CreateAgentModal({
                   {progressSteps.map((ps, i) => (
                     <div key={i} className="flex items-start gap-3">
                       <div className="w-5 h-5 flex items-center justify-center flex-shrink-0 mt-0.5">
-                        {ps.status === 'active' && (
-                          <span className="inline-block w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                        )}
-                        {ps.status === 'done' && (
-                          <span className="text-green-400 text-sm font-bold">✓</span>
-                        )}
-                        {ps.status === 'error' && (
-                          <span className="text-red-400 text-sm font-bold">✕</span>
-                        )}
-                        {ps.status === 'pending' && (
-                          <span className="inline-block w-3 h-3 rounded-full border border-muted-foreground/40" />
-                        )}
+                        {ps.status === 'active' && <span className="inline-block w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />}
+                        {ps.status === 'done' && <span className="text-green-500 text-sm font-bold">✓</span>}
+                        {ps.status === 'error' && <span className="text-red-500 text-sm font-bold">✕</span>}
+                        {ps.status === 'pending' && <span className="inline-block w-3 h-3 rounded-full border border-border bg-surface-2" />}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <span className={`text-sm ${
-                          ps.status === 'error' ? 'text-red-400' :
-                          ps.status === 'done' ? 'text-green-400' :
-                          ps.status === 'active' ? 'text-foreground' :
-                          'text-muted-foreground'
-                        }`}>{ps.label}</span>
-                        {ps.error && (
-                          <p className="text-xs text-red-400/80 mt-1">{ps.error}</p>
-                        )}
+                        <span className={`text-sm font-medium ${ps.status === 'error' ? 'text-red-500' : ps.status === 'done' ? 'text-green-500' : ps.status === 'active' ? 'text-foreground font-bold' : 'text-muted-foreground'}`}>{ps.label}</span>
+                        {ps.error && <p className="text-xs text-red-500/80 mt-1 font-mono bg-red-500/5 p-2 rounded border border-red-500/10">{ps.error}</p>}
                       </div>
                     </div>
                   ))}
-                  {progressSteps.every(s => s.status === 'done') && (
-                    <p className="text-sm text-green-400 mt-4">{t('agentCreatedSuccess')}</p>
-                  )}
+                  {progressSteps.every(s => s.status === 'done') && <div className="text-center py-4 text-green-500 font-bold animate-bounce">{t('agentCreatedSuccess')}</div>}
                 </div>
               ) : (
-                /* Review summary */
-                <>
-                  <div className="bg-surface-1/50 rounded-lg p-4 space-y-3">
-                    <div className="flex items-center gap-3">
-                      <span className="text-3xl">{formData.emoji || (selectedTemplateData?.emoji || '?')}</span>
+                /* Improved Review summary */
+                <div className="space-y-5">
+                  <div className="relative overflow-hidden rounded-2xl border border-border bg-gradient-to-br from-surface-1 to-surface-2 p-6 shadow-inner">
+                    <div className="flex items-center gap-5 mb-5">
+                      <div className="w-20 h-20 rounded-2xl bg-surface-2 border border-border flex items-center justify-center text-5xl shadow-2xl relative">
+                        <div className="absolute inset-0 bg-primary/5 rounded-2xl animate-pulse" />
+                        {formData.emoji || selectedTemplateData?.emoji || '🤖'}
+                      </div>
                       <div>
-                        <h4 className="text-lg font-bold text-foreground">{formData.name || 'Unnamed'}</h4>
-                        <p className="text-muted-foreground text-sm">{formData.role}</p>
+                        <h4 className="text-2xl font-bold text-foreground tracking-tight">{formData.name || 'Unnamed Agent'}</h4>
+                        <div className="flex items-center gap-2 mt-1.5">
+                          <span className="px-2.5 py-0.5 rounded-full bg-primary/10 text-primary text-[10px] font-black uppercase tracking-[0.2em] border border-primary/20">{formData.framework}</span>
+                          <span className="text-xs text-muted-foreground font-medium">{formData.role}</span>
+                        </div>
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2 text-sm">
-                      <div><span className="text-muted-foreground">{t('idLabel')}:</span> <span className="text-foreground font-mono">{formData.id}</span></div>
-                      <div><span className="text-muted-foreground">{t('templateLabel')}:</span> <span className="text-foreground">{selectedTemplateData?.label || t('custom')}</span></div>
-                      <div><span className="text-muted-foreground">{t('model')}:</span> <span className={`px-2 py-0.5 rounded text-xs ${MODEL_TIER_COLORS[formData.modelTier]}`}>{MODEL_TIER_LABELS[formData.modelTier]}</span></div>
-                      <div><span className="text-muted-foreground">{t('toolsLabel')}:</span> <span className="text-foreground">{selectedTemplateData?.toolCount || t('custom')}</span></div>
-                      <div className="col-span-2"><span className="text-muted-foreground">{t('primaryModel')}:</span> <span className="text-foreground font-mono">{formData.modelPrimary || DEFAULT_MODEL_BY_TIER[formData.modelTier]}</span></div>
-                      <div><span className="text-muted-foreground">{t('workspace')}:</span> <span className="text-foreground">{formData.workspaceAccess}</span></div>
-                      <div><span className="text-muted-foreground">{t('sandbox')}:</span> <span className="text-foreground">{formData.sandboxMode}</span></div>
-                      <div><span className="text-muted-foreground">{t('network')}:</span> <span className="text-foreground">{formData.dockerNetwork}</span></div>
-                      {formData.session_key && (
-                        <div><span className="text-muted-foreground">{t('session')}:</span> <span className="text-foreground font-mono">{formData.session_key}</span></div>
+                    <div className="grid grid-cols-2 gap-y-4 gap-x-8 pt-5 border-t border-border/40 text-xs">
+                      <ReviewItem label={t('idLabel')} value={formData.id} mono />
+                      <ReviewItem label={t('parentAgent')} value={existingAgents.find(a => a.id === Number(formData.parent_id))?.name || selectedMainAgent?.name || 'Top Level'} />
+                      <ReviewItem label={t('model')} value={MODEL_TIER_LABELS[formData.modelTier]} />
+                      <ReviewItem label={t('templateLabel')} value={selectedTemplateData?.label || t('custom')} />
+                      {formData.workspace_path && (
+                        <ReviewItem label={t('localWorkspace')} value={formData.workspace_path} mono className="col-span-2" />
                       )}
+                      {formData.session_key && <ReviewItem label={t('session')} value={formData.session_key} mono className="col-span-2" />}
                     </div>
                   </div>
 
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.write_to_gateway}
-                      onChange={(e) => setFormData(prev => ({ ...prev, write_to_gateway: e.target.checked }))}
-                      className="w-4 h-4 rounded border-border"
-                    />
-                    <span className="text-sm text-foreground">{t('addToGateway')}</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.provision_openclaw_workspace}
-                      onChange={(e) => setFormData(prev => ({ ...prev, provision_openclaw_workspace: e.target.checked }))}
-                      className="w-4 h-4 rounded border-border"
-                    />
-                    <span className="text-sm text-foreground">{t('provisionWorkspace')}</span>
-                  </label>
-                </>
+                  {formData.framework === 'openclaw' && (
+                    <div className="space-y-3 px-1">
+                       <CheckboxItem label={t('addToGateway')} checked={formData.write_to_gateway} onChange={v => setFormData(p => ({ ...p, write_to_gateway: v }))} desc="Persist configuration in the orchestration gateway" />
+                       <CheckboxItem label={t('provisionWorkspace')} checked={formData.provision_openclaw_workspace} onChange={v => setFormData(p => ({ ...p, provision_openclaw_workspace: v }))} desc="Automatically bootstrap a local isolated workspace" />
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="p-6 border-t border-border flex gap-3 flex-shrink-0">
+        <div className="p-6 border-t border-border flex gap-3 flex-shrink-0 bg-surface-1/20">
           {progressSteps ? (
-            /* During/after progress */
             progressSteps.some(s => s.status === 'error') ? (
               <>
                 <div className="flex-1" />
-                <Button onClick={() => { setProgressSteps(null); handleCreate() }} size="lg">
-                  {t('retry')}
-                </Button>
-                <Button onClick={onClose} variant="secondary">
-                  {t('close')}
-                </Button>
+                <Button onClick={() => { setProgressSteps(null); handleCreate() }} size="lg" className="px-8">{t('retry')}</Button>
+                <Button onClick={onClose} variant="secondary">{t('close')}</Button>
               </>
             ) : progressSteps.every(s => s.status === 'done') ? (
-              <>
-                <div className="flex-1" />
-                <span className="text-sm text-muted-foreground self-center">{t('closing')}</span>
-              </>
+              <div className="flex-1 text-center py-2"><span className="text-sm text-muted-foreground italic animate-pulse">Redirecting to monitoring dashboard...</span></div>
             ) : (
-              /* In-progress — no buttons */
               <div className="flex-1" />
             )
           ) : (
-            /* Normal navigation */
             <>
-              {step > 1 && (
-                <Button
-                  onClick={() => setStep((step - 1) as 1 | 2)}
-                  variant="secondary"
-                >
-                  {t('back')}
-                </Button>
-              )}
+              <Button variant="ghost" onClick={onClose} disabled={isCreating} className="text-muted-foreground hover:text-foreground">{t('cancel') || 'Cancel'}</Button>
               <div className="flex-1" />
+              {step > 0 && <Button variant="outline" onClick={() => setStep((step - 1) as any)} disabled={isCreating} className="w-24">{t('back')}</Button>}
               {step < 3 ? (
                 <Button
-                  onClick={() => setStep((step + 1) as 2 | 3)}
-                  disabled={step === 2 && !formData.name.trim()}
-                  size="lg"
+                  onClick={() => {
+                    if (step === 0 && detectedRuntimeOptions.length === 0) {
+                      setError('At least one detected main runtime is required')
+                      return
+                    }
+                    if (!formData.name.trim()) {
+                      setError('Name is required')
+                    } else {
+                      setError(null)
+                      setStep((step + 1) as any)
+                    }
+                  }}
+                  className="w-24"
+                  disabled={step === 0 && detectedRuntimeOptions.length === 0}
                 >
                   {t('next')}
                 </Button>
               ) : (
-                <Button
-                  onClick={handleCreate}
-                  disabled={isCreating || !formData.name.trim()}
-                  size="lg"
-                >
-                  {t('createAgent')}
-                </Button>
+                <Button onClick={handleCreate} disabled={!formData.name.trim() || isCreating} className="w-32 shadow-lg shadow-primary/20">{t('createAgent')}</Button>
               )}
-              <Button onClick={onClose} variant="secondary">
-                {t('cancel')}
-              </Button>
             </>
           )}
         </div>
-      </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ConfigSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: {v: string; l: string}[] }) {
+  return (
+    <div className="space-y-1.5">
+      <label className="block text-[10px] font-black text-muted-foreground uppercase tracking-wider mb-1 px-1">{label}</label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full bg-surface-1 text-foreground border border-border rounded-lg px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-primary/20 text-[11px] transition-all cursor-pointer hover:border-primary/30"
+      >
+        {options.map(opt => <option key={opt.v} value={opt.v}>{opt.l}</option>)}
+      </select>
     </div>
+  )
+}
+
+function ReviewItem({ label, value, mono, className }: { label: string; value: string; mono?: boolean; className?: string }) {
+  return (
+    <div className={`flex flex-col gap-1 ${className}`}>
+      <span className="text-muted-foreground/60 font-bold uppercase tracking-widest text-[9px]">{label}</span>
+      <span className={`text-foreground font-semibold truncate ${mono ? 'font-mono text-[11px] bg-surface-2 px-1.5 py-0.5 rounded inline-block' : 'text-sm'}`}>{value}</span>
+    </div>
+  )
+}
+
+function CheckboxItem({ label, checked, onChange, desc }: { label: string; checked: boolean; onChange: (v: boolean) => void; desc?: string }) {
+  return (
+    <label className="flex items-start gap-4 cursor-pointer group p-3 rounded-xl hover:bg-surface-1/50 transition-colors border border-transparent hover:border-border/40">
+      <div className="mt-0.5 relative flex items-center justify-center pt-0.5">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => onChange(e.target.checked)}
+          className="peer appearance-none w-5 h-5 rounded-md border-2 border-border bg-surface-2 checked:bg-primary checked:border-primary transition-all duration-300"
+        />
+        <svg className="absolute w-3 h-3 text-primary-foreground opacity-0 peer-checked:opacity-100 transition-opacity duration-300 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" />
+        </svg>
+      </div>
+      <div className="flex flex-col">
+        <span className="text-sm text-foreground font-bold group-hover:text-primary transition-colors">{label}</span>
+        {desc && <span className="text-[10px] text-muted-foreground leading-tight mt-0.5 font-medium">{desc}</span>}
+      </div>
+    </label>
   )
 }
 
@@ -1534,7 +1931,7 @@ export function ConfigTab({
       if (!showJson) {
         const primary = String(config?.model?.primary || '').trim()
         if (!primary) {
-          throw new Error('Primary model is required')
+          throw new Error(t('primaryModelRequired'))
         }
       }
       const response = await fetch(`/api/agents/${agent.id}`, {
@@ -1562,11 +1959,12 @@ export function ConfigTab({
   const tools = config.tools || {}
   const subagents = config.subagents || {}
   const memorySearch = config.memorySearch || {}
-  const sandboxMode = sandbox.mode || sandbox.sandboxMode || sandbox.sandbox_mode || config.sandboxMode || 'not configured'
-  const sandboxWorkspace = sandbox.workspaceAccess || sandbox.workspace_access || sandbox.workspace || config.workspaceAccess || 'not configured'
+  const notConfiguredLabel = t('notConfigured')
+  const sandboxMode = sandbox.mode || sandbox.sandboxMode || sandbox.sandbox_mode || config.sandboxMode || notConfiguredLabel
+  const sandboxWorkspace = sandbox.workspaceAccess || sandbox.workspace_access || sandbox.workspace || config.workspaceAccess || notConfiguredLabel
   const sandboxNetwork = sandbox?.docker?.network || sandbox.network || sandbox.dockerNetwork || sandbox.docker_network || 'none'
-  const identityName = identity.name || agent.name || 'not configured'
-  const identityTheme = identity.theme || agent.role || 'not configured'
+  const identityName = identity.name || agent.name || notConfiguredLabel
+  const identityTheme = identity.theme || agent.role || notConfiguredLabel
   const identityEmoji = identity.emoji || '?'
   const identityPreview = identity.content || ''
   const toolAllow = Array.isArray(tools.allow) ? tools.allow : []
@@ -1585,14 +1983,14 @@ export function ConfigTab({
             variant="secondary"
             size="xs"
           >
-            {showJson ? t('structured') : 'JSON'}
+            {showJson ? t('structured') : t('editJson')}
           </Button>
           {!editing && (
             <Button
               onClick={() => setEditing(true)}
               size="sm"
             >
-              Edit
+              {t('edit')}
             </Button>
           )}
         </div>
@@ -2560,7 +2958,7 @@ export function ChannelsTab({ agent }: { agent: Agent }) {
   if (loading && channels.length === 0) {
     return (
       <div className="p-6 flex items-center justify-center py-8">
-        <Loader variant="inline" label="Loading channels" />
+        <Loader variant="inline" label={t('loadingChannels')} />
       </div>
     )
   }
@@ -2678,7 +3076,7 @@ export function CronTab({ agent }: { agent: Agent }) {
   if (loading && allJobs.length === 0) {
     return (
       <div className="p-6 flex items-center justify-center py-8">
-        <Loader variant="inline" label="Loading cron jobs" />
+        <Loader variant="inline" label={t('loadingCronJobs')} />
       </div>
     )
   }

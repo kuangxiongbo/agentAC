@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, type ReactNode } from 'react'
+import { useState, useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
@@ -12,6 +12,12 @@ import {
   MAIN_AGENT_RUNTIME_ORDER,
   type MainAgentRuntimeId,
 } from '@/lib/runtime-agents'
+import { toOpenClawKebabId } from '@/lib/validation'
+import {
+  dispatchSessionPendingPrompt,
+  type SessionRealtimeKind,
+} from '@/lib/session-realtime-events'
+import { getAgentDisplayName } from '@/lib/agent-card-helpers'
 
 const log = createClientLogger('AgentDetailTabs')
 
@@ -20,6 +26,7 @@ interface Agent {
   name: string
   role: string
   session_key?: string
+  workspace_path?: string | null
   soul_content?: string
   working_memory?: string
   status: 'offline' | 'idle' | 'busy' | 'error'
@@ -149,7 +156,8 @@ export function OverviewTab({
   onCancel,
   heartbeatData,
   loadingHeartbeat,
-  onPerformHeartbeat
+  onPerformHeartbeat,
+  onAgentSessionBound,
 }: {
   agent: Agent
   editing: boolean
@@ -164,12 +172,48 @@ export function OverviewTab({
   heartbeatData: HeartbeatResponse | null
   loadingHeartbeat: boolean
   onPerformHeartbeat: () => Promise<void>
+  onAgentSessionBound?: (sessionKey: string) => void
 }) {
   const t = useTranslations('agentDetail')
   const [messageFrom, setMessageFrom] = useState('system')
   const [directMessage, setDirectMessage] = useState('')
   const [messageStatus, setMessageStatus] = useState<string | null>(null)
+  const [messageStatusKind, setMessageStatusKind] = useState<'success' | 'error' | 'info' | null>(null)
+  const [messageSending, setMessageSending] = useState(false)
+  const [messageSendingSeconds, setMessageSendingSeconds] = useState(0)
+  const [creatingSession, setCreatingSession] = useState(false)
+  const messageSendLockRef = useRef(false)
+  const createSessionLockRef = useRef(false)
   const [availableModels, setAvailableModels] = useState<Array<{ alias: string; description?: string }>>([])
+  const [registeredWorkspaces, setRegisteredWorkspaces] = useState<Array<{
+    id: string
+    name: string
+    path: string
+    isDefault: boolean
+  }>>([])
+  const [workspacePicker, setWorkspacePicker] = useState<'registry' | 'custom'>('custom')
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('')
+
+  useEffect(() => {
+    if (!editing) return
+    fetch('/api/workspaces')
+      .then((res) => (res.ok ? res.json() : { workspaces: [] }))
+      .then((data) => {
+        const list = Array.isArray(data.workspaces) ? data.workspaces : []
+        setRegisteredWorkspaces(list)
+        const currentPath = String(formData.workspace_path || '').trim()
+        if (!currentPath) return
+        const matched = list.find((ws: { path: string }) => ws.path === currentPath)
+        if (matched) {
+          setSelectedWorkspaceId(matched.id)
+          setWorkspacePicker('registry')
+        } else {
+          setSelectedWorkspaceId('')
+          setWorkspacePicker('custom')
+        }
+      })
+      .catch(() => setRegisteredWorkspaces([]))
+  }, [editing, formData.workspace_path])
 
   useEffect(() => {
     fetch('/api/status?action=models')
@@ -180,27 +224,138 @@ export function OverviewTab({
       .catch(() => {})
   }, [])
 
+  const needsSessionProvision = useMemo(() => {
+    if (String(agent.session_key || '').trim()) return false
+    const framework = String(agent.framework || '').toLowerCase()
+    return ['codex', 'codex-cli', 'openai', 'claude', 'claude-code', 'claude-sdk', 'cursor', 'opencode'].includes(framework)
+  }, [agent.framework, agent.session_key])
+
+  const sessionMode = useMemo(() => {
+    const cfg = agent.config && typeof agent.config === 'object' ? agent.config as Record<string, unknown> : {}
+    return String(cfg.session_mode || 'dedicated')
+  }, [agent.config])
+
+  const isManualSessionMode = sessionMode === 'manual'
+  const isBackgroundSessionProvisioning = needsSessionProvision && !isManualSessionMode
+
+  useEffect(() => {
+    if (!isBackgroundSessionProvisioning || !agent.id || agent.session_key) return
+
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/agents/${agent.id}`)
+        if (!response.ok || cancelled) return
+        const data = await response.json()
+        const nextKey = String(data?.agent?.session_key || '').trim()
+        if (nextKey && onAgentSessionBound) {
+          onAgentSessionBound(nextKey)
+        }
+      } catch {
+        // ignore poll errors
+      }
+    }
+
+    void poll()
+    const timer = setInterval(() => void poll(), 3000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [isBackgroundSessionProvisioning, agent.id, agent.session_key, onAgentSessionBound])
+
+  useEffect(() => {
+    if (!messageSending) {
+      setMessageSendingSeconds(0)
+      return
+    }
+    const started = Date.now()
+    const timer = setInterval(() => {
+      setMessageSendingSeconds(Math.floor((Date.now() - started) / 1000))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [messageSending])
+
+  const handleCreateSession = async () => {
+    if (createSessionLockRef.current || agent.session_key) return
+
+    createSessionLockRef.current = true
+    setCreatingSession(true)
+    setMessageStatusKind('info')
+    setMessageStatus(t('createSessionCreating'))
+
+    try {
+      const response = await fetch(`/api/agents/${agent.id}/provision-session`, {
+        method: 'POST',
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || t('createSessionFailed'))
+      setMessageStatusKind('success')
+      setMessageStatus(t('createSessionSuccess'))
+      if (data.session_key && onAgentSessionBound) {
+        onAgentSessionBound(data.session_key)
+      }
+      setTimeout(() => {
+        setMessageStatus(null)
+        setMessageStatusKind(null)
+      }, 4000)
+    } catch (error) {
+      setMessageStatusKind('error')
+      setMessageStatus(error instanceof Error ? error.message : t('createSessionFailed'))
+    } finally {
+      createSessionLockRef.current = false
+      setCreatingSession(false)
+    }
+  }
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!directMessage.trim()) return
+    const payload = directMessage.trim()
+    if (!payload || messageSendLockRef.current) return
+    if (isManualSessionMode && needsSessionProvision && !agent.session_key) return
+
+    messageSendLockRef.current = true
+    setMessageSending(true)
+    setMessageStatusKind('info')
+    setMessageStatus(t('messageSending'))
+
     try {
-      setMessageStatus(null)
       const response = await fetch('/api/agents/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           from: messageFrom || 'system',
           to: agent.name,
-          message: directMessage
-        })
+          message: payload,
+        }),
       })
       const data = await response.json()
-      if (!response.ok) throw new Error(data.error || 'Failed to send message')
+      if (!response.ok) throw new Error(data.error || t('messageFailed'))
       setDirectMessage('')
-      setMessageStatus(t('messageSent'))
-      setTimeout(() => setMessageStatus(null), 2000)
+      setMessageStatusKind('success')
+      setMessageStatus(data.accepted ? t('messageAccepted') : t('messageSent'))
+      if (data.session_key && onAgentSessionBound) {
+        onAgentSessionBound(data.session_key)
+      }
+      if (data.accepted && data.session_kind && data.queued_prompt) {
+        dispatchSessionPendingPrompt(
+          data.session_kind as SessionRealtimeKind,
+          data.session_key || '',
+          data.queued_prompt,
+          'prompt_queued',
+          data.agent_id ?? agent.id,
+        )
+      }
+      setTimeout(() => {
+        setMessageStatus(null)
+        setMessageStatusKind(null)
+      }, 3000)
     } catch (error) {
-      setMessageStatus(t('messageFailed'))
+      setMessageStatusKind('error')
+      setMessageStatus(error instanceof Error ? error.message : t('messageFailed'))
+    } finally {
+      messageSendLockRef.current = false
+      setMessageSending(false)
     }
   }
 
@@ -223,7 +378,7 @@ export function OverviewTab({
                     : 'bg-transparent text-muted-foreground border-border hover:border-foreground/30 hover:text-foreground'
                 }`}
               >
-                {status}
+                {t(status)}
               </button>
             ))}
             {agent.session_key && (
@@ -231,7 +386,7 @@ export function OverviewTab({
                 onClick={() => onWakeAgent(agent.name, agent.session_key!)}
                 className="ml-auto px-3 py-1 text-xs rounded-full border border-cyan-500/30 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 transition-colors"
               >
-                Wake
+                {t('wake')}
               </button>
             )}
             <button
@@ -290,18 +445,82 @@ export function OverviewTab({
               )}
             </div>
 
-            <div className="grid grid-cols-[100px_1fr] gap-2 items-center text-sm">
-              <span className="text-muted-foreground">{t('sessionKey')}</span>
+            <div className="grid grid-cols-[100px_1fr] gap-2 items-start text-sm">
+              <span className="text-muted-foreground pt-1.5">{t('localWorkspace')}</span>
               {editing ? (
-                <input
-                  type="text"
-                  value={formData.session_key}
-                  onChange={(e) => setFormData((prev: any) => ({ ...prev, session_key: e.target.value }))}
-                  className="bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
-                  placeholder={t('sessionKeyPlaceholder')}
-                />
+                <div className="space-y-1.5">
+                  {registeredWorkspaces.length > 0 && (
+                    <select
+                      value={workspacePicker === 'custom' ? '__custom__' : selectedWorkspaceId}
+                      onChange={(e) => {
+                        const value = e.target.value
+                        if (value === '__custom__') {
+                          setWorkspacePicker('custom')
+                          setSelectedWorkspaceId('')
+                          return
+                        }
+                        const ws = registeredWorkspaces.find((item) => item.id === value)
+                        if (!ws) return
+                        setWorkspacePicker('registry')
+                        setSelectedWorkspaceId(value)
+                        setFormData((prev: any) => ({ ...prev, workspace_path: ws.path }))
+                      }}
+                      className="w-full bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    >
+                      <option value="">{t('selectWorkspace')}</option>
+                      {registeredWorkspaces.map((ws) => (
+                        <option key={ws.id} value={ws.id}>
+                          {ws.name}{ws.isDefault ? ` (${t('defaultWorkspace')})` : ''}
+                        </option>
+                      ))}
+                      <option value="__custom__">{t('customWorkspacePath')}</option>
+                    </select>
+                  )}
+                  {(workspacePicker === 'custom' || registeredWorkspaces.length === 0) && (
+                    <input
+                      type="text"
+                      value={formData.workspace_path || ''}
+                      onChange={(e) => setFormData((prev: any) => ({ ...prev, workspace_path: e.target.value }))}
+                      className="w-full bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+                      placeholder={t('workspacePathPlaceholder')}
+                    />
+                  )}
+                  {workspacePicker === 'registry' && formData.workspace_path && (
+                    <p className="text-[11px] font-mono text-muted-foreground break-all">{formData.workspace_path}</p>
+                  )}
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">{t('localWorkspaceHint')}</p>
+                </div>
               ) : (
-                <span className="text-foreground font-mono text-xs">
+                <span className="text-foreground font-mono text-xs break-all">
+                  {agent.workspace_path || <span className="text-muted-foreground/50">{t('notSet')}</span>}
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-[100px_1fr] gap-2 items-start text-sm">
+              <span className="text-muted-foreground pt-1.5">{t('sessionKey')}</span>
+              {editing ? (
+                <div className="space-y-1.5">
+                  <input
+                    type="text"
+                    value={formData.session_key}
+                    onChange={(e) => setFormData((prev: any) => ({ ...prev, session_key: e.target.value }))}
+                    className="w-full bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    placeholder={t('sessionKeyPlaceholder')}
+                  />
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">{t('sessionKeyHint')}</p>
+                  {formData.session_key && (
+                    <button
+                      type="button"
+                      onClick={() => setFormData((prev: any) => ({ ...prev, session_key: '' }))}
+                      className="text-[11px] text-amber-400/90 hover:text-amber-300"
+                    >
+                      {t('clearSessionKey')}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <span className="text-foreground font-mono text-xs break-all">
                   {agent.session_key || <span className="text-muted-foreground/50">{t('notSet')}</span>}
                 </span>
               )}
@@ -366,8 +585,13 @@ export function OverviewTab({
           <div className="flex items-center justify-between mb-3">
             <h4 className="text-sm font-medium text-foreground">{t('message')}</h4>
             {messageStatus && (
-              <span className={`text-xs ${messageStatus === 'Sent' ? 'text-green-400' : 'text-rose-400'}`}>
+              <span className={`text-xs ${
+                messageStatusKind === 'success' ? 'text-green-400'
+                  : messageStatusKind === 'error' ? 'text-rose-400'
+                  : 'text-amber-300'
+              }`}>
                 {messageStatus}
+                {messageSending && messageSendingSeconds > 0 ? ` (${messageSendingSeconds}s)` : ''}
               </span>
             )}
           </div>
@@ -376,18 +600,52 @@ export function OverviewTab({
               type="text"
               value={messageFrom}
               onChange={(e) => setMessageFrom(e.target.value)}
-              className="bg-surface-1 text-foreground rounded px-2.5 py-1.5 text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary/50"
+              disabled={messageSending}
+              className="bg-surface-1 text-foreground rounded px-2.5 py-1.5 text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary/50 disabled:opacity-50"
               placeholder={t('from')}
             />
             <textarea
               value={directMessage}
               onChange={(e) => setDirectMessage(e.target.value)}
-              className="flex-1 min-h-[80px] bg-surface-1 text-foreground rounded px-2.5 py-2 text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary/50 resize-none"
-              placeholder={t('sendMessagePlaceholder', { name: agent.name })}
+              disabled={messageSending || creatingSession || (isManualSessionMode && needsSessionProvision && !agent.session_key)}
+              className="flex-1 min-h-[80px] bg-surface-1 text-foreground rounded px-2.5 py-2 text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary/50 resize-none disabled:opacity-50"
+              placeholder={
+                isManualSessionMode && needsSessionProvision && !agent.session_key
+                  ? t('sendMessageRequiresSession')
+                  : isBackgroundSessionProvisioning
+                    ? t('sendMessageWhileProvisioning')
+                    : t('sendMessagePlaceholder', { name: agent.name })
+              }
             />
+            {isBackgroundSessionProvisioning && (
+              <p className="text-[11px] text-cyan-200/80 leading-relaxed">{t('sessionAutoProvisionHint')}</p>
+            )}
+            {isManualSessionMode && needsSessionProvision && !agent.session_key && (
+              <div className="rounded-md border border-amber-500/25 bg-amber-500/5 px-3 py-2 space-y-2">
+                <p className="text-[11px] text-amber-200/90 leading-relaxed">{t('createSessionHint')}</p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  disabled={creatingSession || messageSending}
+                  onClick={() => void handleCreateSession()}
+                >
+                  {creatingSession ? t('createSessionCreating') : t('createSession')}
+                </Button>
+              </div>
+            )}
             <div className="flex justify-end">
-              <Button type="submit" size="sm" disabled={!directMessage.trim()}>
-                {t('send')}
+              <Button
+                type="submit"
+                size="sm"
+                disabled={
+                  !directMessage.trim()
+                  || messageSending
+                  || creatingSession
+                  || (isManualSessionMode && needsSessionProvision && !agent.session_key)
+                }
+              >
+                {messageSending ? t('messageSending') : t('send')}
               </Button>
             </div>
           </form>
@@ -916,6 +1174,7 @@ export function CreateAgentModal({
     sandboxMode: 'all' as 'all' | 'non-main',
     dockerNetwork: 'none' as 'none' | 'bridge',
     session_key: '',
+    workspace_path: '',
     write_to_gateway: true,
     provision_openclaw_workspace: true,
     framework: 'openclaw' as MainAgentRuntimeId,
@@ -923,6 +1182,14 @@ export function CreateAgentModal({
   })
   const [existingAgents, setExistingAgents] = useState<Agent[]>([])
   const [runtimeStatuses, setRuntimeStatuses] = useState<RuntimeStatus[]>([])
+  const [registeredWorkspaces, setRegisteredWorkspaces] = useState<Array<{
+    id: string
+    name: string
+    path: string
+    isDefault: boolean
+  }>>([])
+  const [workspacePicker, setWorkspacePicker] = useState<'registry' | 'custom'>('registry')
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('')
 
   useEffect(() => {
     Promise.all([
@@ -958,8 +1225,15 @@ export function CreateAgentModal({
   )
   const parentCandidates = useMemo(
     () => existingAgents
-      .filter((agent) => !agent.hidden && agent.id !== Number(formData.id) && agent.framework === formData.framework)
-      .sort((a, b) => Number(isRuntimeManagedAgent(b)) - Number(isRuntimeManagedAgent(a))),
+      .filter(
+        (agent) =>
+          !agent.hidden &&
+          agent.id !== Number(formData.id) &&
+          agent.framework === formData.framework &&
+          !isRuntimeManagedAgent(agent) &&
+          agent.role !== 'main-agent',
+      )
+      .sort((a, b) => a.name.localeCompare(b.name)),
     [existingAgents, formData.framework, formData.id]
   )
 
@@ -979,11 +1253,59 @@ export function CreateAgentModal({
     })
   }, [selectedMainAgent])
 
-  // Auto-generate kebab-case ID from name
+  // Auto-generate kebab-case ID from name (fallback when display name is non-Latin)
   const updateName = (name: string) => {
-    const id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    const id = toOpenClawKebabId(name, name || 'agent')
     setFormData(prev => ({ ...prev, name, id }))
   }
+
+  const updateAgentId = (raw: string) => {
+    const id = raw.trim() ? toOpenClawKebabId(raw, formData.name || 'agent') : ''
+    setFormData((prev) => ({ ...prev, id }))
+  }
+
+  useEffect(() => {
+    if (step !== 2) return
+    let cancelled = false
+    fetch('/api/workspaces')
+      .then((res) => (res.ok ? res.json() : { workspaces: [] }))
+      .then((data) => {
+        if (cancelled) return
+        const list = Array.isArray(data.workspaces) ? data.workspaces : []
+        setRegisteredWorkspaces(list)
+      })
+      .catch(() => {
+        if (!cancelled) setRegisteredWorkspaces([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [step])
+
+  useEffect(() => {
+    if (step !== 2 || registeredWorkspaces.length === 0) return
+
+    const currentPath = formData.workspace_path.trim()
+    if (!currentPath) {
+      const preferred = registeredWorkspaces.find((ws) => ws.isDefault) || registeredWorkspaces[0]
+      if (!preferred) return
+      setSelectedWorkspaceId(preferred.id)
+      setWorkspacePicker('registry')
+      setFormData((prev) => (
+        prev.workspace_path === preferred.path ? prev : { ...prev, workspace_path: preferred.path }
+      ))
+      return
+    }
+
+    const matched = registeredWorkspaces.find((ws) => ws.path === currentPath)
+    if (matched) {
+      setSelectedWorkspaceId(matched.id)
+      setWorkspacePicker('registry')
+    } else {
+      setSelectedWorkspaceId('')
+      setWorkspacePicker('custom')
+    }
+  }, [step, registeredWorkspaces, formData.workspace_path])
 
   useEffect(() => {
     const loadAvailableModels = async () => {
@@ -1023,6 +1345,60 @@ export function CreateAgentModal({
     }
   }
 
+  const onWorkspaceRegistryChange = (workspaceId: string) => {
+    if (workspaceId === '__custom__') {
+      setWorkspacePicker('custom')
+      setSelectedWorkspaceId('')
+      return
+    }
+    const ws = registeredWorkspaces.find((item) => item.id === workspaceId)
+    if (!ws) return
+    setWorkspacePicker('registry')
+    setSelectedWorkspaceId(workspaceId)
+    setFormData((prev) => ({ ...prev, workspace_path: ws.path }))
+  }
+
+  const renderLocalWorkspaceField = () => (
+    <div className="space-y-2">
+      <label className="block text-[10px] font-black text-muted-foreground uppercase tracking-[0.2em]">
+        {t('localWorkspace')}
+      </label>
+      {registeredWorkspaces.length > 0 ? (
+        <select
+          value={workspacePicker === 'custom' ? '__custom__' : selectedWorkspaceId}
+          onChange={(e) => onWorkspaceRegistryChange(e.target.value)}
+          className="w-full bg-surface-2 text-foreground border border-border/50 rounded-xl px-4 py-3 text-sm focus:border-primary/50 outline-none transition-all"
+        >
+          <option value="">{t('selectWorkspace')}</option>
+          {registeredWorkspaces.map((ws) => (
+            <option key={ws.id} value={ws.id}>
+              {ws.name}{ws.isDefault ? ` (${t('defaultWorkspace')})` : ''} — {ws.path}
+            </option>
+          ))}
+          <option value="__custom__">{t('customWorkspacePath')}</option>
+        </select>
+      ) : null}
+      {(workspacePicker === 'custom' || registeredWorkspaces.length === 0) && (
+        <input
+          type="text"
+          value={formData.workspace_path}
+          onChange={(e) => setFormData((prev) => ({ ...prev, workspace_path: e.target.value }))}
+          className="w-full bg-surface-2 text-foreground border border-border/50 rounded-xl px-4 py-3.5 text-sm font-mono focus:border-primary/50 outline-none transition-all shadow-inner"
+          placeholder={t('workspacePathPlaceholder')}
+        />
+      )}
+      {workspacePicker === 'registry' && formData.workspace_path && registeredWorkspaces.length > 0 && (
+        <p className="text-[10px] font-mono text-muted-foreground/80 truncate" title={formData.workspace_path}>
+          {formData.workspace_path}
+        </p>
+      )}
+      <p className="text-[10px] text-muted-foreground/60 italic flex items-center gap-1.5">
+        <span className="w-1 h-1 bg-primary rounded-full" />
+        {t('localWorkspaceHint')}
+      </p>
+    </div>
+  )
+
   const handleCreate = async () => {
     if (!formData.name.trim()) {
       setError('Name is required')
@@ -1040,6 +1416,10 @@ export function CreateAgentModal({
     }
     if (formData.provision_openclaw_workspace && formData.framework === 'openclaw') {
       steps.push({ label: t('stepProvisioningWorkspace'), status: 'pending' })
+    }
+    const localRuntimes = ['codex', 'codex-cli', 'openai', 'claude', 'claude-code', 'claude-sdk', 'cursor', 'opencode']
+    if (localRuntimes.includes(String(formData.framework || '').toLowerCase()) && !formData.session_key?.trim()) {
+      steps.push({ label: t('stepProvisioningSession'), status: 'pending' })
     }
     setProgressSteps([...steps])
 
@@ -1062,9 +1442,10 @@ export function CreateAgentModal({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name: formData.name,
-            openclaw_id: formData.id || undefined,
+            openclaw_id: toOpenClawKebabId(formData.id || formData.name, formData.name || 'agent'),
             role: formData.role,
             session_key: formData.session_key || undefined,
+            workspace_path: formData.workspace_path.trim() || undefined,
             template: selectedTemplate || undefined,
             framework: formData.framework,
             parent_id: formData.parent_id ? Number(formData.parent_id) : undefined,
@@ -1208,7 +1589,7 @@ export function CreateAgentModal({
                     <input
                       type="text"
                       value={formData.id}
-                      onChange={(e) => setFormData(prev => ({ ...prev, id: e.target.value }))}
+                      onChange={(e) => updateAgentId(e.target.value)}
                       className="w-full bg-surface-1 text-foreground border border-border rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono text-xs"
                       placeholder="e.g. backend-expert"
                     />
@@ -1273,7 +1654,7 @@ export function CreateAgentModal({
                      ) : (
                        parentCandidates.map(a => (
                          <option key={a.id} value={a.id}>
-                           {a.name}{isRuntimeManagedAgent(a) ? ' • main' : ''} ({a.framework || 'agent'})
+                           {getAgentDisplayName(a)}
                          </option>
                        ))
                      )}
@@ -1291,6 +1672,7 @@ export function CreateAgentModal({
             <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-300">
               {formData.framework === 'openclaw' ? (
                 <div className="space-y-4">
+                  {renderLocalWorkspaceField()}
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1.5">{t('emoji')}</label>
@@ -1353,6 +1735,7 @@ export function CreateAgentModal({
                   </div>
                   
                   <div className="space-y-4">
+                     {renderLocalWorkspaceField()}
                      <div>
                        <label className="block text-[10px] font-black text-muted-foreground uppercase tracking-[0.2em] mb-2">External Session / PID</label>
                        <input
@@ -1364,7 +1747,7 @@ export function CreateAgentModal({
                        />
                        <p className="text-[10px] text-muted-foreground/60 mt-2 italic flex items-center gap-1.5">
                           <span className="w-1 h-1 bg-blue-500 rounded-full" />
-                          Used to link live logs and activities from the external process.
+                          留空则在首次发送消息时自动分配专用会话；若填写须为真实 CLI 会话 ID，且勿与其他智能体重复。
                        </p>
                      </div>
                   </div>
@@ -1419,6 +1802,9 @@ export function CreateAgentModal({
                       <ReviewItem label={t('parentAgent')} value={existingAgents.find(a => a.id === Number(formData.parent_id))?.name || selectedMainAgent?.name || 'Top Level'} />
                       <ReviewItem label={t('model')} value={MODEL_TIER_LABELS[formData.modelTier]} />
                       <ReviewItem label={t('templateLabel')} value={selectedTemplateData?.label || t('custom')} />
+                      {formData.workspace_path && (
+                        <ReviewItem label={t('localWorkspace')} value={formData.workspace_path} mono className="col-span-2" />
+                      )}
                       {formData.session_key && <ReviewItem label={t('session')} value={formData.session_key} mono className="col-span-2" />}
                     </div>
                   </div>
@@ -1697,7 +2083,7 @@ export function ConfigTab({
       if (!showJson) {
         const primary = String(config?.model?.primary || '').trim()
         if (!primary) {
-          throw new Error('Primary model is required')
+          throw new Error(t('primaryModelRequired'))
         }
       }
       const response = await fetch(`/api/agents/${agent.id}`, {
@@ -1725,11 +2111,12 @@ export function ConfigTab({
   const tools = config.tools || {}
   const subagents = config.subagents || {}
   const memorySearch = config.memorySearch || {}
-  const sandboxMode = sandbox.mode || sandbox.sandboxMode || sandbox.sandbox_mode || config.sandboxMode || 'not configured'
-  const sandboxWorkspace = sandbox.workspaceAccess || sandbox.workspace_access || sandbox.workspace || config.workspaceAccess || 'not configured'
+  const notConfiguredLabel = t('notConfigured')
+  const sandboxMode = sandbox.mode || sandbox.sandboxMode || sandbox.sandbox_mode || config.sandboxMode || notConfiguredLabel
+  const sandboxWorkspace = sandbox.workspaceAccess || sandbox.workspace_access || sandbox.workspace || config.workspaceAccess || notConfiguredLabel
   const sandboxNetwork = sandbox?.docker?.network || sandbox.network || sandbox.dockerNetwork || sandbox.docker_network || 'none'
-  const identityName = identity.name || agent.name || 'not configured'
-  const identityTheme = identity.theme || agent.role || 'not configured'
+  const identityName = identity.name || agent.name || notConfiguredLabel
+  const identityTheme = identity.theme || agent.role || notConfiguredLabel
   const identityEmoji = identity.emoji || '?'
   const identityPreview = identity.content || ''
   const toolAllow = Array.isArray(tools.allow) ? tools.allow : []
@@ -1748,14 +2135,14 @@ export function ConfigTab({
             variant="secondary"
             size="xs"
           >
-            {showJson ? t('structured') : 'JSON'}
+            {showJson ? t('structured') : t('editJson')}
           </Button>
           {!editing && (
             <Button
               onClick={() => setEditing(true)}
               size="sm"
             >
-              Edit
+              {t('edit')}
             </Button>
           )}
         </div>
@@ -2723,7 +3110,7 @@ export function ChannelsTab({ agent }: { agent: Agent }) {
   if (loading && channels.length === 0) {
     return (
       <div className="p-6 flex items-center justify-center py-8">
-        <Loader variant="inline" label="Loading channels" />
+        <Loader variant="inline" label={t('loadingChannels')} />
       </div>
     )
   }
@@ -2841,7 +3228,7 @@ export function CronTab({ agent }: { agent: Agent }) {
   if (loading && allJobs.length === 0) {
     return (
       <div className="p-6 flex items-center justify-center py-8">
-        <Loader variant="inline" label="Loading cron jobs" />
+        <Loader variant="inline" label={t('loadingCronJobs')} />
       </div>
     )
   }

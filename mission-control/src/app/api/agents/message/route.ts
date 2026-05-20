@@ -8,6 +8,11 @@ import { logger } from '@/lib/logger'
 import { scanForInjection } from '@/lib/injection-guard'
 import { scanForSecrets } from '@/lib/secret-scanner'
 import { logSecurityEvent } from '@/lib/security-events'
+import {
+  agentBlocksMessageUntilSessionReady,
+  enqueueBoundLocalAgentPrompt,
+  getLocalSessionKindForFramework,
+} from '@/lib/local-session-executor'
 
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'operator')
@@ -48,24 +53,43 @@ export async function POST(request: NextRequest) {
     if (!agent) {
       return NextResponse.json({ error: 'Recipient agent not found' }, { status: 404 })
     }
-    if (!agent.session_key) {
+    const localSessionKind = getLocalSessionKindForFramework(agent.framework)
+    if (!agent.session_key && !localSessionKind) {
       return NextResponse.json(
         { error: 'Recipient agent has no session key configured' },
         { status: 400 }
       )
     }
 
-    await runOpenClaw(
-      [
-        'gateway',
-        'sessions_send',
-        '--session',
-        agent.session_key,
-        '--message',
-        `Message from ${from}: ${message}`
-      ],
-      { timeoutMs: 10000 }
-    )
+    if (agentBlocksMessageUntilSessionReady(agent)) {
+      return NextResponse.json(
+        { error: 'Create and bind a dedicated session before sending messages to this agent.' },
+        { status: 409 }
+      )
+    }
+
+    let localSessionKey: string | null = null
+    let queuedPrompt: string | null = null
+    let queuedSessionKind: string | null = null
+
+    if (localSessionKind) {
+      queuedPrompt = `Message from ${from}: ${message}`
+      const queued = enqueueBoundLocalAgentPrompt(agent, queuedPrompt)
+      localSessionKey = queued.sessionKey
+      queuedSessionKind = queued.kind
+    } else {
+      await runOpenClaw(
+        [
+          'gateway',
+          'sessions_send',
+          '--session',
+          agent.session_key,
+          '--message',
+          `Message from ${from}: ${message}`
+        ],
+        { timeoutMs: 10000 }
+      )
+    }
 
     db_helpers.createNotification(
       to,
@@ -87,9 +111,17 @@ export async function POST(request: NextRequest) {
       workspaceId
     )
 
-    return NextResponse.json({ success: true })
+    return NextResponse.json({
+      success: true,
+      accepted: Boolean(localSessionKind),
+      agent_id: agent.id,
+      ...(localSessionKey ? { session_key: localSessionKey } : {}),
+      ...(queuedSessionKind ? { session_kind: queuedSessionKind } : {}),
+      ...(queuedPrompt ? { queued_prompt: queuedPrompt } : {}),
+    })
   } catch (error) {
     logger.error({ err: error }, 'POST /api/agents/message error')
-    return NextResponse.json({ error: 'Failed to send message' }, { status: 500 })
+    const message = (error as Error)?.message || 'Failed to send message'
+    return NextResponse.json({ error: message }, { status: 500 })
   }
 }

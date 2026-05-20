@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
@@ -21,8 +21,27 @@ import {
   ModelsTab,
   CreateAgentModal
 } from './agent-detail-tabs'
-import { formatModelName, buildTaskStatParts } from '@/lib/agent-card-helpers'
+import {
+  formatModelName,
+  buildTaskStatParts,
+  getAgentDisplayName,
+  getAgentClientId,
+  getAgentClientLabel,
+  getFrameworkSectionLabel,
+  isHumanWatchAgent,
+  isOperativeUserAgent,
+  isRuntimeMainAnchorAgent,
+} from '@/lib/agent-card-helpers'
+import { HumanWatchInterventionsTab } from './human-watch-interventions-tab'
+import { HumanWatchCreateStewardModal } from './human-watch-create-steward-modal'
+import { HumanWatchWorkerBindTab } from './human-watch-worker-bind-tab'
+import { HumanWatchStewardBindTab } from './human-watch-steward-bind-tab'
+import {
+  HumanWatchEntitlementNotice,
+  useHumanWatchEntitled,
+} from '@/components/subscription-license-gate'
 import { useAgentCenterStore, type Agent } from '@/store'
+import { isRuntimeManagedAgent } from '@/lib/runtime-agents'
 
 const log = createClientLogger('AgentSquadPhase3')
 
@@ -93,17 +112,41 @@ const statusCardStyles: Record<string, { edge: string; glow: string; dot: string
   },
 }
 
-const formatLastSeen = (t: (key: string, values?: Record<string, string | number>) => string, timestamp?: number) => {
-  if (!timestamp) return t('never')
+function getAgentFrameworkLabel(agent: Agent) {
+  if (agent.framework) return agent.framework
+  if ((agent as any).source === 'local') return 'generic'
+  return 'openclaw'
+}
+
+function isDiskImportedAgent(agent: Agent) {
+  return (agent as any).source === 'local' && !isRuntimeManagedAgent(agent)
+}
+
+function getAgentSourceLabel(agent: Agent, clientNameById?: Map<string, string>) {
+  const source = (agent as any).source
+  if (isRuntimeManagedAgent(agent)) return 'runtime'
+  if (source === 'bridge_index' || source === 'client') {
+    return getAgentClientLabel(agent, clientNameById) || 'edge'
+  }
+  if (!source || source === 'manual') return null
+  if (source === 'local') return 'disk'
+  if (source === 'runtime') return 'runtime'
+  if (source === 'gateway') return 'gateway'
+  if (source === 'bridge') return 'bridge'
+  return source
+}
+
+const formatLastSeen = (timestamp?: number) => {
+  if (!timestamp) return 'Never'
   const now = Date.now()
   const diffMs = now - (timestamp * 1000)
   const diffMinutes = Math.floor(diffMs / (1000 * 60))
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-  if (diffMinutes < 1) return t('justNow')
-  if (diffMinutes < 60) return t('minutesAgo', { count: diffMinutes })
-  if (diffHours < 24) return t('hoursAgo', { count: diffHours })
-  if (diffDays < 7) return t('daysAgo', { count: diffDays })
+  if (diffMinutes < 1) return 'Just now'
+  if (diffMinutes < 60) return `${diffMinutes}m ago`
+  if (diffHours < 24) return `${diffHours}h ago`
+  if (diffDays < 7) return `${diffDays}d ago`
   return new Date(timestamp * 1000).toLocaleDateString()
 }
 
@@ -113,43 +156,24 @@ const hasRecentHeartbeat = (agent: Agent) => {
   return agent.last_seen > thirtyMinutesAgo
 }
 
-function getNodeDisplayLabel(agent: Agent): string | null {
-  const config = (agent as any).config
-  const nodeLabel = typeof config?.node_label === 'string' ? config.node_label.trim() : ''
-  if (nodeLabel) return nodeLabel
-  return (agent as any).node_id || null
-}
-
-function getAgentDisplayName(agent: Agent): string {
-  const config = (agent as any).config
-  const originalName = typeof config?.original_name === 'string' ? config.original_name.trim() : ''
-  return originalName || agent.name
-}
+type EdgeClientOption = { id: string; name: string; status: string }
 
 export function AgentSquadPanelPhase3() {
   const t = useTranslations('agentSquadPhase3')
-  const tc = useTranslations('common')
   const { agents, setAgents, centralMode } = useAgentCenterStore()
+  const humanWatchEntitled = useHumanWatchEntitled()
   const [loading, setLoading] = useState(agents.length === 0)
   const [error, setError] = useState<string | null>(null)
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [showHumanWatchModal, setShowHumanWatchModal] = useState(false)
   const [showQuickSpawnModal, setShowQuickSpawnModal] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [syncing, setSyncing] = useState(false)
-  const [syncToast, setSyncToast] = useState<{ ok: boolean; text: string } | null>(null)
+  const [syncToast, setSyncToast] = useState<string | null>(null)
   const [showHidden, setShowHidden] = useState(false)
-  const [selectedNodeId, setSelectedNodeId] = useState<string>('all')
-
-  const availableNodes = Array.from(new Map(
-    agents
-      .map((agent) => {
-        const nodeId = typeof (agent as any).node_id === 'string' ? (agent as any).node_id : ''
-        if (!nodeId) return null
-        return [nodeId, { id: nodeId, label: getNodeDisplayLabel(agent) || nodeId }] as const
-      })
-      .filter(Boolean) as Array<readonly [string, { id: string; label: string }]>
-  ).values())
+  const [selectedClientId, setSelectedClientId] = useState('')
+  const [edgeClients, setEdgeClients] = useState<EdgeClientOption[]>([])
 
   // Sync agents from gateway config or local disk
   const syncFromConfig = async (source?: 'local') => {
@@ -159,63 +183,135 @@ export function AgentSquadPanelPhase3() {
       const url = source === 'local' ? '/api/agents/sync?source=local' : '/api/agents/sync'
       const response = await fetch(url, { method: 'POST' })
       if (response.status === 401) {
-        window.location.assign('/login?next=%2Fagents')
-        return
+        throw new Error('Unauthorized')
       }
       const data = await response.json()
       if (response.status === 403) {
-        throw new Error(t('adminSyncRequired'))
+        throw new Error('Admin access required for agent sync')
       }
-      if (!response.ok) throw new Error(data.error || t('syncFailed'))
+      if (!response.ok) throw new Error(data.error || 'Sync failed')
       if (source === 'local') {
-        setSyncToast({ ok: true, text: data.message || t('syncLocalComplete') })
+        setSyncToast(data.message || 'Local agent sync complete')
       } else {
-        setSyncToast({ ok: true, text: t('syncConfigComplete', { synced: data.synced, created: data.created, updated: data.updated }) })
+        setSyncToast(`Synced ${data.synced} agents (${data.created} new, ${data.updated} updated)`)
       }
       fetchAgents()
       setTimeout(() => setSyncToast(null), 5000)
     } catch (err: any) {
-      setSyncToast({ ok: false, text: err?.message || t('syncFailed') })
+      setSyncToast(`Sync failed: ${err.message}`)
       setTimeout(() => setSyncToast(null), 5000)
     } finally {
       setSyncing(false)
     }
   }
 
+  const clientNameById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const client of edgeClients) {
+      map.set(client.id, client.name)
+    }
+    return map
+  }, [edgeClients])
+
+  const loadEdgeClients = useCallback(async () => {
+    if (!centralMode) return
+    const map = new Map<string, EdgeClientOption>()
+    try {
+      const [bridgeRes, syncRes] = await Promise.all([
+        fetch('/api/bridge/clients'),
+        fetch('/api/server-sync/status'),
+      ])
+      if (syncRes.ok) {
+        const data = await syncRes.json()
+        for (const client of Array.isArray(data?.clients) ? data.clients : []) {
+          const id = String(client?.client_id || '').trim()
+          if (!id) continue
+          map.set(id, {
+            id,
+            name: String(client?.client_name || id),
+            status: String(client?.status || 'disconnected'),
+          })
+        }
+      }
+      if (bridgeRes.ok) {
+        const data = await bridgeRes.json()
+        for (const client of Array.isArray(data?.clients) ? data.clients : []) {
+          const id = String(client?.id || '').trim()
+          if (!id) continue
+          map.set(id, {
+            id,
+            name: String(client?.name || id),
+            status: String(client?.status || 'connected'),
+          })
+        }
+      }
+      setEdgeClients(
+        Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')),
+      )
+    } catch (err) {
+      log.error('Failed to load edge clients:', err)
+    }
+  }, [centralMode])
+
+  useEffect(() => {
+    void loadEdgeClients()
+  }, [loadEdgeClients])
+
   // Fetch agents
-  const fetchAgents = useCallback(async () => {
+  const fetchedRef = useRef(false)
+  const fetchAgents = useCallback(async (force = false) => {
+    if (!force && fetchedRef.current && agents.length > 0) return
+    
     try {
       setError(null)
       if (agents.length === 0) setLoading(true)
 
-      let url = showHidden ? '/api/agents?show_hidden=true' : '/api/agents'
-      if (selectedNodeId !== 'all') {
-        url += (url.includes('?') ? '&' : '?') + `node_id=${encodeURIComponent(selectedNodeId)}`
+      const params = new URLSearchParams()
+      if (showHidden) params.set('show_hidden', 'true')
+      if (centralMode) {
+        params.set('include_bridge', '1')
+        if (selectedClientId) params.set('client_id', selectedClientId)
       }
+      const query = params.toString()
+      const url = query ? `/api/agents?${query}` : '/api/agents'
       const response = await fetch(url)
       if (response.status === 401) {
-        window.location.assign('/login?next=%2Fagents')
-        return
+        throw new Error('Unauthorized')
       }
       if (response.status === 403) {
-        throw new Error(t('accessDenied'))
+        throw new Error('Access denied')
       }
       if (!response.ok) {
         const data = await response.json().catch(() => ({}))
-        throw new Error(data.error || t('failedToFetch'))
+        throw new Error(data.error || 'Failed to fetch agents')
       }
 
       const data = await response.json()
       setAgents(data.agents || [])
+      fetchedRef.current = true
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('errorOccurred'))
+      setError(err instanceof Error ? err.message : 'An error occurred')
     } finally {
       setLoading(false)
     }
-  }, [agents.length, setAgents, showHidden, selectedNodeId])
+  }, [agents.length, setAgents, showHidden, centralMode, selectedClientId])
 
   // Smart polling with visibility pause
   useSmartPoll(fetchAgents, 30000, { enabled: autoRefresh, pauseWhenSseConnected: true })
+
+  useEffect(() => {
+    if (!selectedAgent) return
+    const fresh = agents.find((item) => item.id === selectedAgent.id)
+    if (!fresh) return
+    if (
+      fresh.updated_at !== selectedAgent.updated_at ||
+      fresh.session_key !== selectedAgent.session_key ||
+      (fresh as any).workspace_path !== (selectedAgent as any).workspace_path ||
+      fresh.role !== selectedAgent.role
+    ) {
+      setSelectedAgent(fresh)
+    }
+  }, [agents, selectedAgent])
 
   // Update agent status
   const updateAgentStatus = async (agentName: string, status: Agent['status'], activity?: string) => {
@@ -226,7 +322,7 @@ export function AgentSquadPanelPhase3() {
         body: JSON.stringify({
           name: agentName,
           status,
-          last_activity: activity || t('statusChangedTo', { status: getAgentStatusLabel(t, status) })
+          last_activity: activity || `Status changed to ${status}`
         })
       })
 
@@ -238,7 +334,7 @@ export function AgentSquadPanelPhase3() {
           ? {
               ...agent,
               status,
-              last_activity: activity || t('statusChangedTo', { status: getAgentStatusLabel(t, status) }),
+              last_activity: activity || `Status changed to ${status}`,
               last_seen: Math.floor(Date.now() / 1000),
               updated_at: Math.floor(Date.now() / 1000)
             }
@@ -257,38 +353,39 @@ export function AgentSquadPanelPhase3() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: `🤖 **Wake Up Call**\n\nAgent ${agentName}, you have been manually woken up.\nCheck E-Agent-Center for any pending tasks or notifications.\n\n⏰ ${new Date().toLocaleString()}`
+          message: `🤖 **Wake Up Call**\n\nAgent ${agentName}, you have been manually woken up.\nCheck E-Agent-Client for any pending tasks or notifications.\n\n⏰ ${new Date().toLocaleString()}`
         })
       })
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}))
-        throw new Error(data.error || t('failedToWakeAgent'))
+        throw new Error(data.error || 'Failed to wake agent')
       }
 
-      await updateAgentStatus(agentName, 'idle', t('manuallyWoken'))
+      await updateAgentStatus(agentName, 'idle', 'Manually woken via session')
     } catch (error) {
       log.error('Failed to wake agent:', error)
-      setError(t('failedToWakeAgent'))
+      setError('Failed to wake agent')
     }
   }
 
-  // Re-fetch when showHidden changes
+  // Re-fetch when filters change
   useEffect(() => {
-    fetchAgents()
+    fetchedRef.current = false
+    fetchAgents(true)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showHidden, selectedNodeId])
+  }, [showHidden, selectedClientId])
 
   const toggleAgentHidden = async (agentId: number, hide: boolean) => {
     try {
       const response = await fetch(`/api/agents/${agentId}/hide`, {
         method: hide ? 'POST' : 'DELETE',
       })
-      if (!response.ok) throw new Error(t('failedToUpdateVisibility'))
+      if (!response.ok) throw new Error('Failed to update visibility')
       fetchAgents()
     } catch (error) {
       log.error('Failed to toggle agent visibility:', error)
-      setError(t('failedToUpdateVisibility'))
+      setError('Failed to update agent visibility')
     }
   }
 
@@ -305,31 +402,118 @@ export function AgentSquadPanelPhase3() {
     const payload = await response.json().catch(() => ({}))
     if (!response.ok) {
       setAgents(previousAgents)
-      throw new Error(payload?.error || t('failedToDeleteAgent'))
+      throw new Error(payload?.error || 'Failed to delete agent')
     }
 
-    setSyncToast({
-      ok: true,
-      text:
+    setSyncToast(
       removeWorkspace
-        ? t('deletedAgentAndWorkspace', { target: payload?.deleted || agentId })
-        : t('deletedAgent', { target: payload?.deleted || agentId }),
-    })
+        ? `Deleted agent and workspace: ${payload?.deleted || agentId}`
+        : `Deleted agent: ${payload?.deleted || agentId}`,
+    )
     await fetchAgents()
     setTimeout(() => setSyncToast(null), 5000)
   }
 
-  // Format last seen time
   // Get status distribution for summary
 
   // Get status distribution for summary
-  const statusCounts = agents.reduce((acc, agent) => {
+  const shouldShowAgentInSquadGrid = useCallback((agent: Agent, all: Agent[]) => {
+    if (!isOperativeUserAgent(agent)) return false
+    if (!agent.parent_id) return true
+    const parent = all.find((item) => item.id === agent.parent_id)
+    return Boolean(parent && isRuntimeMainAnchorAgent(parent))
+  }, [])
+
+  const mainLayerAgents = agents.filter(
+    (agent) => isOperativeUserAgent(agent) && !isDiskImportedAgent(agent),
+  )
+  const statusCounts = mainLayerAgents.reduce((acc, agent) => {
     acc[agent.status] = (acc[agent.status] || 0) + 1
     return acc
   }, {} as Record<string, number>)
 
+  const agentSections = useMemo(() => {
+    const topLevel = agents.filter((agent) => shouldShowAgentInSquadGrid(agent, agents))
+
+    const groupByFramework = (list: Agent[]) => {
+      const grouped = list.reduce((acc, agent) => {
+        const sectionKey = isDiskImportedAgent(agent) ? '__disk_imports__' : getAgentFrameworkLabel(agent)
+        if (!acc[sectionKey]) acc[sectionKey] = []
+        acc[sectionKey].push(agent)
+        return acc
+      }, {} as Record<string, Agent[]>)
+
+      return Object.entries(grouped).sort(([left], [right]) => {
+        if (left === '__disk_imports__') return 1
+        if (right === '__disk_imports__') return -1
+        return left.localeCompare(right)
+      })
+    }
+
+    if (centralMode && !selectedClientId) {
+      const byClient = new Map<string, Agent[]>()
+      for (const agent of topLevel) {
+        const clientId = getAgentClientId(agent) || '__gateway__'
+        if (!byClient.has(clientId)) byClient.set(clientId, [])
+        byClient.get(clientId)!.push(agent)
+      }
+
+      return Array.from(byClient.entries())
+        .sort((a, b) => {
+          const nameA = clientNameById.get(a[0]) || a[0]
+          const nameB = clientNameById.get(b[0]) || b[0]
+          return nameA.localeCompare(nameB, 'zh-CN')
+        })
+        .map(([clientId, clientAgents]) => ({
+          kind: 'client' as const,
+          key: clientId,
+          title: clientNameById.get(clientId) || (clientId === '__gateway__' ? 'Gateway' : clientId),
+          frameworkGroups: groupByFramework(clientAgents),
+        }))
+    }
+
+    return [{
+      kind: 'flat' as const,
+      key: 'all',
+      title: null,
+      frameworkGroups: groupByFramework(topLevel),
+    }]
+  }, [agents, centralMode, selectedClientId, clientNameById, shouldShowAgentInSquadGrid])
+
+  const renderFrameworkSection = (fw: string, fwAgents: Agent[]) => (
+    <div key={fw} className="space-y-4">
+      <div className="flex items-center gap-4 px-1">
+        <div className="h-px flex-1 bg-border/20" />
+        <span className="text-[10px] font-bold tracking-[0.2em] text-muted-foreground/40 uppercase bg-surface-2/30 px-3 py-1 rounded-full border border-border/10">
+          {getFrameworkSectionLabel(fw)}
+        </span>
+        <div className="h-px flex-1 bg-border/20" />
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {fwAgents
+          .filter((agent) => showHidden || !agent.hidden)
+          .sort(
+            (a, b) =>
+              Number(isRuntimeManagedAgent(b)) - Number(isRuntimeManagedAgent(a)) ||
+              getAgentDisplayName(a).localeCompare(getAgentDisplayName(b)),
+          )
+          .map((agent) => (
+            <AgentCardWithSubAgents
+              key={agent.id}
+              agent={agent}
+              allAgents={agents}
+              clientNameById={clientNameById}
+              onSelect={setSelectedAgent}
+              onWakeAgent={wakeAgent}
+              onStatusUpdate={updateAgentStatus}
+            />
+          ))}
+      </div>
+    </div>
+  )
+
   if (loading && agents.length === 0) {
-    return <Loader variant="panel" label={t('loadingAgents')} />
+    return <Loader variant="panel" label="Loading agents" />
   }
 
   return (
@@ -353,30 +537,30 @@ export function AgentSquadPanelPhase3() {
           <div className="flex items-center gap-1">
             <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></div>
             <span className="text-sm text-muted-foreground">
-              {t('activeHeartbeats', { count: agents.filter(hasRecentHeartbeat).length })}
+              {t('activeHeartbeats', { count: mainLayerAgents.filter(hasRecentHeartbeat).length })}
             </span>
           </div>
-
-          {/* Node Filter */}
-          {availableNodes.length > 0 && (
-            <div className="flex items-center gap-2 border-l border-border pl-4 ml-2">
-              <span className="text-xs text-muted-foreground">{t('nodeLabel')}</span>
-              <select
-                value={selectedNodeId}
-                onChange={(e) => setSelectedNodeId(e.target.value)}
-                className="bg-secondary/50 border border-border text-xs rounded px-2 py-1 outline-none hover:bg-secondary transition-colors"
-                style={{ appearance: 'none' }}
-              >
-                <option value="all">{t('allNodes')}</option>
-                {availableNodes.map(node => (
-                  <option key={node.id} value={node.id}>{node.label}</option>
-                ))}
-              </select>
-            </div>
-          )}
         </div>
         
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {centralMode && (
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="whitespace-nowrap">{t('nodeLabel')}</span>
+              <select
+                value={selectedClientId}
+                onChange={(e) => setSelectedClientId(e.target.value)}
+                className="h-8 min-w-[160px] rounded-md border border-border bg-surface-1 px-2 text-xs text-foreground"
+              >
+                <option value="">{t('allNodes')}</option>
+                {edgeClients.map((client) => (
+                  <option key={client.id} value={client.id}>
+                    {client.name}
+                    {client.status === 'connected' ? '' : ` (${t('statusOffline')})`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <Button
             onClick={() => setAutoRefresh(!autoRefresh)}
             variant={autoRefresh ? 'success' : 'secondary'}
@@ -385,24 +569,24 @@ export function AgentSquadPanelPhase3() {
             {autoRefresh ? t('live') : t('manual')}
           </Button>
           {!centralMode && (
-            <Button
-              onClick={() => syncFromConfig()}
-              disabled={syncing}
-              size="sm"
-              className="bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/30"
-            >
-              {syncing ? t('syncing') : t('syncConfig')}
-            </Button>
-          )}
-          {!centralMode && (
-            <Button
-              onClick={() => syncFromConfig('local')}
-              disabled={syncing}
-              size="sm"
-              className="bg-violet-500/20 text-violet-400 border border-violet-500/30 hover:bg-violet-500/30"
-            >
-              {t('syncLocal')}
-            </Button>
+            <>
+              <Button
+                onClick={() => syncFromConfig()}
+                disabled={syncing}
+                size="sm"
+                className="bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/30"
+              >
+                {syncing ? t('syncing') : t('syncConfig')}
+              </Button>
+              <Button
+                onClick={() => syncFromConfig('local')}
+                disabled={syncing}
+                size="sm"
+                className="bg-violet-500/20 text-violet-400 border border-violet-500/30 hover:bg-violet-500/30"
+              >
+                {t('syncLocal')}
+              </Button>
+            </>
           )}
           <Button
             onClick={() => setShowHidden(!showHidden)}
@@ -411,16 +595,22 @@ export function AgentSquadPanelPhase3() {
           >
             {showHidden ? t('showingHidden') : t('showHidden')}
           </Button>
-          {!centralMode && (
+          {centralMode ? (
             <Button
-              onClick={() => setShowCreateModal(true)}
+              onClick={() => humanWatchEntitled && setShowHumanWatchModal(true)}
+              disabled={!humanWatchEntitled}
               size="sm"
+              className="bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 disabled:opacity-50"
             >
+              {t('addHumanWatchSteward')}
+            </Button>
+          ) : (
+            <Button onClick={() => setShowCreateModal(true)} size="sm">
               {t('addAgent')}
             </Button>
           )}
           <Button
-            onClick={fetchAgents}
+            onClick={() => fetchAgents(true)}
             variant="secondary"
             size="sm"
           >
@@ -429,10 +619,12 @@ export function AgentSquadPanelPhase3() {
         </div>
       </div>
 
+      {centralMode && <HumanWatchEntitlementNotice className="mx-4" />}
+
       {/* Sync Toast */}
       {syncToast && (
-        <div className={`p-3 m-4 rounded-lg text-sm ${syncToast.ok ? 'bg-green-500/10 border border-green-500/20 text-green-400' : 'bg-red-500/10 border border-red-500/20 text-red-400'}`}>
-          {syncToast.text}
+        <div className={`p-3 m-4 rounded-lg text-sm ${syncToast.includes('failed') ? 'bg-red-500/10 border border-red-500/20 text-red-400' : 'bg-green-500/10 border border-green-500/20 text-green-400'}`}>
+          {syncToast}
         </div>
       )}
 
@@ -452,7 +644,7 @@ export function AgentSquadPanelPhase3() {
       )}
 
       {/* Agent Grid */}
-      <div className="flex-1 p-4 overflow-y-auto space-y-10">
+      <div className="flex-1 p-4 overflow-y-auto space-y-8">
         {agents.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/50">
             <div className="w-12 h-12 rounded-full bg-surface-2 flex items-center justify-center mb-3">
@@ -462,41 +654,33 @@ export function AgentSquadPanelPhase3() {
               </svg>
             </div>
             <p className="text-sm font-medium">{t('noAgents')}</p>
+            {centralMode && (
+              <p className="mt-1 max-w-md text-center text-xs text-muted-foreground/70">
+                {t('noAgentsCentralHint')}
+              </p>
+            )}
           </div>
         ) : (
-          Object.entries(
-            agents.reduce((acc, a) => {
-              if (a.parent_id) return acc
-              const fw = String(a.framework || 'openclaw').toLowerCase()
-              if (!acc[fw]) acc[fw] = []
-              acc[fw].push(a)
-              return acc
-            }, {} as Record<string, Agent[]>)
-          ).map(([fw, fwAgents]) => (
-            <div key={fw} className="space-y-4">
-              <div className="flex items-center gap-4 px-1">
-                 <div className="h-px flex-1 bg-border/20" />
-                 <span className="text-[10px] font-bold tracking-[0.2em] text-muted-foreground/50 uppercase bg-surface-2/30 px-3 py-1 rounded-full border border-border/10 font-mono">
-                   {t(`framework.${fw}`)}
-                 </span>
-                 <div className="h-px flex-1 bg-border/20" />
+          agentSections.map((section) =>
+            section.kind === 'client' ? (
+              <div key={section.key} className="space-y-6">
+                <div className="flex items-center gap-4 px-1">
+                  <div className="h-px flex-1 bg-primary/25" />
+                  <span className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+                    {section.title}
+                  </span>
+                  <div className="h-px flex-1 bg-primary/25" />
+                </div>
+                <div className="space-y-8 pl-1">
+                  {section.frameworkGroups.map(([fw, fwAgents]) => renderFrameworkSection(fw, fwAgents))}
+                </div>
               </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {fwAgents
-                  .filter(agent => showHidden || !agent.hidden)
-                  .map(agent => (
-                    <AgentCardWithSubAgents 
-                      key={agent.id} 
-                      agent={agent} 
-                      allAgents={agents}
-                      onSelect={setSelectedAgent}
-                    />
-                  ))
-                }
+            ) : (
+              <div key={section.key} className="space-y-8">
+                {section.frameworkGroups.map(([fw, fwAgents]) => renderFrameworkSection(fw, fwAgents))}
               </div>
-            </div>
-          ))
+            ),
+          )
         )}
       </div>
 
@@ -504,8 +688,10 @@ export function AgentSquadPanelPhase3() {
       {selectedAgent && (
         <AgentDetailModalPhase3
           agent={selectedAgent}
+          allAgents={agents}
+          centralMode={centralMode}
           onClose={() => setSelectedAgent(null)}
-          onUpdate={fetchAgents}
+          onUpdate={() => fetchAgents(true)}
           onStatusUpdate={updateAgentStatus}
           onWakeAgent={wakeAgent}
           onDelete={deleteAgent}
@@ -513,10 +699,19 @@ export function AgentSquadPanelPhase3() {
       )}
 
       {/* Create Agent Modal */}
-      {showCreateModal && (
+      {showCreateModal && !centralMode && (
         <CreateAgentModal
           onClose={() => setShowCreateModal(false)}
           onCreated={fetchAgents}
+        />
+      )}
+
+      {showHumanWatchModal && centralMode && (
+        <HumanWatchCreateStewardModal
+          defaultClientId={selectedClientId}
+          allAgents={agents}
+          onClose={() => setShowHumanWatchModal(false)}
+          onCreated={() => void fetchAgents(true)}
         />
       )}
 
@@ -538,6 +733,8 @@ export function AgentSquadPanelPhase3() {
 // Enhanced Agent Detail Modal with Tabs
 function AgentDetailModalPhase3({
   agent,
+  allAgents,
+  centralMode,
   onClose,
   onUpdate,
   onStatusUpdate,
@@ -545,19 +742,23 @@ function AgentDetailModalPhase3({
   onDelete
 }: {
   agent: Agent
+  allAgents: Agent[]
+  centralMode: boolean
   onClose: () => void
   onUpdate: () => void
   onStatusUpdate: (name: string, status: Agent['status'], activity?: string) => Promise<void>
   onWakeAgent: (name: string, sessionKey: string) => Promise<void>
   onDelete: (agentId: number, removeWorkspace: boolean) => Promise<void>
 }) {
-  const t = useTranslations('agentSquadPhase3')
   const [agentState, setAgentState] = useState<Agent & { config?: any; working_memory?: string }>(agent as Agent & { config?: any; working_memory?: string })
-  const [activeTab, setActiveTab] = useState<'overview' | 'soul' | 'memory' | 'config' | 'tasks' | 'activity' | 'files' | 'tools' | 'channels' | 'cron' | 'models'>('overview')
+  const [activeTab, setActiveTab] = useState<
+    'overview' | 'soul' | 'memory' | 'config' | 'tasks' | 'activity' | 'files' | 'tools' | 'channels' | 'cron' | 'models' | 'interventions' | 'humanWatch' | 'stewardBind'
+  >('overview')
   const [editing, setEditing] = useState(false)
   const [formData, setFormData] = useState({
     role: agent.role,
     session_key: agent.session_key || '',
+    workspace_path: (agent as any).workspace_path || '',
     soul_content: agent.soul_content || '',
     working_memory: agent.working_memory || '',
     model: (() => { const p = (agent as any).config?.model?.primary; return (typeof p === 'string' ? p : p?.primary) || '' })(),
@@ -574,6 +775,8 @@ function AgentDetailModalPhase3({
   const [showDeleteMenu, setShowDeleteMenu] = useState(false)
   const [saveBusy, setSaveBusy] = useState(false)
   const deleteMenuRef = useRef<HTMLDivElement>(null)
+  const t = useTranslations('agentDetail')
+  const ta = useTranslations('agentSquadPhase3')
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -593,6 +796,7 @@ function AgentDetailModalPhase3({
     setFormData({
       role: agent.role,
       session_key: agent.session_key || '',
+      workspace_path: (agent as any).workspace_path || '',
       soul_content: agent.soul_content || '',
       working_memory: (agent as any).working_memory || '',
       model: (() => { const p = (agent as any).config?.model?.primary; return (typeof p === 'string' ? p : p?.primary) || '' })(),
@@ -618,6 +822,7 @@ function AgentDetailModalPhase3({
               ...prev,
               role: freshAgent.role || prev.role,
               session_key: freshAgent.session_key || '',
+              workspace_path: (freshAgent as any).workspace_path || '',
               model: (freshAgent as any).config?.model?.primary || prev.model,
             }))
           }
@@ -647,6 +852,17 @@ function AgentDetailModalPhase3({
 
     loadCanonicalAgentData()
   }, [agent.id])
+
+  const formatLastSeen = (timestamp?: number) => {
+    if (!timestamp) return t('never')
+    const diffMs = Date.now() - (timestamp * 1000)
+    const diffMinutes = Math.floor(diffMs / (1000 * 60))
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
+    if (diffMinutes < 1) return t('justNow')
+    if (diffMinutes < 60) return t('minutesAgo', { count: diffMinutes })
+    if (diffHours < 24) return t('hoursAgo', { count: diffHours })
+    return new Date(timestamp * 1000).toLocaleDateString()
+  }
 
   // Load SOUL templates
   useEffect(() => {
@@ -685,22 +901,85 @@ function AgentDetailModalPhase3({
     }
   }
 
+  const applyAgentToForm = (source: Agent & { config?: any; working_memory?: string }) => {
+    setFormData({
+      role: source.role,
+      session_key: source.session_key || '',
+      workspace_path: (source as any).workspace_path || '',
+      soul_content: source.soul_content || '',
+      working_memory: source.working_memory || '',
+      model: (() => {
+        const p = source.config?.model?.primary
+        return typeof p === 'string' ? p : p?.primary || ''
+      })(),
+    })
+  }
+
+  const reloadAgentFromServer = async (): Promise<boolean> => {
+    try {
+      const response = await fetch(`/api/agents/${agentState.id}`)
+      if (!response.ok) return false
+      const payload = await response.json()
+      const fresh = payload?.agent as (Agent & { config?: any; working_memory?: string }) | undefined
+      if (!fresh) return false
+      setAgentState((prev) => ({ ...prev, ...fresh }))
+      applyAgentToForm(fresh)
+      return true
+    } catch (error) {
+      log.error('Failed to reload agent after save:', error)
+      return false
+    }
+  }
+
   const handleSave = async () => {
     setSaveBusy(true)
     try {
+      const existingConfig = agentState.config || {}
+      const configPayload = formData.model
+        ? {
+            ...existingConfig,
+            model: {
+              ...(typeof existingConfig.model === 'object' ? existingConfig.model : {}),
+              primary: formData.model,
+            },
+          }
+        : undefined
+
       const response = await fetch('/api/agents', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: agentState.name,
-          ...formData
-        })
+          role: formData.role,
+          session_key: formData.session_key,
+          workspace_path: formData.workspace_path,
+          ...(configPayload ? { config: configPayload } : {}),
+        }),
       })
 
       if (!response.ok) throw new Error('Failed to update agent')
 
+      const payload = await response.json().catch(() => ({}))
+      const savedAgent = payload?.agent as (Agent & { config?: any; working_memory?: string }) | undefined
+      if (savedAgent) {
+        setAgentState((prev) => ({ ...prev, ...savedAgent }))
+        applyAgentToForm(savedAgent)
+      }
+
+      const reloaded = savedAgent ? true : await reloadAgentFromServer()
+      if (!reloaded && !savedAgent) {
+        setAgentState((prev) => ({
+          ...prev,
+          role: formData.role,
+          session_key: formData.session_key,
+          workspace_path: formData.workspace_path || null,
+          ...(configPayload ? { config: configPayload } : {}),
+          updated_at: Math.floor(Date.now() / 1000),
+        }))
+      }
+
       setEditing(false)
-      onUpdate()
+      await onUpdate()
     } catch (error) {
       log.error('Failed to update agent:', error)
     } finally {
@@ -770,24 +1049,32 @@ function AgentDetailModalPhase3({
   const isOpenClaw = (agentState.framework || 'openclaw') === 'openclaw'
 
   const tabs = [
-    { id: 'overview', label: t('tabOverview') },
+    { id: 'overview', label: t('overviewTab') },
     ...(isOpenClaw ? [
-      { id: 'files', label: t('tabFiles') },
-      { id: 'tools', label: t('tabTools') },
-      { id: 'models', label: t('tabModels') },
-      { id: 'channels', label: t('tabChannels') },
-      { id: 'cron', label: t('tabCron') },
-      { id: 'soul', label: 'SOUL' },
-      { id: 'memory', label: t('tabMemory') },
+      { id: 'files', label: t('filesTab') },
+      { id: 'tools', label: t('toolsTab') },
+      { id: 'models', label: t('modelsTab') },
+      { id: 'channels', label: t('channelsTab') },
+      { id: 'cron', label: t('cronTab') },
+      { id: 'soul', label: t('soulTab') },
+      { id: 'memory', label: t('memoryTab') },
     ] : []),
-    { id: 'tasks', label: t('tabTasks') },
-    { id: 'config', label: t('tabConfig') },
-    { id: 'activity', label: t('tabActivity') }
+    { id: 'tasks', label: t('tasksTab') },
+    { id: 'config', label: t('configTab') },
+    { id: 'activity', label: t('activityTab') },
+    ...(isHumanWatchAgent(agentState)
+      ? [
+          { id: 'stewardBind' as const, label: ta('humanWatchBindingsTab') },
+          { id: 'interventions' as const, label: ta('interventionsTab') },
+        ]
+      : centralMode && getAgentClientId(agentState) && !isHumanWatchAgent(agentState)
+        ? [{ id: 'humanWatch' as const, label: ta('humanWatchTab') }]
+        : []),
   ]
 
   const handleDelete = async (removeWorkspace: boolean) => {
-    const scope = removeWorkspace ? t('deleteAgentAndWorkspace') : t('deleteAgent')
-    const confirmed = window.confirm(t('deleteConfirm', { scope, name: agentState.name }))
+    const scope = removeWorkspace ? t('deleteScopeAgentWorkspace') : t('deleteScopeAgent')
+    const confirmed = window.confirm(t('deleteAgentConfirm', { scope, name: agentState.name }))
     if (!confirmed) return
 
     setDeleteBusy(true)
@@ -796,7 +1083,7 @@ function AgentDetailModalPhase3({
       await onDelete(agentState.id, removeWorkspace)
       onClose()
     } catch (error: any) {
-      setDeleteError(error?.message || t('deleteFailed', { scope }))
+      setDeleteError(error?.message || `Failed to delete ${scope}`)
     } finally {
       setDeleteBusy(false)
     }
@@ -819,20 +1106,20 @@ function AgentDetailModalPhase3({
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <h3 className="text-lg font-semibold text-foreground leading-tight truncate">{agentState.name}</h3>
-                    <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border ${statusBadgeStyles[agentState.status]}`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${statusColors[agentState.status]}`} />
-                    {getAgentStatusLabel(t, agentState.status)}
+                  <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border ${statusBadgeStyles[agentState.status]}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${statusColors[agentState.status]}`} />
+                    {t(agentState.status as 'idle' | 'busy' | 'offline' | 'error')}
                   </span>
                   {agentState.session_key && (
                     <span className="text-[11px] px-2 py-0.5 rounded-full border border-cyan-500/30 bg-cyan-500/10 text-cyan-300">
-                      {t('session')}
+                      {t('sessionBadge')}
                     </span>
                   )}
                 </div>
                 <div className="flex items-center gap-2 mt-0.5">
                   <span className="text-sm text-muted-foreground">{agentState.role}</span>
                   <span className="text-xs text-muted-foreground/60">·</span>
-                  <span className="text-xs text-muted-foreground/60">{t('seenAt', { time: formatLastSeen(t, agentState.last_seen) })}</span>
+                  <span className="text-xs text-muted-foreground/60">{t('seenAgo', { time: formatLastSeen(agentState.last_seen) })}</span>
                 </div>
               </div>
             </div>
@@ -842,7 +1129,7 @@ function AgentDetailModalPhase3({
                   variant="ghost"
                   size="icon-sm"
                   className="text-muted-foreground hover:text-rose-400"
-                  title={t('deleteAgent')}
+                  title={t('deleteAgentTitle')}
                   onClick={() => setShowDeleteMenu(prev => !prev)}
                 >
                   <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -877,7 +1164,7 @@ function AgentDetailModalPhase3({
                           </svg>
                           {t('deleting')}
                         </span>
-                      ) : t('deleteAgentAndWorkspace')}
+                      ) : t('deleteAgentWorkspace')}
                     </button>
                   </div>
                 )}
@@ -933,10 +1220,17 @@ function AgentDetailModalPhase3({
               onStatusUpdate={onStatusUpdate}
               onWakeAgent={onWakeAgent}
               onEdit={() => setEditing(true)}
-              onCancel={() => setEditing(false)}
+              onCancel={() => {
+                setEditing(false)
+                applyAgentToForm(agentState)
+              }}
               heartbeatData={heartbeatData}
               loadingHeartbeat={loadingHeartbeat}
               onPerformHeartbeat={performHeartbeat}
+              onAgentSessionBound={(sessionKey) => {
+                setAgentState((prev) => ({ ...prev, session_key: sessionKey }))
+                setFormData((prev) => ({ ...prev, session_key: sessionKey }))
+              }}
             />
           )}
           
@@ -993,6 +1287,18 @@ function AgentDetailModalPhase3({
           {activeTab === 'activity' && (
             <ActivityTab agent={agentState} />
           )}
+
+          {activeTab === 'stewardBind' && (
+            <HumanWatchStewardBindTab agent={agentState} allAgents={allAgents} />
+          )}
+
+          {activeTab === 'interventions' && (
+            <HumanWatchInterventionsTab agent={agentState} />
+          )}
+
+          {activeTab === 'humanWatch' && (
+            <HumanWatchWorkerBindTab agent={agentState} allAgents={allAgents} />
+          )}
         </div>
       </div>
     </div>
@@ -1009,8 +1315,6 @@ function QuickSpawnModal({
   onClose: () => void
   onSpawned: () => void
 }) {
-  const t = useTranslations('agentSquadPhase3')
-  const tc = useTranslations('common')
   const [spawnData, setSpawnData] = useState({
     task: '',
     model: 'sonnet',
@@ -1031,7 +1335,7 @@ function QuickSpawnModal({
 
   const handleSpawn = async () => {
     if (!spawnData.task.trim()) {
-      alert(t('taskDescriptionRequired'))
+      alert('Please enter a task description')
       return
     }
 
@@ -1057,11 +1361,11 @@ function QuickSpawnModal({
           onClose()
         }, 2000)
       } else {
-        alert(result.error || t('failedToSpawnAgent'))
+        alert(result.error || 'Failed to spawn agent')
       }
     } catch (error) {
       log.error('Spawn failed:', error)
-      alert(t('networkErrorOccurred'))
+      alert('Network error occurred')
     } finally {
       setIsSpawning(false)
     }
@@ -1072,7 +1376,7 @@ function QuickSpawnModal({
       <div className="bg-card border border-border rounded-lg max-w-md w-full p-6">
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-lg font-bold text-foreground">
-            {t('quickSpawnTitle', { agent: getAgentDisplayName(agent) })}
+            Quick Spawn for {agent.name}
           </h3>
           <Button onClick={onClose} variant="ghost" size="icon-sm" className="text-2xl">×</Button>
         </div>
@@ -1080,12 +1384,12 @@ function QuickSpawnModal({
         {spawnResult ? (
           <div className="space-y-4">
             <div className="bg-green-500/10 border border-green-500/20 text-green-400 p-3 rounded-lg text-sm">
-              {t('spawnSuccess')}
+              Agent spawned successfully!
             </div>
             <div className="text-sm text-foreground/80">
-              <p><strong>{t('spawnAgentId')}:</strong> {spawnResult.agentId}</p>
-              <p><strong>{t('spawnSession')}:</strong> {spawnResult.sessionId}</p>
-              <p><strong>{t('spawnModel')}:</strong> {spawnResult.model}</p>
+              <p><strong>Agent ID:</strong> {spawnResult.agentId}</p>
+              <p><strong>Session:</strong> {spawnResult.sessionId}</p>
+              <p><strong>Model:</strong> {spawnResult.model}</p>
             </div>
           </div>
         ) : (
@@ -1093,12 +1397,12 @@ function QuickSpawnModal({
             {/* Task Description */}
             <div>
               <label className="block text-sm font-medium text-foreground/80 mb-2">
-                {t('taskDescriptionLabel')}
+                Task Description *
               </label>
               <textarea
                 value={spawnData.task}
                 onChange={(e) => setSpawnData(prev => ({ ...prev, task: e.target.value }))}
-                placeholder={t('taskDescriptionPlaceholder', { agent: getAgentDisplayName(agent) })}
+                placeholder={`Delegate a subtask to ${agent.name}...`}
                 className="w-full h-24 px-3 py-2 bg-surface-1 border border-border rounded text-foreground placeholder-muted-foreground focus:border-primary/50 focus:ring-1 focus:ring-primary/50 resize-none"
               />
             </div>
@@ -1106,7 +1410,7 @@ function QuickSpawnModal({
             {/* Model Selection */}
             <div>
               <label className="block text-sm font-medium text-foreground/80 mb-2">
-                {t('spawnModel')}
+                Model
               </label>
               <select
                 value={spawnData.model}
@@ -1124,7 +1428,7 @@ function QuickSpawnModal({
             {/* Agent Label */}
             <div>
               <label className="block text-sm font-medium text-foreground/80 mb-2">
-                {t('agentLabel')}
+                Agent Label
               </label>
               <input
                 type="text"
@@ -1137,7 +1441,7 @@ function QuickSpawnModal({
             {/* Timeout */}
             <div>
               <label className="block text-sm font-medium text-foreground/80 mb-2">
-                {t('timeoutSeconds')}
+                Timeout (seconds)
               </label>
               <input
                 type="number"
@@ -1156,13 +1460,13 @@ function QuickSpawnModal({
                 disabled={isSpawning || !spawnData.task.trim()}
                 className="flex-1"
               >
-                {isSpawning ? t('spawning') : t('spawnAgent')}
+                {isSpawning ? 'Spawning...' : 'Spawn Agent'}
               </Button>
               <Button
                 onClick={onClose}
                 variant="secondary"
               >
-                {tc('cancel')}
+                Cancel
               </Button>
             </div>
           </div>
@@ -1174,39 +1478,31 @@ function QuickSpawnModal({
 
 export default AgentSquadPanelPhase3
 
-function getAgentStatusLabel(t: (key: string) => string, status: Agent['status']) {
-  switch (status) {
-    case 'idle':
-      return t('statusIdle')
-    case 'busy':
-      return t('statusBusy')
-    case 'offline':
-      return t('statusOffline')
-    case 'error':
-      return t('statusError')
-    default:
-      return status
-  }
-}
-
 /**
  * Enhanced Agent Card that optionally shows sub-agents
  */
 function AgentCardWithSubAgents({ 
   agent, 
-  allAgents, 
-  onSelect 
+  allAgents,
+  clientNameById,
+  onSelect,
+  onWakeAgent,
+  onStatusUpdate,
 }: { 
   agent: Agent, 
-  allAgents: Agent[], 
+  allAgents: Agent[],
+  clientNameById?: Map<string, string>,
   onSelect: (a: Agent) => void 
+  onWakeAgent: (name: string, sessionKey: string) => Promise<void>
+  onStatusUpdate: (name: string, status: Agent['status'], activity?: string) => Promise<void>
 }) {
   const t = useTranslations('agentSquadPhase3')
   const subAgents = allAgents.filter(a => a.parent_id === agent.id)
+  const displayName = getAgentDisplayName(agent)
+  const sourceLabel = getAgentSourceLabel(agent, clientNameById)
   
   const modelName = formatModelName(agent.config)
   const taskStatsLine = buildTaskStatParts(agent.taskStats)
-  const statusLabel = getAgentStatusLabel(t, agent.status)
 
   return (
     <div className="space-y-3">
@@ -1215,16 +1511,30 @@ function AgentCardWithSubAgents({
         onClick={() => onSelect(agent)}
       >
         <div className={`pointer-events-none absolute inset-y-0 left-0 w-1 bg-gradient-to-b ${(statusCardStyles[agent.status] || defaultCardStyle).edge}`} />
+        {agent.hidden ? <div className="absolute top-2 right-2 text-2xs text-slate-500">hidden</div> : null}
 
         <div className="flex items-start justify-between mb-2">
           <div className="flex items-center gap-2.5 min-w-0">
-            <AgentAvatar name={agent.name} size="md" />
+            <AgentAvatar name={displayName} size="md" />
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
-                <h3 className="font-semibold text-foreground truncate text-sm">{getAgentDisplayName(agent)}</h3>
-                {(agent as any).node_id && (
-                  <span className="text-[9px] px-1.5 py-0.5 rounded-full border bg-blue-500/10 text-blue-300 border-blue-500/20">
-                    {getNodeDisplayLabel(agent)}
+                <h3 className="font-semibold text-foreground truncate text-sm">{displayName}</h3>
+                {isHumanWatchAgent(agent) && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded-full border bg-cyan-500/15 text-cyan-300 border-cyan-500/30">
+                    {t('humanWatchBadge')}
+                  </span>
+                )}
+                {sourceLabel && (
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full border ${
+                    sourceLabel === 'runtime'
+                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                      : (agent as any).source === 'local'
+                        ? 'bg-violet-500/15 text-violet-300 border-violet-500/30'
+                        : (agent as any).source === 'gateway'
+                          ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
+                          : 'bg-slate-500/15 text-slate-300 border-slate-500/30'
+                  }`}>
+                    {sourceLabel}
                   </span>
                 )}
               </div>
@@ -1236,7 +1546,7 @@ function AgentCardWithSubAgents({
           <div className="flex items-center gap-2 shrink-0">
              <span className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] capitalize ${statusBadgeStyles[agent.status]}`}>
                <span className={`h-1 w-1 rounded-full ${(statusCardStyles[agent.status] || defaultCardStyle).dot}`} />
-               {statusLabel}
+               {agent.status}
              </span>
           </div>
         </div>
@@ -1249,21 +1559,22 @@ function AgentCardWithSubAgents({
           </div>
         )}
 
-        <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/10">
-          <span className="text-[10px] text-muted-foreground/40 font-mono uppercase">
-            {agent.framework || 'OPENCLAW'}
+        <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/20">
+          <span className="text-[10px] text-muted-foreground/50">
+            {formatLastSeen(agent.last_seen)}
           </span>
           <div className="flex gap-1">
             <Button
               onClick={(e) => {
                 e.stopPropagation()
-                onSelect(agent)
+                if (agent.session_key) onWakeAgent(agent.name, agent.session_key)
+                else onStatusUpdate(agent.name, 'idle')
               }}
               size="xs"
               variant="ghost"
               className="h-5 px-1.5 text-[10px]"
             >
-              {t('details')}
+              {t('wake')}
             </Button>
           </div>
         </div>
@@ -1280,12 +1591,15 @@ function AgentCardWithSubAgents({
               className="relative flex items-center gap-3 p-2 rounded-lg border border-border/40 bg-card/40 hover:bg-card/60 cursor-pointer transition-colors"
             >
               <div className="absolute -left-3 w-3 h-px bg-border/40" />
-              <AgentAvatar name={sub.name} size="xs" />
+              <AgentAvatar name={getAgentDisplayName(sub)} size="xs" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-medium truncate">{getAgentDisplayName(sub)}</span>
-                  <span className={`w-1.5 h-1.5 rounded-full ${(statusCardStyles[sub.status] || defaultCardStyle).dot}`} title={getAgentStatusLabel(t, sub.status)} />
+                  <span className={`w-1.5 h-1.5 rounded-full ${(statusCardStyles[sub.status] || defaultCardStyle).dot}`} title={sub.status} />
                 </div>
+                {sub.last_activity && (
+                  <p className="text-[10px] text-muted-foreground truncate">{sub.last_activity}</p>
+                )}
               </div>
             </div>
           ))}

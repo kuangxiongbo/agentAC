@@ -10,8 +10,30 @@ import { logger } from '@/lib/logger';
 import { validateBody, createAgentSchema } from '@/lib/validation';
 import { runOpenClaw } from '@/lib/command';
 import { config as appConfig } from '@/lib/config';
+import { getBridgeAgentIndexByRemoteName, listBridgeAgentIndex, mergeDbAgentsWithBridgeIndex } from '@/lib/sync-agent-index';
+import { isBridgeClientOnline, requestBridgeClientAgentSessionUpdate } from '@/lib/bridge-server';
+import { validateAgentSessionKindBinding } from '@/lib/agent-session-binding';
+import { resolveSessionKindForBinding } from '@/lib/infer-local-session-kind';
 import { resolveWithin } from '@/lib/paths';
+import { syncRuntimeAgents } from '@/lib/runtime-agent-sync';
 import path from 'node:path';
+
+function parseAgentConfigRecord(value: unknown): Record<string, unknown> {
+  if (!value) return {}
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : {}
+    } catch {
+      return {}
+    }
+  }
+  return typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
 
 /**
  * GET /api/agents - List all agents with optional filtering
@@ -29,21 +51,18 @@ export async function GET(request: NextRequest) {
     // Parse query parameters
     const status = searchParams.get('status');
     const role = searchParams.get('role');
-    const nodeId = searchParams.get('node_id');
     const showHidden = searchParams.get('show_hidden') === 'true';
+    const includeBridge = searchParams.get('include_bridge') === '1' || appConfig.centralMode;
+    const bridgeClientId = (searchParams.get('client_id') || '').trim();
     const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 200);
     const offset = parseInt(searchParams.get('offset') || '0');
- 
+
     // Build dynamic query
     let query = 'SELECT * FROM agents WHERE workspace_id = ?';
     const params: any[] = [workspaceId];
- 
+
     if (!showHidden) {
       query += ' AND hidden = 0';
-    }
-
-    if (appConfig.centralMode) {
-      query += " AND source IN ('gateway', 'client')";
     }
     
     if (status) {
@@ -54,11 +73,6 @@ export async function GET(request: NextRequest) {
     if (role) {
       query += ' AND role = ?';
       params.push(role);
-    }
-
-    if (nodeId) {
-      query += ' AND node_id = ?';
-      params.push(nodeId);
     }
     
     query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
@@ -72,11 +86,17 @@ export async function GET(request: NextRequest) {
       ...agent,
       config: enrichAgentConfigFromWorkspace(agent.config ? JSON.parse(agent.config) : {})
     }));
+
+    const bridgeIndexRows = includeBridge ? listBridgeAgentIndex(bridgeClientId || undefined) : [];
+    const mergedAgents = includeBridge
+      ? mergeDbAgentsWithBridgeIndex(agentsWithParsedData, bridgeIndexRows, isBridgeClientOnline)
+      : agentsWithParsedData;
+    const bridgeOnlyCount = includeBridge ? mergedAgents.length - agentsWithParsedData.length : 0;
     
     // Get task counts for all listed agents in one query (avoids N+1 queries)
-    const agentNames = agentsWithParsedData.map(agent => agent.name).filter(Boolean)
+    const agentNames = mergedAgents.map((agent) => agent.name).filter(Boolean)
     const taskStatsByAgent = new Map<string, { total: number; assigned: number; in_progress: number; quality_review: number; done: number }>()
- 
+
     if (agentNames.length > 0) {
       const placeholders = agentNames.map(() => '?').join(', ')
       const groupedTaskStats = db.prepare(`
@@ -98,7 +118,7 @@ export async function GET(request: NextRequest) {
         quality_review: number | null
         done: number | null
       }>
- 
+
       for (const row of groupedTaskStats) {
         taskStatsByAgent.set(row.assigned_to, {
           total: row.total || 0,
@@ -109,8 +129,8 @@ export async function GET(request: NextRequest) {
         })
       }
     }
- 
-    const agentsWithStats = agentsWithParsedData.map(agent => {
+
+    const agentsWithStats = mergedAgents.map(agent => {
       const taskStats = taskStatsByAgent.get(agent.name) || {
         total: 0,
         assigned: 0,
@@ -118,7 +138,7 @@ export async function GET(request: NextRequest) {
         quality_review: 0,
         done: 0,
       }
- 
+
       return {
         ...agent,
         taskStats: {
@@ -134,9 +154,6 @@ export async function GET(request: NextRequest) {
     if (!showHidden) {
       countQuery += ' AND hidden = 0';
     }
-    if (appConfig.centralMode) {
-      countQuery += " AND source IN ('gateway', 'client')";
-    }
     if (status) {
       countQuery += ' AND status = ?';
       countParams.push(status);
@@ -145,17 +162,14 @@ export async function GET(request: NextRequest) {
       countQuery += ' AND role = ?';
       countParams.push(role);
     }
-    if (nodeId) {
-      countQuery += ' AND node_id = ?';
-      countParams.push(nodeId);
-    }
     const countRow = db.prepare(countQuery).get(...countParams) as { total: number };
- 
+
     return NextResponse.json({
       agents: agentsWithStats,
-      total: countRow.total,
+      total: countRow.total + bridgeOnlyCount,
       page: Math.floor(offset / limit) + 1,
-      limit
+      limit,
+      bridge_index_included: includeBridge,
     });
   } catch (error) {
     logger.error({ err: error }, 'GET /api/agents error');
@@ -169,6 +183,13 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'operator');
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status });
+
+  if (appConfig.centralMode) {
+    return NextResponse.json(
+      { error: 'Creating agents on the central server is not supported; manage agents on edge clients.' },
+      { status: 403 },
+    );
+  }
 
   const rateCheck = mutationLimiter(request);
   if (rateCheck) return rateCheck;
@@ -193,6 +214,7 @@ export async function POST(request: NextRequest) {
       write_to_gateway,
       provision_openclaw_workspace,
       openclaw_workspace_path,
+      workspace_path,
       framework = 'openclaw',
       parent_id
     } = body;
@@ -214,6 +236,16 @@ export async function POST(request: NextRequest) {
       }
     } else if (gateway_config) {
       finalConfig = { ...finalConfig, ...(gateway_config as Record<string, any>) };
+    }
+    finalConfig.main_runtime = framework
+    if (framework && framework !== 'openclaw' && finalConfig.runtime_managed !== true) {
+      finalConfig.session_mode = finalConfig.session_mode || 'dedicated'
+      finalConfig.session_strategy = finalConfig.session_strategy || 'persistent'
+      finalConfig.session_state = session_key ? 'ready' : (finalConfig.session_state || 'pending')
+      finalConfig.primary_session_key = session_key || finalConfig.primary_session_key || null
+      finalConfig.session_bootstrap_state = 'pending'
+      finalConfig.session_bootstrap_hash = null
+      finalConfig.session_bootstrap_error = null
     }
 
     if (!name || !finalRole) {
@@ -253,14 +285,36 @@ export async function POST(request: NextRequest) {
         );
       }
     }
+
+    let resolvedParentId = parent_id ?? undefined
+    if (!resolvedParentId && framework) {
+      try {
+        await syncRuntimeAgents(auth.user.username)
+        const runtimeParent = db.prepare(`
+          SELECT id
+          FROM agents
+          WHERE workspace_id = ? AND source = 'runtime' AND framework = ? AND hidden = 0
+          LIMIT 1
+        `).get(workspaceId, framework) as { id: number } | undefined
+        if (runtimeParent?.id) {
+          resolvedParentId = runtimeParent.id
+        }
+      } catch (runtimeSyncError) {
+        logger.warn({ err: runtimeSyncError, framework }, 'Runtime parent auto-link failed')
+      }
+    }
     
     const now = Math.floor(Date.now() / 1000);
     
+    const resolvedWorkspacePath = workspace_path?.trim()
+      ? path.resolve(workspace_path.trim())
+      : null
+
     const stmt = db.prepare(`
       INSERT INTO agents (
         name, role, session_key, soul_content, status, 
-        created_at, updated_at, config, workspace_id, framework, parent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, config, workspace_id, framework, parent_id, workspace_path
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     const dbResult = stmt.run(
@@ -274,7 +328,8 @@ export async function POST(request: NextRequest) {
       JSON.stringify(finalConfig),
       workspaceId,
       framework,
-      parent_id
+      resolvedParentId,
+      resolvedWorkspacePath
     );
 
     const agentId = dbResult.lastInsertRowid as number;
@@ -367,11 +422,59 @@ export async function PUT(request: NextRequest) {
     // Handle single agent update or bulk updates
     if (body.name) {
       // Single agent update
-      const { name, status, last_activity, config, session_key, soul_content, role } = body;
+      const { name, status, last_activity, config, session_key, session_kind, soul_content, role, workspace_path, client_id } = body;
       
-      const agent = db
+      let agent = db
         .prepare('SELECT * FROM agents WHERE name = ? AND workspace_id = ?')
-        .get(name, workspaceId) as Agent;
+        .get(name, workspaceId) as Agent | undefined;
+
+      if (!agent && session_key !== undefined) {
+        const clientId = typeof client_id === 'string' ? client_id.trim() : ''
+        if (clientId && isBridgeClientOnline(clientId)) {
+          const indexRow = getBridgeAgentIndexByRemoteName(clientId, name)
+          if (indexRow) {
+            const trimmedKey = String(session_key || '').trim()
+            if (trimmedKey) {
+              const resolvedKind = resolveSessionKindForBinding(trimmedKey, session_kind)
+              const kindCheck = validateAgentSessionKindBinding(indexRow.framework, resolvedKind)
+              if (!kindCheck.ok) {
+                return NextResponse.json(
+                  { error: kindCheck.message, code: 'session_kind_mismatch' },
+                  { status: 409 },
+                )
+              }
+            }
+            try {
+              const remote = await requestBridgeClientAgentSessionUpdate({
+                clientId,
+                localAgentId: indexRow.local_agent_id,
+                sessionKey: trimmedKey,
+                sessionKind: typeof session_kind === 'string' ? session_kind : '',
+              })
+              const edgeAgent = remote.agent as Record<string, unknown> | null
+              return NextResponse.json({
+                success: true,
+                agent: {
+                  id: indexRow.id,
+                  name: indexRow.remote_name,
+                  role: indexRow.role,
+                  framework: indexRow.framework,
+                  session_key: typeof edgeAgent?.session_key === 'string' ? edgeAgent.session_key : trimmedKey || null,
+                  remote: true,
+                  bridge_online: true,
+                },
+              })
+            } catch (err: any) {
+              logger.warn({ err, clientId, name }, 'Bridge agent session update failed')
+              return NextResponse.json(
+                { error: err?.message || 'Failed to update session binding on edge client' },
+                { status: 503 },
+              )
+            }
+          }
+        }
+      }
+
       if (!agent) {
         return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
       }
@@ -403,6 +506,25 @@ export async function PUT(request: NextRequest) {
       if (session_key !== undefined) {
         fieldsToUpdate.push('session_key = ?');
         params.push(session_key);
+
+        const mergedConfig = {
+          ...parseAgentConfigRecord(config !== undefined ? config : agent.config),
+          primary_session_key: session_key || null,
+          session_state: session_key ? 'ready' : 'pending',
+          session_bootstrap_state: 'pending',
+          session_bootstrap_hash: null,
+          session_bootstrap_error: null,
+        } as Record<string, unknown>
+
+        if (agent.framework && agent.framework !== 'openclaw' && mergedConfig.runtime_managed !== true) {
+          mergedConfig.session_mode = mergedConfig.session_mode || 'dedicated'
+          mergedConfig.session_strategy = mergedConfig.session_strategy || 'persistent'
+        }
+
+        if (config === undefined) {
+          fieldsToUpdate.push('config = ?');
+          params.push(JSON.stringify(mergedConfig));
+        }
       }
       
       if (soul_content !== undefined) {
@@ -413,6 +535,15 @@ export async function PUT(request: NextRequest) {
       if (role !== undefined) {
         fieldsToUpdate.push('role = ?');
         params.push(role);
+      }
+
+      if (workspace_path !== undefined) {
+        fieldsToUpdate.push('workspace_path = ?');
+        params.push(
+          String(workspace_path || '').trim()
+            ? path.resolve(String(workspace_path).trim())
+            : null,
+        );
       }
       
       fieldsToUpdate.push('updated_at = ?');
@@ -430,6 +561,14 @@ export async function PUT(request: NextRequest) {
       `);
       
       stmt.run(...params);
+
+      const updatedAgent = db
+        .prepare('SELECT * FROM agents WHERE id = ? AND workspace_id = ?')
+        .get(agent.id, workspaceId) as Agent;
+      const parsedUpdatedAgent = {
+        ...updatedAgent,
+        config: parseAgentConfigRecord(updatedAgent.config),
+      };
       
       // Log status change if status was updated
       if (status !== undefined && status !== agent.status) {
@@ -455,10 +594,11 @@ export async function PUT(request: NextRequest) {
         ...(status !== undefined && { status }),
         ...(last_activity !== undefined && { last_activity }),
         ...(role !== undefined && { role }),
+        ...(workspace_path !== undefined && { workspace_path: parsedUpdatedAgent.workspace_path }),
         updated_at: now,
       });
 
-      return NextResponse.json({ success: true });
+      return NextResponse.json({ success: true, agent: parsedUpdatedAgent });
     } else {
       return NextResponse.json({ error: 'Agent name is required' }, { status: 400 });
     }

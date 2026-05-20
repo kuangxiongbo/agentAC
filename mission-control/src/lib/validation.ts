@@ -68,6 +68,7 @@ export const createAgentSchema = z.object({
   write_to_gateway: z.boolean().optional(),
   provision_openclaw_workspace: z.boolean().optional(),
   openclaw_workspace_path: z.string().min(1).max(500).optional(),
+  workspace_path: z.string().min(1).max(500).optional(),
   framework: z.string().max(50).optional(),
   parent_id: z.number().int().positive().optional().nullable(),
 })
@@ -169,7 +170,7 @@ export const createUserSchema = z.object({
   password: z.string().min(12, 'Password must be at least 12 characters'),
   display_name: z.string().optional(),
   role: z.enum(['admin', 'operator', 'viewer']).default('operator'),
-  provider: z.enum(['local', 'google', 'zitadel']).default('local'),
+  provider: z.enum(['local', 'google']).default('local'),
   email: z.string().optional(),
 })
 

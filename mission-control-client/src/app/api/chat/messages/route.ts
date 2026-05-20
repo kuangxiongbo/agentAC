@@ -9,7 +9,7 @@ import { scanForInjection, sanitizeForPrompt } from '@/lib/injection-guard'
 import { callOpenClawGateway } from '@/lib/openclaw-gateway'
 import { resolveCoordinatorDeliveryTarget } from '@/lib/coordinator-routing'
 import {
-  executeBoundLocalAgentPrompt,
+  enqueueBoundLocalAgentPrompt,
   getLocalSessionKindForFramework,
 } from '@/lib/local-session-executor'
 
@@ -496,23 +496,14 @@ export async function POST(request: NextRequest) {
           try {
             const idempotencyKey = `mc-${messageId}-${Date.now()}`
 
-            if (localSessionKind && localSessionKey) {
-              const localResult = await executeBoundLocalAgentPrompt(
+            if (localSessionKind) {
+              const queued = enqueueBoundLocalAgentPrompt(
                 agent || { framework: agent?.framework || null, session_key: localSessionKey },
                 `Message from ${from}: ${content}`,
                 { overrideSessionKey: explicitSessionKey || undefined },
               )
               forwardInfo.delivered = true
-              forwardInfo.session = localResult.sessionId || undefined
-              localReplyText = localResult.reply
-            } else if (localSessionKind) {
-              const localResult = await executeBoundLocalAgentPrompt(
-                agent || { framework: agent?.framework || null, session_key: null },
-                `Message from ${from}: ${content}`,
-              )
-              forwardInfo.delivered = true
-              forwardInfo.session = localResult.sessionId || undefined
-              localReplyText = localResult.reply
+              forwardInfo.session = queued.sessionKey || undefined
             } else if (sessionKey) {
               const acceptedPayload = await callOpenClawGateway<any>(
                 'chat.send',

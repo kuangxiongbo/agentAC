@@ -13,12 +13,22 @@ import {
 import { verifyOidcFlowCookie } from '@/lib/oidc-flow-cookie'
 import {
   buildUserCenterOnboardingRedirectUrl,
-  fetchUsercenterTenantContextIfConfigured,
   isUsercenterApiConfigured,
   resolveUserCenterPortalBase,
   resolveUsercenterOnboardingMode,
 } from '@/lib/usercenter-tenant-gateway'
-import { provisionLocalUserFromUsercenterTenant, deriveZitadelLocalUsername, syncExistingUserWithUsercenterPortal } from '@/lib/usercenter-provision-local'
+import {
+  provisionLocalUserFromUsercenterTenant,
+  deriveZitadelLocalUsername,
+  syncExistingUserWithUsercenterPortal,
+  ensureOrganizationBindingForUser,
+  type UsercenterPortalTenant,
+} from '@/lib/usercenter-provision-local'
+import {
+  createUsercenterTenant,
+  fetchUsercenterTenantContextIfConfigured,
+} from '@/lib/usercenter-tenant-gateway'
+import { resolveAutoOrganizationName, slugFromOrganizationName } from '@/lib/tenant-auth-scope'
 import { resolveRequestOrigin } from '@/lib/request-origin'
 import {
   MC_PENDING_ONBOARDING_COOKIE,
@@ -137,7 +147,42 @@ export async function GET(request: NextRequest) {
       return res
     }
 
-    if (tenantGate.configured && tenantGate.ok && tenantGate.data.hasTenant !== true) {
+    const autoProvisionOrgOnLogin = String(process.env.MC_AUTO_PROVISION_ORG_ON_LOGIN ?? '1').trim().toLowerCase() !== '0'
+    let portalTenant: UsercenterPortalTenant | undefined =
+      tenantGate.configured && tenantGate.ok && tenantGate.data.hasTenant
+        ? tenantGate.data.tenant
+        : undefined
+
+    if (tenantGate.configured && tenantGate.ok && tenantGate.data.hasTenant !== true && autoProvisionOrgOnLogin) {
+      const orgName = resolveAutoOrganizationName({ displayName, email })
+      const orgSlug = slugFromOrganizationName(orgName, `org-${randomBytes(3).toString('hex')}`)
+      try {
+        const created = await createUsercenterTenant({
+          subject: sub,
+          email: email || null,
+          displayName,
+          name: orgName,
+          slug: orgSlug,
+        })
+        portalTenant = {
+          id: String(created.tenantId),
+          name: orgName,
+          slug: created.slug || orgSlug,
+          role: 'owner',
+        }
+        logAuditEvent({
+          action: 'zitadel_auto_provision_usercenter_tenant',
+          actor: email || loginName,
+          detail: { sub, orgName, tenantId: created.tenantId, slug: created.slug },
+          ip_address: ipAddress,
+          user_agent: userAgent,
+        })
+      } catch (autoErr) {
+        console.warn('[api/auth/callback] auto create usercenter tenant failed', autoErr)
+      }
+    }
+
+    if (tenantGate.configured && tenantGate.ok && tenantGate.data.hasTenant !== true && !portalTenant) {
       const returnTo =
         flow.returnTo && flow.returnTo.startsWith('/') && !flow.returnTo.startsWith('//') ? flow.returnTo : '/'
 
@@ -221,8 +266,6 @@ export async function GET(request: NextRequest) {
 
     const autoProvision =
       String(process.env.MC_USERCENTER_AUTO_PROVISION ?? '1').trim().toLowerCase() !== '0'
-    const portalTenant =
-      tenantGate.configured && tenantGate.ok && tenantGate.data.hasTenant ? tenantGate.data.tenant : undefined
 
     if (!row && autoProvision && portalTenant) {
       const provision = provisionLocalUserFromUsercenterTenant({
@@ -313,6 +356,24 @@ export async function GET(request: NextRequest) {
       if (synced) {
         const refreshed = db.prepare(userLookupSql).get(sub, email) as ZitadelUserRow | undefined
         if (refreshed) row = refreshed
+      }
+    } else if (row && !tenantGate.configured && autoProvisionOrgOnLogin) {
+      const orgName = resolveAutoOrganizationName({ displayName, email })
+      const synced = ensureOrganizationBindingForUser({
+        userId: row.id,
+        organizationName: orgName,
+        role: 'owner',
+      })
+      if (synced) {
+        const refreshed = db.prepare(userLookupSql).get(sub, email) as ZitadelUserRow | undefined
+        if (refreshed) row = refreshed
+        logAuditEvent({
+          action: 'zitadel_auto_provision_local_tenant',
+          actor: email || loginName,
+          detail: { sub, orgName, tenantId: synced.tenantId },
+          ip_address: ipAddress,
+          user_agent: userAgent,
+        })
       }
     }
 

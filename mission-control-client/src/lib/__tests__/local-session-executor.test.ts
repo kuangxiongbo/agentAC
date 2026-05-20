@@ -4,6 +4,7 @@ const runCommand = vi.fn()
 const scanCodexSessions = vi.fn()
 
 let agentRow: any = null
+let otherAgentsSessionKeys: Array<{ session_key: string }> = []
 
 const getMock = vi.fn((id?: number) => {
   if (!agentRow) return undefined
@@ -25,6 +26,9 @@ const prepare = vi.fn((sql: string) => {
   if (sql.includes('FROM agents') && sql.includes('WHERE id = ?')) {
     return { get: getMock }
   }
+  if (sql.includes('SELECT session_key FROM agents')) {
+    return { all: vi.fn(() => otherAgentsSessionKeys) }
+  }
   if (sql.includes('UPDATE agents') && sql.includes('SET session_key = ?')) {
     return { run: runUpdate }
   }
@@ -44,15 +48,39 @@ vi.mock('@/lib/codex-sessions', () => ({
   scanCodexSessions,
 }))
 
+const findClaudeSessionProjectPath = vi.fn()
+const findClaudeSessionFilePath = vi.fn()
+const readLastClaudeSessionReply = vi.fn()
+const syncClaudeSessions = vi.fn().mockResolvedValue({ ok: true, message: 'ok' })
+
+vi.mock('@/lib/claude-sessions', () => ({
+  findClaudeSessionProjectPath,
+  findClaudeSessionFilePath,
+  readLastClaudeSessionReply,
+  syncClaudeSessions,
+}))
+
 vi.mock('@/lib/db', () => ({
   getDatabase,
 }))
+
+vi.mock('@/lib/session-realtime', () => ({
+  notifySessionTranscriptUpdated: vi.fn(),
+}))
+
+const cmdOpts = (extra?: Record<string, unknown>) => expect.objectContaining({ timeoutMs: 180000, ...extra })
+const probeOpts = () => expect.objectContaining({ timeoutMs: 3000 })
 
 describe('local-session-executor', () => {
   beforeEach(() => {
     vi.resetModules()
     runCommand.mockReset()
     scanCodexSessions.mockReset()
+    findClaudeSessionProjectPath.mockReset()
+    findClaudeSessionFilePath.mockReset()
+    readLastClaudeSessionReply.mockReset()
+    syncClaudeSessions.mockReset().mockResolvedValue({ ok: true, message: 'ok' })
+    otherAgentsSessionKeys = []
     getDatabase.mockClear()
     prepare.mockClear()
     getMock.mockClear()
@@ -80,8 +108,56 @@ describe('local-session-executor', () => {
     runCommand.mockResolvedValue({ stdout: 'done', stderr: '', code: 0 })
     const { executeLocalSessionPrompt } = await import('@/lib/local-session-executor')
     const result = await executeLocalSessionPrompt('claude-code', 'claude-session-1', 'hello')
-    expect(runCommand).toHaveBeenCalledWith('claude', ['--print', '--resume', 'claude-session-1', 'hello'], { timeoutMs: 180000 })
+    expect(runCommand).toHaveBeenCalledWith('claude', ['--print', '--resume', 'claude-session-1', 'hello'], cmdOpts())
     expect(result.reply).toBe('done')
+  })
+
+  it('resumes claude sessions using the JSONL project cwd when agent workspace differs', async () => {
+    findClaudeSessionProjectPath.mockReturnValue('/tmp')
+    runCommand.mockResolvedValue({ stdout: 'pong', stderr: '', code: 0 })
+
+    const { createHash } = await import('node:crypto')
+    const { resolveLocalExecutionWorkingDirectory, executeBoundLocalAgentPrompt } = await import('@/lib/local-session-executor')
+    const roleHash = createHash('sha256')
+      .update('Agent Name: 测试专家\nPrimary Role: quality reviewer\nPersona Marker: 🔬')
+      .digest('hex')
+
+    agentRow = {
+      id: 33,
+      name: '测试专家',
+      framework: 'claude',
+      workspace_path: '/Users/kuangxb/Desktop/test',
+      session_key: 'e3fef5dd-d946-4f26-bd2c-aa5aa41240e8',
+      config: JSON.stringify({
+        identity: { theme: 'quality reviewer', emoji: '🔬' },
+        session_mode: 'dedicated',
+        session_strategy: 'persistent',
+        session_state: 'ready',
+        primary_session_key: 'e3fef5dd-d946-4f26-bd2c-aa5aa41240e8',
+        session_bootstrap_state: 'ready',
+        session_bootstrap_hash: roleHash,
+        role_hash: roleHash,
+      }),
+      status: 'idle',
+    }
+
+    expect(
+      resolveLocalExecutionWorkingDirectory(
+        'claude-code',
+        'e3fef5dd-d946-4f26-bd2c-aa5aa41240e8',
+        agentRow,
+        '/Users/kuangxb/Desktop/test',
+      ),
+    ).toBe('/tmp')
+
+    await executeBoundLocalAgentPrompt(agentRow, 'hello from test')
+
+    expect(findClaudeSessionProjectPath).toHaveBeenCalledWith('e3fef5dd-d946-4f26-bd2c-aa5aa41240e8')
+    expect(runCommand).toHaveBeenCalledWith(
+      'claude',
+      ['--print', '--resume', 'e3fef5dd-d946-4f26-bd2c-aa5aa41240e8', 'hello from test'],
+      cmdOpts({ cwd: '/tmp' }),
+    )
   })
 
   it('executes a cursor local session prompt via the cursor agent CLI', async () => {
@@ -95,7 +171,7 @@ describe('local-session-executor', () => {
     expect(runCommand).toHaveBeenCalledWith(
       'cursor',
       ['agent', '--print', '--output-format', 'json', '--force', '--trust', '--resume', 'cursor-session-1', 'hello'],
-      { timeoutMs: 180000 },
+      cmdOpts(),
     )
     expect(result.reply).toBe('cursor-done')
   })
@@ -107,7 +183,7 @@ describe('local-session-executor', () => {
     expect(runCommand).toHaveBeenCalledWith(
       'hermes',
       ['chat', '--quiet', '--query', 'hello', '--resume', 'hermes-session-1'],
-      { timeoutMs: 180000 },
+      cmdOpts(),
     )
     expect(result.reply).toBe('hermes-done')
   })
@@ -122,13 +198,13 @@ describe('local-session-executor', () => {
       1,
       'opencode',
       ['run', '--help'],
-      { timeoutMs: 3000 },
+      probeOpts(),
     )
     expect(runCommand).toHaveBeenNthCalledWith(
       2,
       'opencode',
       ['-q', '-p', 'hello', '-f', 'json'],
-      { timeoutMs: 180000 },
+      cmdOpts(),
     )
     expect(result.reply).toBe('opencode-done')
   })
@@ -143,15 +219,13 @@ describe('local-session-executor', () => {
       2,
       'opencode',
       ['run', '--session', 'opencode-session-1', '--format', 'json', 'hello'],
-      { timeoutMs: 180000 },
+      cmdOpts(),
     )
     expect(result.reply).toBe('opencode-run-done')
   })
 
   it('auto provisions and persists a dedicated claude session for a child agent', async () => {
-    runCommand
-      .mockResolvedValueOnce({ stdout: 'READY', stderr: '', code: 0 })
-      .mockResolvedValueOnce({ stdout: 'claude-initial-reply', stderr: '', code: 0 })
+    runCommand.mockResolvedValueOnce({ stdout: 'claude-initial-reply', stderr: '', code: 0 })
     agentRow = {
       id: 7,
       name: 'frontend',
@@ -167,15 +241,12 @@ describe('local-session-executor', () => {
     const { executeBoundLocalAgentPrompt } = await import('@/lib/local-session-executor')
     const result = await executeBoundLocalAgentPrompt(agentRow, 'hello')
 
-    expect(runCommand).toHaveBeenCalledTimes(2)
-    const [, bootstrapArgs] = runCommand.mock.calls[0]
-    expect(bootstrapArgs[0]).toBe('--print')
-    expect(bootstrapArgs[1]).toBe('--session-id')
-    expect(String(bootstrapArgs[3])).toContain('E-Agent-Client dedicated-session bootstrap')
-    const [, messageArgs] = runCommand.mock.calls[1]
-    expect(messageArgs[0]).toBe('--print')
-    expect(messageArgs[1]).toBe('--resume')
-    expect(messageArgs[3]).toBe('hello')
+    expect(runCommand).toHaveBeenCalledTimes(1)
+    const [, startArgs] = runCommand.mock.calls[0]
+    expect(startArgs[0]).toBe('--print')
+    expect(startArgs[1]).toBe('--session-id')
+    expect(String(startArgs[3])).toContain('Now respond to the following user message in character:')
+    expect(String(startArgs[3])).toContain('hello')
     expect(result.reply).toBe('claude-initial-reply')
     expect(result.sessionId).toMatch(/[0-9a-f-]{36}/)
     expect(runUpdate).toHaveBeenLastCalledWith(
@@ -205,11 +276,34 @@ describe('local-session-executor', () => {
     expect(runCommand).not.toHaveBeenCalled()
   })
 
+  it('recovers a claude start from on-disk JSONL when the CLI exits non-zero', async () => {
+    runCommand.mockRejectedValueOnce(new Error('Command failed (claude --print --session-id new-session hello): '))
+    findClaudeSessionFilePath.mockReturnValue('/tmp/fake-session.jsonl')
+    readLastClaudeSessionReply.mockReturnValue('recovered reply')
+
+    agentRow = {
+      id: 41,
+      name: 'recover-me',
+      framework: 'claude',
+      session_key: null,
+      config: JSON.stringify({ session_mode: 'dedicated', session_state: 'pending' }),
+      workspace_path: '/tmp',
+      status: 'idle',
+    }
+
+    const { executeBoundLocalAgentPrompt } = await import('@/lib/local-session-executor')
+    const result = await executeBoundLocalAgentPrompt(agentRow, 'hello')
+
+    expect(findClaudeSessionFilePath).toHaveBeenCalled()
+    expect(result.reply).toBe('recovered reply')
+    expect(runUpdate).toHaveBeenCalled()
+    expect(syncClaudeSessions).toHaveBeenCalledWith(true)
+  })
+
   it('reprovisions a dedicated claude session when the stored session key is invalid', async () => {
     const invalidResumeError = new Error('Error: --resume requires a valid session ID or session title when used with --print. Provided value "fr001" is not a UUID and does not match any session title.')
     runCommand
       .mockRejectedValueOnce(invalidResumeError)
-      .mockResolvedValueOnce({ stdout: 'READY', stderr: '', code: 0 })
       .mockResolvedValueOnce({ stdout: 'claude-rebound', stderr: '', code: 0 })
     agentRow = {
       id: 10,
@@ -226,21 +320,17 @@ describe('local-session-executor', () => {
     const { executeBoundLocalAgentPrompt } = await import('@/lib/local-session-executor')
     const result = await executeBoundLocalAgentPrompt(agentRow, 'hello')
 
-    expect(runCommand).toHaveBeenCalledTimes(3)
+    expect(runCommand).toHaveBeenCalledTimes(2)
     expect(runCommand).toHaveBeenNthCalledWith(
       1,
       'claude',
-      ['--print', '--resume', 'fr001', expect.stringContaining('E-Agent-Client dedicated-session bootstrap')],
-      { timeoutMs: 180000 },
+      ['--print', '--resume', 'fr001', expect.stringContaining('Now respond to the following user message in character:')],
+      cmdOpts(),
     )
     const [, secondArgs] = runCommand.mock.calls[1]
     expect(secondArgs[0]).toBe('--print')
     expect(secondArgs[1]).toBe('--session-id')
-    expect(String(secondArgs[3])).toContain('E-Agent-Client dedicated-session bootstrap')
-    const [, thirdArgs] = runCommand.mock.calls[2]
-    expect(thirdArgs[0]).toBe('--print')
-    expect(thirdArgs[1]).toBe('--resume')
-    expect(thirdArgs[3]).toBe('hello')
+    expect(String(secondArgs[3])).toContain('Now respond to the following user message in character:')
     expect(result.reply).toBe('claude-rebound')
     expect(runUpdate).toHaveBeenLastCalledWith(
       expect.any(String),
@@ -275,17 +365,14 @@ describe('local-session-executor', () => {
     const { executeBoundLocalAgentPrompt } = await import('@/lib/local-session-executor')
     const result = await executeBoundLocalAgentPrompt(agentRow, 'hello')
 
+    const codexBin = runCommand.mock.calls[0][0] as string
+    expect(codexBin).toContain('codex')
+    expect(runCommand).toHaveBeenCalledTimes(1)
     expect(runCommand).toHaveBeenNthCalledWith(
       1,
-      'codex',
-      ['exec', expect.stringContaining('E-Agent-Client dedicated-session bootstrap'), '--skip-git-repo-check', '--json', '-o', expect.stringMatching(/^\/tmp\/mc-codex-start-/)],
-      { timeoutMs: 180000, cwd: '/tmp' },
-    )
-    expect(runCommand).toHaveBeenNthCalledWith(
-      2,
-      'codex',
-      ['exec', 'resume', 'new-session', 'hello', '--skip-git-repo-check', '-o', expect.stringMatching(/^\/tmp\/mc-codex-last-/)],
-      { timeoutMs: 180000, cwd: '/tmp' },
+      codexBin,
+      ['exec', expect.stringContaining('Now respond to the following user message in character:'), '--skip-git-repo-check', '--json', '-o', expect.stringMatching(/^\/tmp\/mc-codex-start-/)],
+      cmdOpts({ cwd: '/tmp' }),
     )
     expect(result.sessionId).toBe('new-session')
     expect(runUpdate).toHaveBeenLastCalledWith(
@@ -295,5 +382,148 @@ describe('local-session-executor', () => {
       expect.any(Number),
       11,
     )
+  })
+
+  it('reprovisions when session_key is already bound to another agent', async () => {
+    otherAgentsSessionKeys = [{ session_key: 'shared-session' }]
+    let scanCall = 0
+    scanCodexSessions.mockImplementation(() => {
+      scanCall += 1
+      if (scanCall <= 2) {
+        return [{ sessionId: 'shared-session', projectPath: '/tmp', lastMessageAt: new Date().toISOString() }]
+      }
+      return [
+        { sessionId: 'shared-session', projectPath: '/tmp', lastMessageAt: new Date().toISOString() },
+        { sessionId: 'fresh-session', projectPath: '/tmp', lastMessageAt: new Date().toISOString() },
+      ]
+    })
+    runCommand.mockResolvedValue({
+      stdout: '{"sessionId":"fresh-session","text":"ok"}',
+      stderr: '',
+      code: 0,
+    })
+    agentRow = {
+      id: 11,
+      name: 'backend',
+      framework: 'codex',
+      session_key: 'shared-session',
+      config: JSON.stringify({ session_mode: 'dedicated', session_state: 'ready', mc_bound_agent_id: 11 }),
+      workspace_path: '/tmp',
+      source: 'user',
+      parent_id: 4,
+      status: 'idle',
+    }
+
+    const { executeBoundLocalAgentPrompt } = await import('@/lib/local-session-executor')
+    const result = await executeBoundLocalAgentPrompt(agentRow, 'hello')
+
+    expect(result.sessionId).toBe('fresh-session')
+    expect(agentRow.session_key).toBe('fresh-session')
+    expect(
+      runCommand.mock.calls.some(
+        (call) => call[1]?.[0] === 'exec' && String(call[1]?.[1] || '').includes('Now respond to the following user message'),
+      ),
+    ).toBe(true)
+  })
+
+  it('treats codex start as success when stderr has rollout noise but stdout has thread id', async () => {
+    const threadId = '019e39e8-5d7e-74d2-b6a4-a02f43bd6229'
+    scanCodexSessions.mockReturnValue([])
+    runCommand.mockRejectedValueOnce({
+      stdout: `{"type":"thread.started","thread_id":"${threadId}"}\n{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hello back"}}`,
+      stderr: 'failed to record rollout items: thread not found\n',
+      message: 'Command failed',
+    })
+    agentRow = {
+      id: 13,
+      name: '测试3',
+      framework: 'codex',
+      session_key: null,
+      config: JSON.stringify({ session_mode: 'dedicated', session_state: 'pending' }),
+      workspace_path: '/tmp',
+      source: 'user',
+      parent_id: 4,
+      status: 'offline',
+    }
+
+    const { executeBoundLocalAgentPrompt } = await import('@/lib/local-session-executor')
+    const result = await executeBoundLocalAgentPrompt(agentRow, 'hello')
+
+    expect(result.sessionId).toBe(threadId)
+    expect(runUpdate).toHaveBeenLastCalledWith(
+      threadId,
+      expect.stringContaining('"primary_session_key":"' + threadId + '"'),
+      'idle',
+      expect.any(Number),
+      13,
+    )
+  })
+
+  it('does not pick codex sessions reserved by other agents when auto provisioning', async () => {
+    const now = Date.now()
+    otherAgentsSessionKeys = [{ session_key: 'taken-session' }]
+    scanCodexSessions
+      .mockReturnValueOnce([{ sessionId: 'old-session', projectPath: '/tmp', lastMessageAt: new Date(now - 60000).toISOString() }])
+      .mockReturnValue([
+        { sessionId: 'taken-session', projectPath: '/tmp', lastMessageAt: new Date(now + 1000).toISOString() },
+        { sessionId: 'free-session', projectPath: '/tmp', lastMessageAt: new Date(now + 2000).toISOString() },
+      ])
+    runCommand.mockResolvedValue({ stdout: '{"text":"codex-new-reply"}', stderr: '', code: 0 })
+    agentRow = {
+      id: 12,
+      name: 'worker',
+      framework: 'codex',
+      session_key: null,
+      config: JSON.stringify({ session_mode: 'dedicated', session_state: 'pending' }),
+      workspace_path: '/tmp',
+      source: 'user',
+      parent_id: 4,
+      status: 'offline',
+    }
+
+    const { executeBoundLocalAgentPrompt } = await import('@/lib/local-session-executor')
+    const result = await executeBoundLocalAgentPrompt(agentRow, 'hello')
+
+    expect(result.sessionId).toBe('free-session')
+    expect(runUpdate).toHaveBeenLastCalledWith(
+      'free-session',
+      expect.stringContaining('"mc_bound_agent_id":12'),
+      'idle',
+      expect.any(Number),
+      12,
+    )
+  })
+
+  it('enqueueBoundLocalAgentPrompt returns immediately while CLI runs in background', async () => {
+    agentRow = {
+      id: 1,
+      name: 'codex-agent',
+      framework: 'codex',
+      session_key: 'sess-immediate',
+      config: JSON.stringify({ session_mode: 'dedicated', session_state: 'ready' }),
+      workspace_path: '/tmp',
+    }
+
+    let resolveDeferred!: (value: { stdout: string; stderr: string }) => void
+    const pending = new Promise<{ stdout: string; stderr: string }>((resolve) => {
+      resolveDeferred = resolve
+    })
+    runCommand.mockReturnValue(pending)
+
+    const { enqueueBoundLocalAgentPrompt } = await import('@/lib/local-session-executor')
+    const started = Date.now()
+    const result = enqueueBoundLocalAgentPrompt(agentRow, 'hello')
+    expect(Date.now() - started).toBeLessThan(100)
+    expect(result).toEqual({
+      accepted: true,
+      sessionKey: 'sess-immediate',
+      kind: 'codex-cli',
+    })
+
+    resolveDeferred({
+      stdout: JSON.stringify({ type: 'thread.started', thread_id: 'sess-immediate' }),
+      stderr: '',
+    })
+    await new Promise((resolve) => setImmediate(resolve))
   })
 })

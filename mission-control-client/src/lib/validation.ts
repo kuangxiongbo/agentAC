@@ -55,9 +55,46 @@ export const createTaskSchema = z.object({
 
 export const updateTaskSchema = createTaskSchema.partial()
 
+const OPENCLAW_ID_RE = /^[a-z0-9][a-z0-9-]*$/
+
+/** Normalize display name or manual id into a valid OpenClaw kebab-case id. */
+export function toOpenClawKebabId(value: string | undefined | null, seed = 'agent'): string {
+  const slug = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 100)
+  if (slug && OPENCLAW_ID_RE.test(slug)) return slug
+
+  const fromSeed = String(seed || 'agent')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+  if (fromSeed && OPENCLAW_ID_RE.test(fromSeed)) return fromSeed
+
+  return `agent-${Date.now().toString(36).slice(-8)}`
+}
+
+function preprocessOpenClawId(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const slug = String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 100)
+  return slug && OPENCLAW_ID_RE.test(slug) ? slug : undefined
+}
+
 export const createAgentSchema = z.object({
   name: z.string().min(1, 'Name is required').max(100),
-  openclaw_id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, 'openclaw_id must be kebab-case').max(100).optional().or(z.literal('')),
+  openclaw_id: z.preprocess(
+    preprocessOpenClawId,
+    z.string().regex(OPENCLAW_ID_RE, 'openclaw_id must be kebab-case').max(100).optional(),
+  ),
   role: z.string().min(1, 'Role is required').max(100).optional(),
   session_key: z.string().max(200).optional(),
   soul_content: z.string().max(50000).optional(),
@@ -68,6 +105,7 @@ export const createAgentSchema = z.object({
   write_to_gateway: z.boolean().optional(),
   provision_openclaw_workspace: z.boolean().optional(),
   openclaw_workspace_path: z.string().min(1).max(500).optional(),
+  workspace_path: z.string().min(1).max(500).optional(),
   framework: z.string().max(50).optional(),
   parent_id: z.number().int().positive().optional().nullable(),
 })

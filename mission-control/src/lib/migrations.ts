@@ -1568,6 +1568,115 @@ const migrations: Migration[] = [
       }
     },
   },
+  {
+    id: '059_sync_agent_index',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sync_agent_index (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          client_id TEXT NOT NULL,
+          client_name TEXT NOT NULL,
+          local_agent_id INTEGER NOT NULL,
+          original_name TEXT NOT NULL,
+          remote_name TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'agent',
+          status TEXT NOT NULL DEFAULT 'idle',
+          framework TEXT,
+          parent_local_id INTEGER,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          UNIQUE(client_id, local_agent_id)
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_agent_index_client_id ON sync_agent_index(client_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_agent_index_updated_at ON sync_agent_index(updated_at)`)
+    },
+  },
+  {
+    id: '060_human_watch',
+    up(db: Database.Database) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS human_watch_bindings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id INTEGER NOT NULL,
+          tenant_id INTEGER,
+          client_id TEXT NOT NULL,
+          worker_sync_index_id INTEGER,
+          worker_local_agent_id INTEGER,
+          worker_name TEXT,
+          steward_sync_index_id INTEGER,
+          steward_local_agent_id INTEGER,
+          steward_name TEXT,
+          worker_session_id TEXT,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          mode TEXT NOT NULL DEFAULT 'auto_send',
+          rules_override TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_human_watch_bindings_workspace ON human_watch_bindings(workspace_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_human_watch_bindings_client ON human_watch_bindings(client_id)`)
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_human_watch_bindings_worker
+        ON human_watch_bindings(workspace_id, client_id, worker_sync_index_id, worker_local_agent_id)
+        WHERE worker_sync_index_id IS NOT NULL OR worker_local_agent_id IS NOT NULL`)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS human_watch_interventions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id INTEGER NOT NULL,
+          tenant_id INTEGER,
+          client_id TEXT NOT NULL,
+          binding_id INTEGER,
+          worker_sync_index_id INTEGER,
+          worker_local_agent_id INTEGER,
+          worker_name TEXT,
+          steward_sync_index_id INTEGER,
+          steward_local_agent_id INTEGER,
+          steward_name TEXT,
+          worker_session_id TEXT,
+          event_type TEXT NOT NULL,
+          decision TEXT,
+          rules_hit TEXT,
+          fingerprint TEXT,
+          prompt_preview TEXT,
+          prompt_sha256 TEXT,
+          outcome TEXT,
+          error_message TEXT,
+          bridge_request_id TEXT,
+          llm_sweep INTEGER NOT NULL DEFAULT 0,
+          skip_reason TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (binding_id) REFERENCES human_watch_bindings(id) ON DELETE SET NULL
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_interventions_workspace_created
+        ON human_watch_interventions(workspace_id, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_interventions_binding
+        ON human_watch_interventions(binding_id, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_interventions_client
+        ON human_watch_interventions(client_id, created_at DESC)`)
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_hw_interventions_idempotent_success
+        ON human_watch_interventions(binding_id, fingerprint)
+        WHERE event_type = 'intervention_completed'
+          AND outcome = 'success'
+          AND fingerprint IS NOT NULL
+          AND binding_id IS NOT NULL
+      `)
+    },
+  },
+  {
+    id: '061_human_watch_tenant_flag',
+    up(db: Database.Database) {
+      const columns = db.prepare(`PRAGMA table_info(tenants)`).all() as Array<{ name: string }>
+      const hasFlag = columns.some((col) => col.name === 'human_watch_enabled')
+      if (!hasFlag) {
+        db.exec(
+          `ALTER TABLE tenants ADD COLUMN human_watch_enabled INTEGER NOT NULL DEFAULT 0`,
+        )
+      }
+    },
+  },
 ]
 
 export function runMigrations(db: Database.Database) {

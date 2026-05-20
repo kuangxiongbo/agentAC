@@ -7,12 +7,18 @@ import { logAuditEvent } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
 import { mutationLimiter } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
-import { validateBody, createAgentSchema } from '@/lib/validation';
+import { validateBody, createAgentSchema, toOpenClawKebabId } from '@/lib/validation';
 import { runOpenClaw } from '@/lib/command';
 import { config as appConfig } from '@/lib/config';
 import { resolveWithin } from '@/lib/paths';
 import { syncRuntimeAgents } from '@/lib/runtime-agent-sync';
 import path from 'node:path';
+import { validateAgentSessionKindBinding } from '@/lib/agent-session-binding';
+import { resolveSessionKindForBinding } from '@/lib/infer-local-session-kind';
+import {
+  enqueueProvisionAgentDedicatedSession,
+  shouldAutoProvisionSessionOnCreate,
+} from '@/lib/local-session-executor';
 
 function parseAgentConfigRecord(value: unknown): Record<string, unknown> {
   if (!value) return {}
@@ -194,14 +200,12 @@ export async function POST(request: NextRequest) {
       write_to_gateway,
       provision_openclaw_workspace,
       openclaw_workspace_path,
+      workspace_path,
       framework = 'openclaw',
       parent_id
     } = body;
 
-    const openclawId = (openclaw_id || name || 'agent')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
+    const openclawId = toOpenClawKebabId(openclaw_id || name, name || 'agent');
 
     // Resolve template if specified
     let finalRole = role;
@@ -220,9 +224,9 @@ export async function POST(request: NextRequest) {
     if (framework && framework !== 'openclaw' && finalConfig.runtime_managed !== true) {
       finalConfig.session_mode = finalConfig.session_mode || 'dedicated'
       finalConfig.session_strategy = finalConfig.session_strategy || 'persistent'
-      finalConfig.session_state = session_key ? 'ready' : (finalConfig.session_state || 'pending')
+      finalConfig.session_state = session_key ? 'ready' : 'provisioning'
       finalConfig.primary_session_key = session_key || finalConfig.primary_session_key || null
-      finalConfig.session_bootstrap_state = 'pending'
+      finalConfig.session_bootstrap_state = session_key ? 'ready' : 'provisioning'
       finalConfig.session_bootstrap_hash = null
       finalConfig.session_bootstrap_error = null
     }
@@ -285,11 +289,15 @@ export async function POST(request: NextRequest) {
     
     const now = Math.floor(Date.now() / 1000);
     
+    const resolvedWorkspacePath = workspace_path?.trim()
+      ? path.resolve(workspace_path.trim())
+      : null
+
     const stmt = db.prepare(`
       INSERT INTO agents (
         name, role, session_key, soul_content, status, 
-        created_at, updated_at, config, workspace_id, framework, parent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, config, workspace_id, framework, parent_id, workspace_path
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     
     const dbResult = stmt.run(
@@ -303,7 +311,8 @@ export async function POST(request: NextRequest) {
       JSON.stringify(finalConfig),
       workspaceId,
       framework,
-      resolvedParentId
+      resolvedParentId,
+      resolvedWorkspacePath
     );
 
     const agentId = dbResult.lastInsertRowid as number;
@@ -338,6 +347,19 @@ export async function POST(request: NextRequest) {
     // Broadcast to SSE clients
     eventBus.broadcast('agent.created', parsedAgent);
 
+    let sessionProvisioning = false
+    if (shouldAutoProvisionSessionOnCreate(parsedAgent)) {
+      sessionProvisioning = true
+      enqueueProvisionAgentDedicatedSession({
+        id: agentId,
+        name: parsedAgent.name,
+        framework: parsedAgent.framework,
+        workspace_path: parsedAgent.workspace_path,
+        config: parsedAgent.config,
+        session_key: parsedAgent.session_key,
+      })
+    }
+
     // Write to gateway config if requested
     if (write_to_gateway && finalConfig) {
       try {
@@ -371,7 +393,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ agent: parsedAgent }, { status: 201 });
+    return NextResponse.json({
+      agent: parsedAgent,
+      session_provisioning: sessionProvisioning,
+    }, { status: 201 });
   } catch (error) {
     logger.error({ err: error }, 'POST /api/agents error');
     return NextResponse.json({ error: 'Failed to create agent' }, { status: 500 });
@@ -396,7 +421,7 @@ export async function PUT(request: NextRequest) {
     // Handle single agent update or bulk updates
     if (body.name) {
       // Single agent update
-      const { name, status, last_activity, config, session_key, soul_content, role } = body;
+      const { name, status, last_activity, config, session_key, session_kind, soul_content, role, workspace_path } = body;
       
       const agent = db
         .prepare('SELECT * FROM agents WHERE name = ? AND workspace_id = ?')
@@ -430,6 +455,24 @@ export async function PUT(request: NextRequest) {
       }
       
       if (session_key !== undefined) {
+        const trimmedSessionKey = String(session_key || '').trim()
+        if (trimmedSessionKey) {
+          const resolvedSessionKind = resolveSessionKindForBinding(trimmedSessionKey, session_kind)
+          if (!resolvedSessionKind) {
+            return NextResponse.json(
+              { error: 'Could not determine local session type for binding. Pass session_kind explicitly.' },
+              { status: 400 },
+            )
+          }
+          const kindCheck = validateAgentSessionKindBinding(agent.framework, resolvedSessionKind)
+          if (!kindCheck.ok) {
+            return NextResponse.json(
+              { error: kindCheck.message, code: 'session_kind_mismatch' },
+              { status: 409 },
+            )
+          }
+        }
+
         fieldsToUpdate.push('session_key = ?');
         params.push(session_key);
 
@@ -447,6 +490,12 @@ export async function PUT(request: NextRequest) {
           mergedConfig.session_strategy = mergedConfig.session_strategy || 'persistent'
         }
 
+        if (session_key) {
+          mergedConfig.mc_bound_agent_id = agent.id
+        } else {
+          delete mergedConfig.mc_bound_agent_id
+        }
+
         if (config === undefined) {
           fieldsToUpdate.push('config = ?');
           params.push(JSON.stringify(mergedConfig));
@@ -461,6 +510,15 @@ export async function PUT(request: NextRequest) {
       if (role !== undefined) {
         fieldsToUpdate.push('role = ?');
         params.push(role);
+      }
+
+      if (workspace_path !== undefined) {
+        fieldsToUpdate.push('workspace_path = ?');
+        params.push(
+          String(workspace_path || '').trim()
+            ? path.resolve(String(workspace_path).trim())
+            : null,
+        );
       }
       
       fieldsToUpdate.push('updated_at = ?');
@@ -478,6 +536,14 @@ export async function PUT(request: NextRequest) {
       `);
       
       stmt.run(...params);
+
+      const updatedAgent = db
+        .prepare('SELECT * FROM agents WHERE id = ? AND workspace_id = ?')
+        .get(agent.id, workspaceId) as Agent;
+      const parsedUpdatedAgent = {
+        ...updatedAgent,
+        config: parseAgentConfigRecord(updatedAgent.config),
+      };
       
       // Log status change if status was updated
       if (status !== undefined && status !== agent.status) {
@@ -503,10 +569,11 @@ export async function PUT(request: NextRequest) {
         ...(status !== undefined && { status }),
         ...(last_activity !== undefined && { last_activity }),
         ...(role !== undefined && { role }),
+        ...(workspace_path !== undefined && { workspace_path: parsedUpdatedAgent.workspace_path }),
         updated_at: now,
       });
 
-      return NextResponse.json({ success: true });
+      return NextResponse.json({ success: true, agent: parsedUpdatedAgent });
     } else {
       return NextResponse.json({ error: 'Agent name is required' }, { status: 400 });
     }

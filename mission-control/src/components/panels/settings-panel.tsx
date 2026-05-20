@@ -8,6 +8,7 @@ import { useAgentCenterStore } from '@/store'
 import { useNavigateToPanel } from '@/lib/navigation'
 import { SecurityScanCard } from '@/components/onboarding/security-scan-card'
 import { AgentRuntimesSection } from '@/components/settings/agent-runtimes-section'
+import { LicenseSettingsSection } from '@/components/panels/license-settings-section'
 import { Loader } from '@/components/ui/loader'
 import { clearOnboardingDismissedThisSession, clearOnboardingReplayFromStart } from '@/lib/onboarding-session'
 import { resolveCoordinatorDeliveryTarget, type CoordinatorAgentRecord } from '@/lib/coordinator-routing'
@@ -457,7 +458,10 @@ export function SettingsPanel() {
     )
   }
 
-  const categories = categoryOrder.filter(c => c === 'security' || c === 'profiles' || (grouped[c]?.length > 0))
+  // custom：内置订阅与授权、备份、账号等，不依赖 grouped 是否有行
+  const categories = categoryOrder.filter(
+    (c) => c === 'security' || c === 'profiles' || c === 'custom' || (grouped[c]?.length > 0),
+  )
   const discovery = syncDiagnostics?.upstream.bridge_info
   const discoveryHttpBase = discovery?.payload?.service?.http_base_url || ''
   const discoveryWsUrl = discovery?.payload?.bridge?.ws_url || ''
@@ -944,6 +948,7 @@ export function SettingsPanel() {
       {/* Custom/Maintenance Category Content */}
       {activeCategory === 'custom' && (
         <div className="w-full min-w-0 space-y-6 animate-in fade-in slide-in-from-top-2 duration-300">
+          <LicenseSettingsSection />
           {/* Backup Actions */}
           <div className="bg-card border border-border rounded-lg p-4 space-y-4">
             <div>

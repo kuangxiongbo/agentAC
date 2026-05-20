@@ -1,12 +1,14 @@
-import { promises as fs } from 'node:fs'
-import path from 'node:path'
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { requestBridgeClientSessionContinue, type BridgeSessionContinueKind } from '@/lib/bridge-server'
 import { logger } from '@/lib/logger'
-import { runCommand } from '@/lib/command'
 import { config } from '@/lib/config'
 import { notifySessionTranscriptUpdated } from '@/lib/session-realtime'
+import {
+  enqueueLocalSessionPrompt,
+  isLocalSessionKind,
+  type LocalSessionKind,
+} from '@/lib/local-session-executor'
 
 const BRIDGE_CONTINUE_KINDS = new Set<BridgeSessionContinueKind>([
   'claude-code',
@@ -97,45 +99,14 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    let reply = ''
-
-    if (kind === 'claude-code') {
-      const result = await runCommand('claude', ['--print', '--resume', sessionId, prompt], {
-        timeoutMs: 180000,
+    if (isLocalSessionKind(kind)) {
+      enqueueLocalSessionPrompt(kind as LocalSessionKind, sessionId, prompt, {
+        workingDirectory: workingDir || null,
       })
-      reply = (result.stdout || '').trim() || (result.stderr || '').trim()
-    } else if (kind === 'codex-cli') {
-      const outputPath = path.join('/tmp', `mc-codex-last-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`)
-      try {
-        await runCommand('codex', ['exec', 'resume', sessionId, prompt, '--skip-git-repo-check', '-o', outputPath], {
-          timeoutMs: 180000,
-        })
-      } finally {
-        // best-effort read below
-      }
-
-      try {
-        reply = (await fs.readFile(outputPath, 'utf-8')).trim()
-      } catch {
-        reply = ''
-      }
-
-      try {
-        await fs.unlink(outputPath)
-      } catch {
-        // ignore
-      }
-    } else {
-      return NextResponse.json({ error: `Local continue not supported for kind: ${kind}` }, { status: 400 })
+      return NextResponse.json({ ok: true, accepted: true, sessionId })
     }
 
-    if (!reply) {
-      reply = 'Session continued, but no text response was returned.'
-    }
-
-    notifySessionTranscriptUpdated(kind, sessionId, 'continue_api')
-
-    return NextResponse.json({ ok: true, reply })
+    return NextResponse.json({ error: `Local continue not supported for kind: ${kind}` }, { status: 400 })
   } catch (error: any) {
     logger.error({ err: error }, 'POST /api/sessions/continue error')
     return NextResponse.json({ error: error?.message || 'Failed to continue session' }, { status: 500 })

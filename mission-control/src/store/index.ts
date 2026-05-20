@@ -248,6 +248,7 @@ export interface Conversation {
     nodeLabel?: string
     displayName?: string
     colorTag?: string
+    historyExpanded?: boolean
     model?: string
     tokens?: string
     workingDir?: string | null
@@ -310,6 +311,20 @@ export interface CurrentUser {
   /** 用户中心租户帐号角色原文，与 `/api/auth/me` 的 `account_role` 一致 */
   account_role?: string | null
   organization?: { tenant_id: number; display_name: string; slug: string } | null
+}
+
+/** 用户中心 / 离线授权快照，与 `/api/auth/me` 的 `license` 一致 */
+export interface LicenseSnapshot {
+  allowed: boolean
+  licensed: boolean
+  source: string
+  reason?: string
+  entitlements: Record<string, unknown>
+  expiresAt: string | null
+  requiresSubscription: boolean
+  appId: string
+  displayName: string
+  subscriptionsUrl: string
 }
 
 // Billing/provisioning entity that can own multiple E-Agent-Center workspaces.
@@ -540,6 +555,8 @@ interface AgentCenterStore {
   // Auth
   currentUser: CurrentUser | null
   setCurrentUser: (user: CurrentUser | null) => void
+  license: LicenseSnapshot | null
+  setLicense: (license: LicenseSnapshot | null) => void
 
   // Tenant / Organization context
   activeTenant: Tenant | null
@@ -818,6 +835,8 @@ export const useAgentCenterStore = create<AgentCenterStore>()(
     // Auth
     currentUser: null,
     setCurrentUser: (user) => set({ currentUser: user }),
+    license: null,
+    setLicense: (license) => set({ license }),
 
     // Tenant / Organization context
     activeTenant: (() => {

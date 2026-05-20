@@ -770,8 +770,8 @@ function SseBadge({ connected }: { connected: boolean }) {
   return (
     <div className="flex items-center gap-1.5 text-xs">
       <span className="text-muted-foreground">{th('events')}</span>
-      <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-blue-500' : 'bg-muted-foreground/30'}`} />
-      <span className={`font-medium font-mono-tight ${connected ? 'text-blue-400' : 'text-muted-foreground'}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-void-cyan' : 'bg-muted-foreground/30'}`} />
+      <span className={`font-medium font-mono-tight ${connected ? 'text-void-cyan' : 'text-muted-foreground'}`}>
         {connected ? th('live') : th('off')}
       </span>
     </div>

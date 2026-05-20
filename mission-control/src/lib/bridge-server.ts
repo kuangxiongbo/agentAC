@@ -6,6 +6,8 @@ import { getDatabase } from './db'
 import { config } from './config'
 import type { LocalSessionTranscriptKind, TranscriptMessage } from './session-transcript'
 import { notifySessionTranscriptUpdated } from './session-realtime'
+import { replaceBridgeAgentIndex, type BridgeAgentIndexInput } from './sync-agent-index'
+import { reconcileClientAgentInventory } from './sync-agent-inventory'
 
 let wss: WebSocketServer | null = (global as any)._mc_bridge_server || null
 const bridgeServerMeta: { port: number | null; startedAt: number | null } =
@@ -37,7 +39,14 @@ interface BridgeServerClientState {
   remoteAddress: string | null
 }
 
-type BridgePendingKind = 'transcript' | 'continue'
+type BridgePendingKind =
+  | 'transcript'
+  | 'continue'
+  | 'agent_detail'
+  | 'agents_by_session'
+  | 'agent_session_update'
+  | 'steward_create'
+  | 'steward_judge'
 
 interface PendingBridgeRequest {
   requestId: string
@@ -131,6 +140,48 @@ function resolvePendingRequest(msg: any) {
 
   if (msg?.ok === false) {
     pending.reject(new Error(typeof msg?.error === 'string' ? msg.error : `Remote ${pending.kind} request failed`))
+    return true
+  }
+
+  if (pending.kind === 'agent_detail') {
+    pending.resolve({
+      agent: msg?.agent && typeof msg.agent === 'object' ? msg.agent : null,
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
+    return true
+  }
+
+  if (pending.kind === 'agents_by_session') {
+    pending.resolve({
+      agents: Array.isArray(msg?.agents) ? msg.agents : [],
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
+    return true
+  }
+
+  if (pending.kind === 'agent_session_update') {
+    pending.resolve({
+      agent: msg?.agent && typeof msg.agent === 'object' ? msg.agent : null,
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
+    return true
+  }
+
+  if (pending.kind === 'steward_create') {
+    pending.resolve({
+      agent: msg?.agent && typeof msg.agent === 'object' ? msg.agent : null,
+      sessionProvisioning: Boolean(msg?.sessionProvisioning),
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
+    return true
+  }
+
+  if (pending.kind === 'steward_judge') {
+    pending.resolve({
+      reply: typeof msg?.reply === 'string' ? msg.reply : '',
+      sessionId: typeof msg?.sessionId === 'string' ? msg.sessionId : '',
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
     return true
   }
 
@@ -237,7 +288,7 @@ export function initBridgeServer(port: number = 5002) {
               logger.info({ clientId, clientLabel, capabilities: msg.capabilities }, '[BridgeServer] Client hello received')
               ws.send(JSON.stringify({ type: 'welcome', serverId: 'master-server' }))
               if (Array.isArray(msg.agents)) {
-                await registerRemoteAgents(clientId, clientLabel, msg.agents)
+                await ingestBridgeAgentList(clientId, clientLabel, msg.agents)
               }
               // Push projects to the client so they have the same context
               await pushProjectsToClient(ws)
@@ -261,7 +312,7 @@ export function initBridgeServer(port: number = 5002) {
                   ? msg.clientLabel.trim()
                   : clientLabel
                 updateConnection(connectionId, { clientLabel: nextClientLabel })
-                await registerRemoteAgents(clientId, nextClientLabel, msg.agents)
+                await ingestBridgeAgentList(clientId, nextClientLabel, msg.agents)
               }
               break
 
@@ -302,6 +353,11 @@ export function initBridgeServer(port: number = 5002) {
 
             case 'session_transcript_response':
             case 'session_continue_response':
+            case 'agent_detail_response':
+            case 'agents_by_session_response':
+            case 'agent_session_update_response':
+            case 'steward_create_response':
+            case 'steward_judge_response':
               touchConnection(connectionId)
               resolvePendingRequest(msg)
               break
@@ -339,13 +395,43 @@ export function initBridgeServer(port: number = 5002) {
   }
 }
 
-async function registerRemoteAgents(clientId: string, clientLabel: string, agents: any[]) {
+function normalizeBridgeAgentList(agents: any[]): BridgeAgentIndexInput[] {
+  return agents
+    .filter((agent) => agent && typeof agent === 'object')
+    .map((agent) => ({
+      id: Number(agent.id),
+      name: String(agent.name || '').trim(),
+      role: String(agent.role || 'agent'),
+      status: String(agent.status || 'idle'),
+      framework: typeof agent.framework === 'string' ? agent.framework : null,
+      parent_id: agent.parent_id == null ? null : Number(agent.parent_id),
+    }))
+    .filter((agent) => agent.name && Number.isFinite(agent.id))
+}
+
+async function ingestBridgeAgentList(clientId: string, clientLabel: string, agents: any[]) {
+  try {
+    const normalized = normalizeBridgeAgentList(agents)
+    replaceBridgeAgentIndex(clientId, clientLabel, normalized)
+    if (config.centralMode) {
+      const inventory = normalized.map((agent) => ({
+        original_name: agent.name,
+        status: agent.status,
+        role: agent.role,
+        framework: agent.framework,
+      }))
+      reconcileClientAgentInventory(1, clientId, clientLabel, inventory)
+    } else {
+      await registerRemoteAgents(clientId, clientLabel, normalized)
+    }
+  } catch (err) {
+    logger.error({ err, clientId }, '[BridgeServer] Failed to ingest bridge agent list')
+  }
+}
+
+async function registerRemoteAgents(clientId: string, clientLabel: string, agents: BridgeAgentIndexInput[]) {
   try {
     const db = getDatabase()
-    if (config.centralMode) {
-      db.prepare(`DELETE FROM agents WHERE source = 'bridge' AND node_id = ?`).run(clientId)
-      return
-    }
     const now = Math.floor(Date.now() / 1000)
     
     for (const agent of agents) {
@@ -381,6 +467,16 @@ async function registerRemoteAgents(clientId: string, clientLabel: string, agent
   } catch (err) {
     logger.error({ err }, '[BridgeServer] Failed to register remote agents')
   }
+}
+
+export function isBridgeClientOnline(clientId: string): boolean {
+  return Array.from(bridgeServerClients.values()).some(
+    (client) =>
+      client.kind !== 'ui' &&
+      client.clientId === clientId &&
+      client.status === 'connected' &&
+      bridgeServerSockets.has(client.connectionId),
+  )
 }
 
 export function getBridgeServerStatus(): BridgeServerStatusSnapshot {
@@ -521,6 +617,251 @@ export async function requestBridgeClientSessionContinue(input: {
       clearTimeout(timeout)
       bridgePendingRequests.delete(requestId)
       reject(error instanceof Error ? error : new Error('Failed to send session continue request'))
+    }
+  })
+}
+
+export async function requestBridgeClientAgentsBySession(input: {
+  clientId: string
+  sessionId: string
+  sessionKey?: string
+  timeoutMs?: number
+}): Promise<{
+  agents: Array<{
+    id: number
+    name: string
+    role: string
+    session_key: string | null
+    framework: string | null
+    workspace_path: string | null
+    status: string
+  }>
+  source: string
+}> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(1000, input.timeoutMs || 12000)
+
+  return new Promise<{
+    agents: Array<{
+      id: number
+      name: string
+      role: string
+      session_key: string | null
+      framework: string | null
+      workspace_path: string | null
+      status: string
+    }>
+    source: string
+  }>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      bridgePendingRequests.delete(requestId)
+      reject(new Error(`Timed out waiting for agents-by-session from client ${input.clientId}`))
+    }, timeoutMs)
+
+    bridgePendingRequests.set(requestId, {
+      requestId,
+      clientId: input.clientId,
+      connectionId,
+      timeout,
+      kind: 'agents_by_session',
+      resolve: resolve as (value: unknown) => void,
+      reject,
+    })
+
+    try {
+      ws.send(JSON.stringify({
+        type: 'agents_by_session_request',
+        requestId,
+        sessionId: input.sessionId,
+        sessionKey: input.sessionKey || '',
+      }))
+    } catch (error) {
+      clearTimeout(timeout)
+      bridgePendingRequests.delete(requestId)
+      reject(error instanceof Error ? error : new Error('Failed to send agents-by-session request'))
+    }
+  })
+}
+
+export async function requestBridgeClientAgentSessionUpdate(input: {
+  clientId: string
+  localAgentId: number
+  sessionKey: string
+  sessionKind?: string
+  timeoutMs?: number
+}): Promise<{ agent: Record<string, unknown> | null; source: string }> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(1000, input.timeoutMs || 12000)
+
+  return await new Promise<{ agent: Record<string, unknown> | null; source: string }>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      bridgePendingRequests.delete(requestId)
+      reject(new Error(`Timed out waiting for agent session update on client ${input.clientId}`))
+    }, timeoutMs)
+
+    bridgePendingRequests.set(requestId, {
+      requestId,
+      clientId: input.clientId,
+      connectionId,
+      timeout,
+      kind: 'agent_session_update',
+      resolve: resolve as (value: unknown) => void,
+      reject,
+    })
+
+    try {
+      ws.send(JSON.stringify({
+        type: 'agent_session_update_request',
+        requestId,
+        localAgentId: input.localAgentId,
+        sessionKey: input.sessionKey,
+        sessionKind: input.sessionKind || '',
+      }))
+    } catch (error) {
+      clearTimeout(timeout)
+      bridgePendingRequests.delete(requestId)
+      reject(error instanceof Error ? error : new Error('Failed to send agent session update request'))
+    }
+  })
+}
+
+export type BridgeStewardCreateFramework = 'claude-code' | 'codex-cli'
+
+export async function requestBridgeClientStewardCreate(input: {
+  clientId: string
+  name: string
+  framework: BridgeStewardCreateFramework
+  soulContent?: string | null
+  workspacePath?: string | null
+  authorized?: boolean
+  timeoutMs?: number
+}): Promise<{
+  agent: Record<string, unknown> | null
+  sessionProvisioning: boolean
+  source: string
+}> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(5000, input.timeoutMs || 120000)
+
+  return await new Promise<{
+    agent: Record<string, unknown> | null
+    sessionProvisioning: boolean
+    source: string
+  }>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      bridgePendingRequests.delete(requestId)
+      reject(new Error(`Timed out waiting for steward create on client ${input.clientId}`))
+    }, timeoutMs)
+
+    bridgePendingRequests.set(requestId, {
+      requestId,
+      clientId: input.clientId,
+      connectionId,
+      timeout,
+      kind: 'steward_create',
+      resolve: resolve as (value: unknown) => void,
+      reject,
+    })
+
+    try {
+      ws.send(JSON.stringify({
+        type: 'steward_create_request',
+        requestId,
+        authorized: input.authorized !== false,
+        steward: {
+          name: input.name,
+          framework: input.framework,
+          soul_content: input.soulContent || '',
+          workspace_path: input.workspacePath || '',
+        },
+      }))
+    } catch (error) {
+      clearTimeout(timeout)
+      bridgePendingRequests.delete(requestId)
+      reject(error instanceof Error ? error : new Error('Failed to send steward create request'))
+    }
+  })
+}
+
+export async function requestBridgeClientStewardJudge(input: {
+  clientId: string
+  localAgentId: number
+  prompt: string
+  timeoutMs?: number
+}): Promise<{ reply: string; sessionId: string; source: string }> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(5000, input.timeoutMs || 180000)
+
+  return await new Promise<{ reply: string; sessionId: string; source: string }>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      bridgePendingRequests.delete(requestId)
+      reject(new Error(`Timed out waiting for steward judge on client ${input.clientId}`))
+    }, timeoutMs)
+
+    bridgePendingRequests.set(requestId, {
+      requestId,
+      clientId: input.clientId,
+      connectionId,
+      timeout,
+      kind: 'steward_judge',
+      resolve: resolve as (value: unknown) => void,
+      reject,
+    })
+
+    try {
+      ws.send(JSON.stringify({
+        type: 'steward_judge_request',
+        requestId,
+        localAgentId: input.localAgentId,
+        prompt: input.prompt,
+      }))
+    } catch (error) {
+      clearTimeout(timeout)
+      bridgePendingRequests.delete(requestId)
+      reject(error instanceof Error ? error : new Error('Failed to send steward judge request'))
+    }
+  })
+}
+
+export async function requestBridgeClientAgentDetail(input: {
+  clientId: string
+  localAgentId: number
+  timeoutMs?: number
+}): Promise<{ agent: Record<string, unknown> | null; source: string }> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(1000, input.timeoutMs || 12000)
+
+  return await new Promise<{ agent: Record<string, unknown> | null; source: string }>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      bridgePendingRequests.delete(requestId)
+      reject(new Error(`Timed out waiting for agent detail from client ${input.clientId}`))
+    }, timeoutMs)
+
+    bridgePendingRequests.set(requestId, {
+      requestId,
+      clientId: input.clientId,
+      connectionId,
+      timeout,
+      kind: 'agent_detail',
+      resolve: resolve as (value: unknown) => void,
+      reject,
+    })
+
+    try {
+      ws.send(JSON.stringify({
+        type: 'agent_detail_request',
+        requestId,
+        localAgentId: input.localAgentId,
+      }))
+    } catch (error) {
+      clearTimeout(timeout)
+      bridgePendingRequests.delete(requestId)
+      reject(error instanceof Error ? error : new Error('Failed to send agent detail request'))
     }
   })
 }

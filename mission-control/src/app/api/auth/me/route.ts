@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest, updateUser, requireRole, destroyAllUserSessions, createSession, publicAuthUserFields } from '@/lib/auth'
 import { logAuditEvent, getDatabase } from '@/lib/db'
+import { resolveEffectiveLicense, resolveUserCenterSubscriptionsUrl } from '@/lib/effective-license'
+import { getProviderSubjectForUser } from '@/lib/license-resolve-context'
 import { verifyPassword } from '@/lib/password'
 import { getMcSessionCookieName, getMcSessionCookieOptions, isRequestSecure } from '@/lib/session-cookie'
 import { logger } from '@/lib/logger'
@@ -28,10 +30,28 @@ export async function GET(request: Request) {
     ? { tenant_id: orgRow.tenant_id, display_name: orgRow.display_name, slug: orgRow.slug }
     : null
 
+  const license = await resolveEffectiveLicense({
+    tenantId: user.tenant_id,
+    zitadelSub: getProviderSubjectForUser(user.id),
+    portalTenantRole: user.portal_tenant_role,
+  })
+
   return NextResponse.json({
     user: {
       ...publicAuthUserFields(user),
       organization,
+    },
+    license: {
+      allowed: license.allowed,
+      licensed: license.licensed,
+      source: license.source,
+      reason: license.reason,
+      entitlements: license.entitlements,
+      expiresAt: license.expiresAt,
+      requiresSubscription: license.requiresSubscription,
+      appId: license.appId,
+      displayName: license.displayName,
+      subscriptionsUrl: resolveUserCenterSubscriptionsUrl(),
     },
   })
 }

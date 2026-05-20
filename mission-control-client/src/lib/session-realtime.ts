@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { invalidateClaudeSessionSync } from './claude-sessions'
 import { invalidateCodexSessionScan } from './codex-sessions'
+import { invalidateMergedSessionsCache } from './sessions-list-cache'
 import { config } from './config'
 import { eventBus } from './event-bus'
 import { logger } from './logger'
@@ -56,12 +57,19 @@ function emitListUpdate(source: SessionRealtimeSource, reason: string) {
   })
 }
 
-function emitTranscriptUpdate(source: SessionRealtimeSource, reason: string, sessionId?: string) {
+function emitTranscriptUpdate(
+  source: SessionRealtimeSource,
+  reason: string,
+  sessionId?: string,
+  extras?: Pick<SessionRealtimePayload, 'pendingPrompt'>,
+) {
   scheduleBroadcast('session.transcript.updated', {
     source,
     sessionKind: sessionKindFromSource(source),
     sessionId,
+    sessionKey: sessionId,
     reason,
+    ...extras,
   })
 }
 
@@ -70,10 +78,12 @@ export function notifySessionTranscriptUpdated(
   kind: SessionRealtimeKind | string,
   sessionId: string,
   reason = 'session_continued',
+  extras?: Pick<SessionRealtimePayload, 'pendingPrompt' | 'agentId'>,
 ) {
   const source = sessionSourceFromKind(kind)
-  if (!source || !sessionId) return
-  emitTranscriptUpdate(source, reason, sessionId)
+  if (!source) return
+  if (!sessionId && extras?.agentId == null) return
+  emitTranscriptUpdate(source, reason, sessionId || undefined, extras)
 }
 
 function sessionIdFromJsonl(filePath: string): string | undefined {
@@ -112,6 +122,7 @@ export function ensureSessionRealtimeBridge() {
     filter: (fullPath) => fullPath.endsWith('.jsonl'),
     onRelevantChange: (fullPath) => {
       invalidateClaudeSessionSync()
+      invalidateMergedSessionsCache()
       emitListUpdate('claude', 'file_changed')
       emitTranscriptUpdate('claude', 'file_changed', sessionIdFromJsonl(fullPath))
     },
@@ -123,6 +134,7 @@ export function ensureSessionRealtimeBridge() {
     filter: (fullPath) => fullPath.endsWith('.jsonl'),
     onRelevantChange: (fullPath) => {
       invalidateCodexSessionScan()
+      invalidateMergedSessionsCache()
       emitListUpdate('codex', 'file_changed')
       emitTranscriptUpdate('codex', 'file_changed', sessionIdFromJsonl(fullPath))
     },

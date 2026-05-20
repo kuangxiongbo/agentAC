@@ -25,12 +25,21 @@ import { eventBus } from './event-bus'
 import { logger } from './logger'
 import { REMOTE_SERVER_URL, REMOTE_SERVER_TOKEN, REMOTE_RECONNECT_MS } from './config'
 import {
-  executeLocalSessionPrompt,
+  enqueueLocalSessionPrompt,
   isLocalSessionKind,
   type LocalSessionKind,
 } from './local-session-executor'
 import { readLocalSessionTranscriptPage, type LocalSessionTranscriptKind } from './session-transcript'
 import { notifySessionTranscriptUpdated } from './session-realtime'
+import { findAgentsBoundToSession } from './agents-by-session'
+import { validateAgentSessionKindBinding } from './agent-session-binding'
+import { resolveSessionKindForBinding } from './infer-local-session-kind'
+import {
+  createHumanWatchStewardAgent,
+  type CreateHumanWatchStewardInput,
+} from './human-watch-steward'
+import { runStewardJudgeOnEdge } from './human-watch-judge'
+import { isBindableSessionKind } from './agent-session-binding'
 
 // We use the native ws library if available (Node 18+ has it natively via global WebSocket)
 // In Next.js server context, we use the 'ws' package for server-side WebSocket.
@@ -121,15 +130,213 @@ function getLocalClientLabel(): string {
   return getLocalClientId()
 }
 
-function getLocalAgentList(): Array<{ id: number; name: string; role: string; status: string; framework?: string; parent_id?: number }> {
+function getLocalAgentList(): Array<{
+  id: number
+  name: string
+  role: string
+  status: string
+  framework?: string
+  parent_id?: number
+  session_key?: string | null
+}> {
   try {
     const db = getDatabase()
     return db.prepare(
-      `SELECT id, name, role, status, framework, parent_id FROM agents WHERE hidden = 0 ORDER BY name`
-    ).all() as Array<{ id: number; name: string; role: string; status: string; framework?: string; parent_id?: number }>
+      `SELECT id, name, role, status, framework, parent_id, session_key FROM agents WHERE hidden = 0 ORDER BY name`
+    ).all() as Array<{
+      id: number
+      name: string
+      role: string
+      status: string
+      framework?: string
+      parent_id?: number
+      session_key?: string | null
+    }>
   } catch {
     return []
   }
+}
+
+function getLocalAgentDetail(localAgentId: number): Record<string, unknown> | null {
+  try {
+    const db = getDatabase()
+    const row = db
+      .prepare(`SELECT * FROM agents WHERE id = ? AND hidden = 0 LIMIT 1`)
+      .get(localAgentId) as Record<string, unknown> | undefined
+    if (!row) return null
+    let config: Record<string, unknown> = {}
+    if (row.config) {
+      try {
+        config =
+          typeof row.config === 'string'
+            ? (JSON.parse(row.config) as Record<string, unknown>)
+            : (row.config as Record<string, unknown>)
+      } catch {
+        config = {}
+      }
+    }
+    return { ...row, config }
+  } catch {
+    return null
+  }
+}
+
+export function isRemoteBridgeConnected(): boolean {
+  return state.connected && state.ws?.readyState === 1
+}
+
+function handleAgentsBySessionRequest(message: any): void {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  const sessionId = typeof message?.sessionId === 'string' ? message.sessionId.trim() : ''
+  const sessionKey = typeof message?.sessionKey === 'string' ? message.sessionKey.trim() : ''
+  if (!requestId) return
+
+  try {
+    const db = getDatabase()
+    const agents = findAgentsBoundToSession(db, 1, sessionId, sessionKey)
+    safeSend(state.ws, {
+      type: 'agents_by_session_response',
+      requestId,
+      ok: true,
+      agents,
+      source: 'remote-bridge',
+    })
+  } catch (err: any) {
+    safeSend(state.ws, {
+      type: 'agents_by_session_response',
+      requestId,
+      ok: false,
+      error: err?.message || 'Failed to lookup agents by session',
+    })
+  }
+}
+
+async function handleAgentSessionUpdateRequest(message: any): Promise<void> {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  const localAgentId = Number(message?.localAgentId)
+  const sessionKey = typeof message?.sessionKey === 'string' ? message.sessionKey : ''
+  const sessionKind = typeof message?.sessionKind === 'string' ? message.sessionKind : ''
+  if (!requestId) return
+
+  if (!Number.isFinite(localAgentId)) {
+    safeSend(state.ws, {
+      type: 'agent_session_update_response',
+      requestId,
+      ok: false,
+      error: 'localAgentId is required',
+    })
+    return
+  }
+
+  try {
+    const db = getDatabase()
+    const agent = db
+      .prepare(`SELECT id, name, framework, config FROM agents WHERE id = ? AND hidden = 0 LIMIT 1`)
+      .get(localAgentId) as { id: number; name: string; framework: string | null; config: string | null } | undefined
+    if (!agent) {
+      safeSend(state.ws, {
+        type: 'agent_session_update_response',
+        requestId,
+        ok: false,
+        error: 'Agent not found',
+      })
+      return
+    }
+
+    const trimmedKey = sessionKey.trim()
+    if (trimmedKey) {
+      const resolvedKind = resolveSessionKindForBinding(trimmedKey, sessionKind || undefined)
+      const kindCheck = validateAgentSessionKindBinding(agent.framework, resolvedKind)
+      if (!kindCheck.ok) {
+        safeSend(state.ws, {
+          type: 'agent_session_update_response',
+          requestId,
+          ok: false,
+          error: kindCheck.message,
+        })
+        return
+      }
+    }
+
+    let config: Record<string, unknown> = {}
+    if (agent.config) {
+      try {
+        config = JSON.parse(agent.config) as Record<string, unknown>
+      } catch {
+        config = {}
+      }
+    }
+    const mergedConfig = {
+      ...config,
+      primary_session_key: trimmedKey || null,
+      session_state: trimmedKey ? 'ready' : 'pending',
+      session_bootstrap_state: 'pending',
+      session_bootstrap_hash: null,
+      session_bootstrap_error: null,
+      ...(trimmedKey ? { mc_bound_agent_id: agent.id } : {}),
+    }
+    if (!trimmedKey) {
+      delete mergedConfig.mc_bound_agent_id
+    }
+
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(
+      `UPDATE agents SET session_key = ?, config = ?, updated_at = ? WHERE id = ?`,
+    ).run(trimmedKey || null, JSON.stringify(mergedConfig), now, agent.id)
+
+    eventBus.broadcast('agent.updated', { id: agent.id, name: agent.name, session_key: trimmedKey || null })
+
+    const updated = getLocalAgentDetail(agent.id)
+    safeSend(state.ws, {
+      type: 'agent_session_update_response',
+      requestId,
+      ok: true,
+      agent: updated,
+      source: 'remote-bridge',
+    })
+  } catch (err: any) {
+    safeSend(state.ws, {
+      type: 'agent_session_update_response',
+      requestId,
+      ok: false,
+      error: err?.message || 'Failed to update agent session binding',
+    })
+  }
+}
+
+function handleAgentDetailRequest(message: any): void {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  const localAgentId = Number(message?.localAgentId)
+  if (!requestId) return
+
+  if (!Number.isFinite(localAgentId)) {
+    safeSend(state.ws, {
+      type: 'agent_detail_response',
+      requestId,
+      ok: false,
+      error: 'localAgentId is required',
+    })
+    return
+  }
+
+  const agent = getLocalAgentDetail(localAgentId)
+  if (!agent) {
+    safeSend(state.ws, {
+      type: 'agent_detail_response',
+      requestId,
+      ok: false,
+      error: 'Agent not found',
+    })
+    return
+  }
+
+  safeSend(state.ws, {
+    type: 'agent_detail_response',
+    requestId,
+    ok: true,
+    agent,
+    source: 'remote-bridge',
+  })
 }
 
 function safeSend(ws: WebSocket | null, data: object): boolean {
@@ -384,6 +591,119 @@ function handleCommand(payload: any): void {
   }
 }
 
+function handleStewardCreateRequest(message: any): void {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  const steward = message?.steward && typeof message.steward === 'object' ? message.steward : {}
+  const name = typeof steward?.name === 'string' ? steward.name.trim() : ''
+  const framework = typeof steward?.framework === 'string' ? steward.framework.trim() : ''
+  const soulContent = typeof steward?.soul_content === 'string' ? steward.soul_content : ''
+  const workspacePath = typeof steward?.workspace_path === 'string' ? steward.workspace_path : ''
+  const authorized = message?.authorized === true
+
+  if (!requestId) return
+
+  if (!name || !isBindableSessionKind(framework)) {
+    safeSend(state.ws, {
+      type: 'steward_create_response',
+      requestId,
+      ok: false,
+      error: 'name and framework (claude-code | codex-cli) are required',
+    })
+    return
+  }
+
+  if (framework !== 'claude-code' && framework !== 'codex-cli') {
+    safeSend(state.ws, {
+      type: 'steward_create_response',
+      requestId,
+      ok: false,
+      error: 'Only claude-code and codex-cli are supported for human-watch stewards',
+    })
+    return
+  }
+
+  try {
+    const result = createHumanWatchStewardAgent({
+      name,
+      framework,
+      soul_content: soulContent,
+      workspace_path: workspacePath || null,
+      authorized,
+    } satisfies CreateHumanWatchStewardInput)
+
+    const agents = getLocalAgentList()
+    safeSend(state.ws, {
+      type: 'agent_status',
+      clientId: getLocalClientId(),
+      clientLabel: getLocalClientLabel(),
+      agents,
+      timestamp: Date.now(),
+    })
+
+    safeSend(state.ws, {
+      type: 'steward_create_response',
+      requestId,
+      ok: true,
+      source: 'remote-bridge',
+      sessionProvisioning: result.sessionProvisioning,
+      agent: {
+        id: result.agent.id,
+        name: result.agent.name,
+        role: result.agent.role,
+        framework: result.agent.framework,
+        session_key: result.agent.session_key,
+        workspace_path: result.agent.workspace_path,
+        status: result.agent.status,
+        config: result.agent.config,
+      },
+    })
+  } catch (err: any) {
+    safeSend(state.ws, {
+      type: 'steward_create_response',
+      requestId,
+      ok: false,
+      error: err?.message || 'Failed to create human-watch steward',
+    })
+  }
+}
+
+async function handleStewardJudgeRequest(message: any): Promise<void> {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  const localAgentId = Number(message?.localAgentId)
+  const prompt = typeof message?.prompt === 'string' ? message.prompt : ''
+
+  if (!requestId) return
+
+  if (!Number.isFinite(localAgentId) || localAgentId <= 0) {
+    safeSend(state.ws, {
+      type: 'steward_judge_response',
+      requestId,
+      ok: false,
+      error: 'localAgentId is required',
+    })
+    return
+  }
+
+  try {
+    const result = await runStewardJudgeOnEdge(localAgentId, prompt)
+    safeSend(state.ws, {
+      type: 'steward_judge_response',
+      requestId,
+      ok: true,
+      source: 'remote-bridge',
+      reply: result.reply,
+      sessionId: result.sessionId,
+    })
+  } catch (err: any) {
+    safeSend(state.ws, {
+      type: 'steward_judge_response',
+      requestId,
+      ok: false,
+      error: err?.message || 'Steward judge failed',
+    })
+  }
+}
+
 async function handleSessionContinueRequest(message: any): Promise<void> {
   const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
   const session = message?.session && typeof message.session === 'object' ? message.session : {}
@@ -409,22 +729,21 @@ async function handleSessionContinueRequest(message: any): Promise<void> {
   }
 
   try {
-    const result = await executeLocalSessionPrompt(kind as LocalSessionKind, sessionId, prompt, {
+    enqueueLocalSessionPrompt(kind as LocalSessionKind, sessionId, prompt, {
       workingDirectory: workingDirectory || null,
     })
-    const resolvedSessionId = result.sessionId || sessionId
-    notifySessionTranscriptUpdated(kind, resolvedSessionId, 'bridge_continue')
+    notifySessionTranscriptUpdated(kind, sessionId, 'bridge_continue_queued')
     safeSend(state.ws, {
       type: 'session_transcript_changed',
-      session: { kind, sessionId: resolvedSessionId },
+      session: { kind, sessionId },
     })
     safeSend(state.ws, {
       type: 'session_continue_response',
       requestId,
       ok: true,
+      accepted: true,
       source: 'remote-bridge',
-      reply: result.reply,
-      sessionId: resolvedSessionId,
+      sessionId,
     })
   } catch (err: any) {
     safeSend(state.ws, {
@@ -570,6 +889,30 @@ function handleMessage(raw: string): void {
       )
       break
 
+    case 'agent_detail_request':
+      handleAgentDetailRequest(msg)
+      break
+
+    case 'agents_by_session_request':
+      handleAgentsBySessionRequest(msg)
+      break
+
+    case 'agent_session_update_request':
+      handleAgentSessionUpdateRequest(msg).catch((e) =>
+        logger.error({ err: e }, '[RemoteBridge] agent_session_update_request handler failed')
+      )
+      break
+
+    case 'steward_create_request':
+      handleStewardCreateRequest(msg)
+      break
+
+    case 'steward_judge_request':
+      handleStewardJudgeRequest(msg).catch((e) =>
+        logger.error({ err: e }, '[RemoteBridge] steward_judge_request handler failed'),
+      )
+      break
+
     case 'projects_sync':
       handleProjectsSync(msg).catch(e =>
         logger.error({ err: e }, '[RemoteBridge] projects_sync handler failed')
@@ -665,7 +1008,7 @@ async function connect(): Promise<void> {
       clientId,
       clientLabel,
       version: '1.0',
-      capabilities: ['task_receive', 'agent_status', 'heartbeat', 'chat_sync', 'session_transcript', 'session_continue'],
+      capabilities: ['task_receive', 'agent_status', 'agent_detail', 'agents_by_session', 'agent_session_update', 'heartbeat', 'chat_sync', 'session_transcript', 'session_continue', 'steward_create', 'steward_judge'],
       agents: getLocalAgentList(),
       timestamp: Date.now(),
     })

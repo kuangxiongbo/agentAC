@@ -79,6 +79,10 @@ export function getMainAgentRuntimeMeta(id: MainAgentRuntimeId | string): MainAg
   return MAIN_AGENT_RUNTIME_META[id as MainAgentRuntimeId]
 }
 
+export function listMainAgentRuntimeMeta(): MainAgentRuntimeMeta[] {
+  return MAIN_AGENT_RUNTIME_ORDER.map((id) => MAIN_AGENT_RUNTIME_META[id])
+}
+
 export function getMainAgentRuntimeFromSessionKind(kind: string): MainAgentRuntimeId | 'other' {
   switch (kind) {
     case 'gateway':
@@ -96,4 +100,18 @@ export function getMainAgentRuntimeFromSessionKind(kind: string): MainAgentRunti
     default:
       return 'other'
   }
+}
+
+export function readConfigRecord(config: unknown): Record<string, unknown> | null {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return null
+  return config as Record<string, unknown>
+}
+
+export function isRuntimeManagedAgentConfig(config: unknown): boolean {
+  const record = readConfigRecord(config)
+  return record?.runtime_managed === true
+}
+
+export function isRuntimeManagedAgent(agent: { config?: unknown } | null | undefined): boolean {
+  return isRuntimeManagedAgentConfig(agent?.config)
 }

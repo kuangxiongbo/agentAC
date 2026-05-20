@@ -296,6 +296,15 @@ export function initScheduler() {
     logger.warn({ err }, 'Failed to start bridge server')
   }
 
+  if (config.centralMode) {
+    try {
+      const { initHumanWatchOrchestrator } = require('./human-watch-orchestrator')
+      initHumanWatchOrchestrator()
+    } catch (err) {
+      logger.warn({ err }, 'Failed to start human watch orchestrator')
+    }
+  }
+
   startRemoteBridge()
 
   // Register tasks

@@ -226,6 +226,7 @@ export interface Agent {
   name: string;
   role: string;
   session_key?: string;
+  workspace_path?: string | null;
   soul_content?: string;
   status: 'offline' | 'idle' | 'busy' | 'error';
   last_seen?: number;

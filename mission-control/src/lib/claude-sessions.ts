@@ -12,7 +12,7 @@
  * - Activity status (active if last message < 5 minutes ago)
  */
 
-import { createReadStream, readdirSync, statSync } from 'fs'
+import { createReadStream, readFileSync, readdirSync, statSync } from 'fs'
 import { createInterface } from 'readline'
 import { join } from 'path'
 import { config } from './config'
@@ -216,6 +216,115 @@ async function parseSessionFile(filePath: string, projectSlug: string, fileMtime
   }
 }
 
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i
+const PROJECT_PATH_PROBE_BYTES = 256 * 1024
+
+/** Locate a Claude session JSONL file on disk. */
+export function findClaudeSessionFilePath(sessionId: string): string | null {
+  const normalizedId = String(sessionId || '').trim()
+  if (!normalizedId) return null
+
+  const claudeHome = config.claudeHome
+  if (!claudeHome) return null
+
+  const projectsDir = join(claudeHome, 'projects')
+  let projectDirs: string[]
+  try {
+    projectDirs = readdirSync(projectsDir)
+  } catch {
+    return null
+  }
+
+  const targetName = `${normalizedId}.jsonl`
+  for (const projectSlug of projectDirs) {
+    const filePath = join(projectsDir, projectSlug, targetName)
+    try {
+      if (statSync(filePath).isFile()) return filePath
+    } catch {
+      // continue
+    }
+  }
+
+  return null
+}
+
+/** Resolve the cwd Claude used when a session was created (required for `--resume`). */
+export function findClaudeSessionProjectPath(sessionId: string): string | null {
+  const normalizedId = String(sessionId || '').trim()
+  if (!normalizedId) return null
+
+  const claudeHome = config.claudeHome
+  if (!claudeHome) return null
+
+  const projectsDir = join(claudeHome, 'projects')
+  let projectDirs: string[]
+  try {
+    projectDirs = readdirSync(projectsDir)
+  } catch {
+    return null
+  }
+
+  const filePath = findClaudeSessionFilePath(normalizedId)
+  if (!filePath) return null
+
+  try {
+    const probe = readFileSync(filePath, { encoding: 'utf-8' })
+    const lines = probe.slice(0, PROJECT_PATH_PROBE_BYTES).split('\n')
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('{')) continue
+      try {
+        const entry = JSON.parse(trimmed) as JSONLEntry
+        if (entry.cwd && String(entry.cwd).trim()) {
+          return String(entry.cwd).trim()
+        }
+      } catch {
+        // ignore malformed line
+      }
+    }
+  } catch {
+    return null
+  }
+
+  return null
+}
+
+/** Best-effort last assistant text from a local Claude JSONL session. */
+export function readLastClaudeSessionReply(sessionId: string): string | null {
+  const filePath = findClaudeSessionFilePath(sessionId)
+  if (!filePath) return null
+
+  try {
+    const raw = readFileSync(filePath, { encoding: 'utf-8' })
+    const lines = raw.split('\n').map((line) => line.trim()).filter(Boolean)
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index]
+      if (!line.startsWith('{')) continue
+      try {
+        const entry = JSON.parse(line) as JSONLEntry
+        if (entry.type !== 'assistant' || !entry.message) continue
+        const content = entry.message.content
+        if (typeof content === 'string' && content.trim()) {
+          return content.trim()
+        }
+        if (Array.isArray(content)) {
+          const text = content
+            .map((block) => (block?.type === 'text' && typeof block.text === 'string' ? block.text : ''))
+            .join('')
+            .trim()
+          if (text) return text
+        }
+      } catch {
+        // ignore malformed line
+      }
+    }
+  } catch {
+    return null
+  }
+
+  return null
+}
+
 /** Scan all Claude Code projects and discover sessions */
 export async function scanClaudeSessions(): Promise<SessionStats[]> {
   const claudeHome = config.claudeHome
@@ -244,7 +353,7 @@ export async function scanClaudeSessions(): Promise<SessionStats[]> {
 
     let files: string[]
     try {
-      files = readdirSync(projectDir).filter(f => f.endsWith('.jsonl'))
+      files = readdirSync(projectDir).filter(f => SESSION_ID_PATTERN.test(f))
     } catch {
       continue
     }

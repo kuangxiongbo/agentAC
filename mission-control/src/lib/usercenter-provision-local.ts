@@ -10,6 +10,7 @@ import type { Database } from 'better-sqlite3'
 import { getDatabase } from '@/lib/db'
 import { createUser, updateUser, type User } from '@/lib/auth'
 import { mapUsercenterTenantRoleToMcRole } from './usercenter-tenant-role-map'
+import { slugFromOrganizationName } from './tenant-auth-scope'
 
 export type UsercenterPortalTenant = {
   id: string
@@ -130,6 +131,25 @@ export function deriveZitadelLocalUsername(email: string, sub: string): string {
 export type ProvisionFromUsercenterResult =
   | { ok: true; userId: number; workspaceId: number; tenantId: number; created: boolean }
   | { ok: false; error: string }
+
+/** 按单位名称在本地确保租户/工作区存在，并将用户绑定到该工作区（无用户中心 id 时用 slug 对齐）。 */
+export function ensureOrganizationBindingForUser(input: {
+  userId: number
+  organizationName: string
+  role?: string
+}): { tenantId: number; workspaceId: number } | null {
+  const name = String(input.organizationName || '').trim()
+  if (!name) return null
+
+  const portal: UsercenterPortalTenant = {
+    id: slugFromOrganizationName(name, 'org'),
+    name,
+    slug: slugFromOrganizationName(name, 'org'),
+    role: String(input.role || 'member'),
+  }
+
+  return syncExistingUserWithUsercenterPortal({ userId: input.userId, portalTenant: portal })
+}
 
 /**
  * 已存在本地用户时，按用户中心租户上下文对齐：租户展示名、默认工作区、Mission Control 角色（创始人/负责人 → admin）。
