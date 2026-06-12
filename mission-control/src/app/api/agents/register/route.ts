@@ -98,6 +98,7 @@ export async function POST(request: NextRequest) {
       const client = upsertSyncClientHeartbeat({
         clientId: syncClient.clientId,
         clientName: syncClient.clientName,
+        workspaceId,
         agentCount: Number(request.headers.get('x-sync-agent-count') || '0') || 0,
         source: 'agent_register',
       })

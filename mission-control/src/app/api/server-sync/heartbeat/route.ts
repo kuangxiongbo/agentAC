@@ -39,6 +39,7 @@ export async function POST(request: NextRequest) {
   const client = upsertSyncClientHeartbeat({
     clientId,
     clientName,
+    workspaceId: auth.user.workspace_id ?? 1,
     agentCount,
     source: 'heartbeat',
   })

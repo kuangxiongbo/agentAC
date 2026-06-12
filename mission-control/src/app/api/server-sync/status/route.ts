@@ -71,7 +71,7 @@ export async function GET(request: NextRequest) {
     remote_tasks_pending_notify: (db.prepare('SELECT COUNT(*) as c FROM tasks WHERE remote_id IS NOT NULL AND remote_notified IS NULL').get() as { c: number } | undefined)?.c ?? 0,
     remote_tasks_total: (db.prepare('SELECT COUNT(*) as c FROM tasks WHERE remote_id IS NOT NULL').get() as { c: number } | undefined)?.c ?? 0,
   }
-  const clients = listSyncClients()
+  const clients = listSyncClients(auth.user.workspace_id ?? 1)
 
   return NextResponse.json({
     upstream: {

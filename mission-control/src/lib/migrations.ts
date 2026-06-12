@@ -1695,6 +1695,16 @@ const migrations: Migration[] = [
       }
     },
   },
+  {
+    id: '064_sync_clients_workspace',
+    up(db: Database.Database) {
+      const columns = db.prepare(`PRAGMA table_info(sync_clients)`).all() as Array<{ name: string }>
+      if (!columns.some((col) => col.name === 'workspace_id')) {
+        db.exec(`ALTER TABLE sync_clients ADD COLUMN workspace_id INTEGER NOT NULL DEFAULT 1`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_clients_workspace_last_seen ON sync_clients(workspace_id, last_seen DESC)`)
+    },
+  },
 ]
 
 export function runMigrations(db: Database.Database) {

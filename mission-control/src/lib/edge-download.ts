@@ -43,7 +43,7 @@ export function resolveEnterpriseName(user?: Pick<User, 'tenant_id'>): string {
 
 export function resolveTrayVersion(centerUrl: string): string {
   const bundled = resolveBundledTrayFromManifest(centerUrl)
-  if (bundled?.center_version) return bundled.center_version
+  if (bundled?.tray_version) return bundled.tray_version
   return (process.env.MC_EDGE_TRAY_VERSION || process.env.npm_package_version || '2.0.1').trim()
 }
 
