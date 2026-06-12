@@ -108,13 +108,19 @@ export function OrchestrationBar() {
       })
       const data = await res.json()
       if (res.ok) {
-        setCommandResult({ ok: true, text: `Message sent to ${selectedAgent}` })
+        const delivered = data.delivered === true
+        setCommandResult({
+          ok: true,
+          text: delivered
+            ? `Message delivered to ${selectedAgent}${data.session_key ? ` (session ${data.session_key})` : ''}`
+            : `Message sent to ${selectedAgent}`,
+        })
         setMessage('')
-        if (data.accepted && data.session_kind && data.queued_prompt) {
+        if (delivered && data.session_kind && data.queued_prompt && data.session_key) {
           const bound = agents.find((a) => a.name === selectedAgent)
           dispatchSessionPendingPrompt(
             data.session_kind as SessionRealtimeKind,
-            data.session_key || bound?.session_key || '',
+            data.session_key,
             data.queued_prompt,
             'prompt_queued',
             data.agent_id ?? bound?.id,

@@ -12,6 +12,8 @@ import {
   enqueueBoundLocalAgentPrompt,
   getLocalSessionKindForFramework,
 } from '@/lib/local-session-executor'
+import { elevatedFlagToPermissionMode, isLocalCliElevatedFlag } from '@/lib/parse-local-cli-elevated'
+import { assertLocalCliElevationAllowed } from '@/lib/local-cli-elevation-auth'
 
 type ForwardInfo = {
   attempted: boolean
@@ -347,6 +349,19 @@ export async function POST(request: NextRequest) {
     const message_type = body.message_type || 'text'
     const conversation_id = body.conversation_id || `conv_${Date.now()}`
     const metadata = body.metadata || null
+    const localCliElevated = isLocalCliElevatedFlag(body.local_cli_elevated)
+    const elevationGate = await assertLocalCliElevationAllowed({ elevated: localCliElevated })
+    if (!elevationGate.ok) {
+      return NextResponse.json(
+        {
+          error: elevationGate.error,
+          code: elevationGate.code,
+          subscriptionsUrl: elevationGate.subscriptionsUrl,
+        },
+        { status: elevationGate.status }
+      )
+    }
+    const permissionMode = elevatedFlagToPermissionMode(localCliElevated)
 
     if (!content) {
       return NextResponse.json(
@@ -500,7 +515,10 @@ export async function POST(request: NextRequest) {
               const queued = enqueueBoundLocalAgentPrompt(
                 agent || { framework: agent?.framework || null, session_key: localSessionKey },
                 `Message from ${from}: ${content}`,
-                { overrideSessionKey: explicitSessionKey || undefined },
+                {
+                  overrideSessionKey: explicitSessionKey || undefined,
+                  permissionMode,
+                },
               )
               forwardInfo.delivered = true
               forwardInfo.session = queued.sessionKey || undefined

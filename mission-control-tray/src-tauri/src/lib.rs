@@ -6,6 +6,7 @@ mod node_path;
 mod process;
 mod runtime;
 mod setup;
+mod supervisor;
 mod tray_update;
 mod tray_panel;
 
@@ -91,6 +92,7 @@ pub fn run() {
                 let _ = open_setup_window(&app_handle);
             }
             tray_update::start_background_check(app_handle.clone());
+            supervisor::start_background_supervisor();
 
             Ok(())
         })
@@ -106,6 +108,9 @@ pub fn run() {
                         init_macos_tray(&handle);
                     });
                     macos::schedule_delayed_tray_install(delayed);
+                    if matches!(&event, RunEvent::Resumed) {
+                        supervisor::recover_after_resume();
+                    }
                 }
                 RunEvent::Reopen { .. } => {
                     let _ = open_tray_config(app);

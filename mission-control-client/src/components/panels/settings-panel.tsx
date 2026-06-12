@@ -63,6 +63,7 @@ export function SettingsPanel() {
   const [schedulerTasks, setSchedulerTasks] = useState<SchedulerTask[]>([])
   const [syncDiagnostics, setSyncDiagnostics] = useState<ServerSyncDiagnostics | null>(null)
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false)
+  const [syncingTray, setSyncingTray] = useState(false)
 
   const showFeedback = (ok: boolean, text: string) => {
     setFeedback({ ok, text })
@@ -71,6 +72,7 @@ export function SettingsPanel() {
 
   const fetchSettings = useCallback(async () => {
     try {
+      await fetch('/api/edge/import-tray-config', { method: 'POST' }).catch(() => undefined)
       const res = await fetch('/api/settings')
       if (res.ok) {
         const data = await res.json()
@@ -146,6 +148,23 @@ export function SettingsPanel() {
       showFeedback(false, t('networkError'))
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleSyncTrayConfig = async () => {
+    setSyncingTray(true)
+    try {
+      const res = await fetch('/api/edge/sync-tray-config', { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok && data.ok) {
+        showFeedback(true, t('edgeTraySyncOk'))
+      } else {
+        showFeedback(false, data.error || t('edgeTraySyncFailed'))
+      }
+    } catch {
+      showFeedback(false, t('networkError'))
+    } finally {
+      setSyncingTray(false)
     }
   }
 
@@ -249,6 +268,27 @@ export function SettingsPanel() {
             onChange={(e) => handleEdit('gateway.client_name', e.target.value)}
           />
           <p className="text-xs text-muted-foreground mt-1">{t('clientLocalClientNameHint')}</p>
+        </div>
+
+        <div className="pt-2 border-t border-border/60">
+          <h4 className="text-sm font-medium text-foreground mb-2">{t('edgeTraySectionTitle')}</h4>
+          <p className="text-xs text-muted-foreground mb-2">{t('edgeTrayAutoSyncHint')}</p>
+          {(getVal('edge.enterprise_name') || getVal('edge.hostname')) && (
+            <p className="text-xs text-muted-foreground mb-2">
+              {getVal('edge.enterprise_name') ? `${t('edgeEnterpriseLabel')}: ${getVal('edge.enterprise_name')} · ` : ''}
+              {getVal('edge.hostname') ? `${t('edgeHostnameLabel')}: ${getVal('edge.hostname')}` : ''}
+            </p>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={syncingTray}
+            onClick={() => void handleSyncTrayConfig()}
+          >
+            {syncingTray ? t('edgeTraySyncing') : t('edgeTraySyncButton')}
+          </Button>
+          <p className="text-xs text-muted-foreground mt-1">{t('edgeTraySyncHint')}</p>
         </div>
       </div>
 

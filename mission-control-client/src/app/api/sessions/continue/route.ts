@@ -6,6 +6,8 @@ import {
   enqueueLocalSessionPrompt,
   type LocalSessionKind,
 } from '@/lib/local-session-executor'
+import { elevatedFlagToPermissionMode, isLocalCliElevatedFlag } from '@/lib/parse-local-cli-elevated'
+import { assertLocalCliElevationAllowed } from '@/lib/local-cli-elevation-auth'
 /**
  * POST /api/sessions/continue
  * Body: { kind: 'claude-code'|'codex-cli'|'cursor'|'opencode'|'hermes', id: string, prompt: string }
@@ -21,12 +23,26 @@ export async function POST(request: NextRequest) {
     const sessionId = typeof body?.id === 'string' ? body.id.trim() : ''
     const prompt = typeof body?.prompt === 'string' ? body.prompt : ''
     const workingDir = typeof body?.working_dir === 'string' ? body.working_dir.trim() : ''
+    const localCliElevated = isLocalCliElevatedFlag(body?.local_cli_elevated)
+    const elevationGate = await assertLocalCliElevationAllowed({ elevated: localCliElevated })
+    if (!elevationGate.ok) {
+      return NextResponse.json(
+        {
+          error: elevationGate.error,
+          code: elevationGate.code,
+          subscriptionsUrl: elevationGate.subscriptionsUrl,
+        },
+        { status: elevationGate.status }
+      )
+    }
+    const permissionMode = elevatedFlagToPermissionMode(localCliElevated)
 
     if (!isLocalSessionKind(kind)) {
       return NextResponse.json({ error: 'Invalid kind' }, { status: 400 })
     }
     enqueueLocalSessionPrompt(kind, sessionId, prompt, {
       workingDirectory: workingDir || null,
+      permissionMode,
     })
 
     return NextResponse.json({ ok: true, accepted: true, sessionId })

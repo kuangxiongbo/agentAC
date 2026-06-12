@@ -1,4 +1,5 @@
 import { LICENSE_SCHEMA_SETTINGS } from './license-schema-meta'
+import { LICENSE_ENTITLEMENT_META_LIST } from './license-schema-meta'
 import { getLicenseSetting, LICENSE_CENTER_URL_KEY } from './license-settings-store'
 
 function fallbackStage(): string {
@@ -21,11 +22,49 @@ export const APP_STAGE =
 
 export type MissionControlEntitlements = {
   enableHumanWatch: boolean
+  enableLocalCliElevation: boolean
   [key: string]: unknown
 }
 
-const DEFAULT_ENTITLEMENTS: MissionControlEntitlements = {
-  enableHumanWatch: false,
+function coerceEntitlementValue(value: unknown, type: 'boolean' | 'number' | 'string', defaultValue: unknown): unknown {
+  if (type === 'number') {
+    const n = typeof value === 'number' ? value : Number(value)
+    return Number.isFinite(n) ? n : defaultValue
+  }
+  if (type === 'string') {
+    return typeof value === 'string' ? value : defaultValue
+  }
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value !== 0
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (['true', '1', 'yes', 'y', 'on', '是'].includes(normalized)) return true
+    if (['false', '0', 'no', 'n', 'off', '否'].includes(normalized)) return false
+  }
+  return Boolean(defaultValue)
+}
+
+function buildDefaultEntitlements(): MissionControlEntitlements {
+  const out: Record<string, unknown> = {
+    enableHumanWatch: false,
+    enableLocalCliElevation: false,
+  }
+  for (const item of LICENSE_ENTITLEMENT_META_LIST) {
+    out[item.key] = item.defaultValue
+  }
+  return out as MissionControlEntitlements
+}
+
+function mergeVerifiedEntitlements(overrides?: Record<string, unknown> | null): MissionControlEntitlements {
+  const base = buildDefaultEntitlements()
+  const input = overrides && typeof overrides === 'object' && !Array.isArray(overrides) ? overrides : {}
+  const merged: Record<string, unknown> = { ...base, ...input }
+  for (const item of LICENSE_ENTITLEMENT_META_LIST) {
+    merged[item.key] = coerceEntitlementValue(merged[item.key], item.type, item.defaultValue)
+  }
+  merged.enableHumanWatch = Boolean(merged.enableHumanWatch)
+  merged.enableLocalCliElevation = Boolean(merged.enableLocalCliElevation)
+  return merged as MissionControlEntitlements
 }
 
 export type VerifyResult = {
@@ -59,7 +98,7 @@ export function verifyLicense(zitadelSub: string, tenantId?: string): Promise<Ve
   if (!userCenterApiUrl) {
     return Promise.resolve({
       licensed: true,
-      entitlements: { ...DEFAULT_ENTITLEMENTS, enableHumanWatch: true },
+      entitlements: mergeVerifiedEntitlements({ enableHumanWatch: true, enableLocalCliElevation: true }),
       expiresAt: null,
     })
   }
@@ -89,7 +128,7 @@ export function verifyLicense(zitadelSub: string, tenantId?: string): Promise<Ve
   })
     .then(async (resp) => {
       if (!resp.ok) {
-        return { licensed: false, reason: 'error' as const, entitlements: { ...DEFAULT_ENTITLEMENTS } }
+        return { licensed: false, reason: 'error' as const, entitlements: mergeVerifiedEntitlements() }
       }
       const data = (await resp.json()) as {
         licensed?: boolean
@@ -99,11 +138,7 @@ export function verifyLicense(zitadelSub: string, tenantId?: string): Promise<Ve
       const result: VerifyResult = {
         licensed: Boolean(data.licensed),
         reason: data.reason as VerifyResult['reason'],
-        entitlements: {
-          ...DEFAULT_ENTITLEMENTS,
-          ...(data.license?.entitlements || {}),
-          enableHumanWatch: Boolean(data.license?.entitlements?.enableHumanWatch),
-        },
+        entitlements: mergeVerifiedEntitlements(data.license?.entitlements),
         expiresAt: data.license?.expiresAt ?? null,
       }
       cache.set(cacheKey, { result, expiresAt: Date.now() + CACHE_TTL_MS })
@@ -112,7 +147,7 @@ export function verifyLicense(zitadelSub: string, tenantId?: string): Promise<Ve
     .catch(() => ({
       licensed: false,
       reason: 'error' as const,
-      entitlements: { ...DEFAULT_ENTITLEMENTS },
+      entitlements: mergeVerifiedEntitlements(),
     }))
 }
 

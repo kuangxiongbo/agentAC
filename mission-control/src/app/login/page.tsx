@@ -100,7 +100,7 @@ export default function LoginPage() {
   /** 无 OIDC，或应急 `?local=1`：显示本地 / Google 登录（须在已知 OIDC 配置后判断，避免 SSO 就绪前误显本地表单） */
   const showLocalLogin = ssoReady && (!zitadelEnabled || localBypass)
   const unifiedSsoShell = ssoReady && zitadelEnabled && !localBypass
-  const ssoBuildLabel = (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_MC_BUILD_LABEL?.trim()) || '2.0.1'
+  const ssoBuildLabel = (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_MC_BUILD_LABEL?.trim()) || '2.0.2'
 
   useEffect(() => {
     try {

@@ -8,13 +8,33 @@ import {
   listMainAgentRuntimeMeta,
   type MainAgentRuntimeId,
 } from '@/lib/runtime-agents'
-import { isHumanWatchAgent } from '@/lib/human-watch-helpers'
+import {
+  isHumanWatchAgent,
+  HUMAN_WATCH_AGENT_KIND,
+  HUMAN_WATCH_AGENT_ROLE,
+} from '@/lib/human-watch-helpers'
 
-export { isHumanWatchAgent }
+export { isHumanWatchAgent, HUMAN_WATCH_AGENT_KIND, HUMAN_WATCH_AGENT_ROLE }
 
 export function readAgentConfigRecord(config: unknown): Record<string, unknown> {
   if (!config || typeof config !== 'object' || Array.isArray(config)) return {}
   return config as Record<string, unknown>
+}
+
+export function findAgentBoundToSessionRecord<T extends { session_key?: string | null }>(
+  agents: T[],
+  session: { id?: string; sessionId?: string; key?: string },
+): T | undefined {
+  const keys = new Set<string>()
+  for (const value of [session.sessionId, session.id, session.key]) {
+    const trimmed = String(value || '').trim()
+    if (trimmed) keys.add(trimmed)
+  }
+  if (keys.size === 0) return undefined
+  return agents.find((agent) => {
+    const bound = String(agent.session_key || '').trim()
+    return bound.length > 0 && keys.has(bound)
+  })
 }
 
 export function getAgentDisplayName(agent: {
@@ -30,12 +50,13 @@ export function getAgentDisplayName(agent: {
   const nodeId =
     (typeof agent.node_id === 'string' && agent.node_id) ||
     (typeof config.bridge_client_id === 'string' ? config.bridge_client_id : '')
-  if (
-    (agent.source === 'bridge_index' || agent.source === 'client') &&
-    nodeId &&
-    agent.name.startsWith(`${nodeId}-`)
-  ) {
+  if (nodeId && agent.name.startsWith(`${nodeId}-`)) {
     const stripped = agent.name.slice(nodeId.length + 1).trim()
+    if (stripped) return stripped
+  }
+  const syncClient = typeof config.sync_client_id === 'string' ? config.sync_client_id.trim() : ''
+  if (syncClient && agent.name.startsWith(`${syncClient}-`)) {
+    const stripped = agent.name.slice(syncClient.length + 1).trim()
     if (stripped) return stripped
   }
   return agent.name

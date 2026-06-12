@@ -44,7 +44,7 @@ export function resolveEnterpriseName(user?: Pick<User, 'tenant_id'>): string {
 export function resolveTrayVersion(centerUrl: string): string {
   const bundled = resolveBundledTrayFromManifest(centerUrl)
   if (bundled?.tray_version) return bundled.tray_version
-  return (process.env.MC_EDGE_TRAY_VERSION || process.env.npm_package_version || '2.0.1').trim()
+  return (process.env.MC_EDGE_TRAY_VERSION || process.env.npm_package_version || '2.0.2').trim()
 }
 
 export function maskSecret(value: string): string {

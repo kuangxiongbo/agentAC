@@ -55,11 +55,13 @@ function mergeEntitlements(overrides?: Record<string, unknown> | null): MissionC
   if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
     return base
   }
-  return {
+  const merged = {
     ...base,
     ...overrides,
-    enableHumanWatch: Boolean(overrides.enableHumanWatch ?? base.enableHumanWatch),
   } as MissionControlEntitlements
+  merged.enableHumanWatch = Boolean(merged.enableHumanWatch)
+  merged.enableLocalCliElevation = Boolean(merged.enableLocalCliElevation)
+  return merged
 }
 
 export function licenseEnforcementDisabled(): boolean {

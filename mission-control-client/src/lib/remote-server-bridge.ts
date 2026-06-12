@@ -36,10 +36,14 @@ import { validateAgentSessionKindBinding } from './agent-session-binding'
 import { resolveSessionKindForBinding } from './infer-local-session-kind'
 import {
   createHumanWatchStewardAgent,
+  deleteHumanWatchStewardAgent,
+  updateHumanWatchStewardAgent,
   type CreateHumanWatchStewardInput,
 } from './human-watch-steward'
 import { runStewardJudgeOnEdge } from './human-watch-judge'
 import { isBindableSessionKind } from './agent-session-binding'
+import { deliverAgentMessage } from './deliver-agent-message'
+import { edgeUpstreamFetch, isEdgeTlsInsecure } from './edge-upstream-fetch'
 
 // We use the native ws library if available (Node 18+ has it natively via global WebSocket)
 // In Next.js server context, we use the 'ws' package for server-side WebSocket.
@@ -119,6 +123,8 @@ function getLocalClientId(): string {
 }
 
 function getLocalClientLabel(): string {
+  const envName = (process.env.MC_EDGE_CLIENT_NAME || '').trim()
+  if (envName) return envName
   try {
     const db = getDatabase()
     const row = db.prepare(`SELECT value FROM settings WHERE key = 'gateway.client_name'`).get() as { value?: string } | undefined
@@ -409,7 +415,7 @@ async function resolveRemoteBridgeUrl(): Promise<{ wsUrl: string; discoverySourc
       headers['x-api-key'] = token
     }
 
-    const res = await fetch(infoUrl, { headers, cache: 'no-store' })
+    const res = await edgeUpstreamFetch(infoUrl, { headers, cache: 'no-store' })
     const payload = await res.json().catch(() => null)
     if (!res.ok) {
       throw new Error(payload?.error || `Bridge discovery failed with status ${res.status}`)
@@ -667,6 +673,197 @@ function handleStewardCreateRequest(message: any): void {
   }
 }
 
+function handleStewardUpdateRequest(message: any): void {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  const localAgentId = Number(message?.localAgentId)
+  const steward = message?.steward && typeof message.steward === 'object' ? message.steward : {}
+
+  if (!requestId) return
+
+  if (!Number.isFinite(localAgentId) || localAgentId <= 0) {
+    safeSend(state.ws, {
+      type: 'steward_update_response',
+      requestId,
+      ok: false,
+      error: 'localAgentId is required',
+    })
+    return
+  }
+
+  try {
+    const configPatch =
+      steward?.config_patch && typeof steward.config_patch === 'object'
+        ? (steward.config_patch as Record<string, unknown>)
+        : null
+
+    const updated = updateHumanWatchStewardAgent({
+      id: localAgentId,
+      name: typeof steward?.name === 'string' ? steward.name : undefined,
+      soul_content: typeof steward?.soul_content === 'string' ? steward.soul_content : undefined,
+      config_patch: configPatch,
+    })
+
+    const agents = getLocalAgentList()
+    safeSend(state.ws, {
+      type: 'agent_status',
+      clientId: getLocalClientId(),
+      clientLabel: getLocalClientLabel(),
+      agents,
+      timestamp: Date.now(),
+    })
+
+    safeSend(state.ws, {
+      type: 'steward_update_response',
+      requestId,
+      ok: true,
+      source: 'remote-bridge',
+      agent: {
+        id: updated.id,
+        name: updated.name,
+        role: updated.role,
+        framework: updated.framework,
+        session_key: updated.session_key,
+        workspace_path: updated.workspace_path,
+        status: updated.status,
+        soul_content: updated.soul_content,
+        config: updated.config,
+      },
+    })
+  } catch (err: any) {
+    safeSend(state.ws, {
+      type: 'steward_update_response',
+      requestId,
+      ok: false,
+      error: err?.message || 'Failed to update human-watch steward',
+    })
+  }
+}
+
+function handleStewardDeleteRequest(message: any): void {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  const localAgentId = Number(message?.localAgentId)
+
+  if (!requestId) return
+
+  if (!Number.isFinite(localAgentId) || localAgentId <= 0) {
+    safeSend(state.ws, {
+      type: 'steward_delete_response',
+      requestId,
+      ok: false,
+      error: 'localAgentId is required',
+    })
+    return
+  }
+
+  try {
+    const result = deleteHumanWatchStewardAgent(localAgentId)
+    const agents = getLocalAgentList()
+    safeSend(state.ws, {
+      type: 'agent_status',
+      clientId: getLocalClientId(),
+      clientLabel: getLocalClientLabel(),
+      agents,
+      timestamp: Date.now(),
+    })
+
+    safeSend(state.ws, {
+      type: 'steward_delete_response',
+      requestId,
+      ok: true,
+      deleted: true,
+      name: result.deleted,
+      source: 'remote-bridge',
+    })
+  } catch (err: any) {
+    safeSend(state.ws, {
+      type: 'steward_delete_response',
+      requestId,
+      ok: false,
+      error: err?.message || 'Failed to delete human-watch steward',
+    })
+  }
+}
+
+async function handleAgentMessageRequest(message: any): Promise<void> {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  const localAgentId = Number(message?.localAgentId)
+  const body = typeof message?.message === 'string' ? message.message : ''
+  const from = typeof message?.from === 'string' && message.from.trim()
+    ? message.from.trim()
+    : 'center'
+  const localCliElevated = message?.localCliElevated === true
+
+  if (!requestId) return
+
+  if (!Number.isFinite(localAgentId) || localAgentId <= 0) {
+    safeSend(state.ws, {
+      type: 'agent_message_response',
+      requestId,
+      ok: false,
+      error: 'localAgentId is required',
+    })
+    return
+  }
+
+  const agent = getLocalAgentDetail(localAgentId)
+  if (!agent) {
+    safeSend(state.ws, {
+      type: 'agent_message_response',
+      requestId,
+      ok: false,
+      error: 'Agent not found',
+    })
+    return
+  }
+
+  try {
+    const result = await deliverAgentMessage({
+      agent: {
+        id: localAgentId,
+        name: String(agent.name || ''),
+        framework: typeof agent.framework === 'string' ? agent.framework : null,
+        session_key: typeof agent.session_key === 'string' ? agent.session_key : null,
+        config: agent.config,
+      },
+      message: body,
+      from,
+      skipAudit: true,
+      localCliElevated,
+    })
+    if (!result.ok) {
+      safeSend(state.ws, {
+        type: 'agent_message_response',
+        requestId,
+        ok: false,
+        error: result.error,
+      })
+      return
+    }
+    safeSend(state.ws, {
+      type: 'agent_message_response',
+      requestId,
+      ok: true,
+      success: true,
+      source: 'remote-bridge',
+      accepted: result.accepted,
+      delivered: result.delivered,
+      agent_id: result.agent_id,
+      agent_name: result.agent_name,
+      ...(result.session_key ? { session_key: result.session_key } : {}),
+      ...(result.session_kind ? { session_kind: result.session_kind } : {}),
+      ...(result.queued_prompt ? { queued_prompt: result.queued_prompt } : {}),
+      ...(result.reply_preview ? { reply_preview: result.reply_preview } : {}),
+    })
+  } catch (err: any) {
+    safeSend(state.ws, {
+      type: 'agent_message_response',
+      requestId,
+      ok: false,
+      error: err?.message || 'Agent message failed',
+    })
+  }
+}
+
 async function handleStewardJudgeRequest(message: any): Promise<void> {
   const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
   const localAgentId = Number(message?.localAgentId)
@@ -715,6 +912,8 @@ async function handleSessionContinueRequest(message: any): Promise<void> {
     : typeof session?.working_dir === 'string'
       ? session.working_dir.trim()
       : ''
+  const localCliElevated = session?.localCliElevated === true
+  const permissionMode = localCliElevated ? 'full' as const : undefined
 
   if (!requestId) return
 
@@ -731,6 +930,7 @@ async function handleSessionContinueRequest(message: any): Promise<void> {
   try {
     enqueueLocalSessionPrompt(kind as LocalSessionKind, sessionId, prompt, {
       workingDirectory: workingDirectory || null,
+      permissionMode,
     })
     notifySessionTranscriptUpdated(kind, sessionId, 'bridge_continue_queued')
     safeSend(state.ws, {
@@ -907,9 +1107,23 @@ function handleMessage(raw: string): void {
       handleStewardCreateRequest(msg)
       break
 
+    case 'steward_update_request':
+      handleStewardUpdateRequest(msg)
+      break
+
+    case 'steward_delete_request':
+      handleStewardDeleteRequest(msg)
+      break
+
     case 'steward_judge_request':
       handleStewardJudgeRequest(msg).catch((e) =>
         logger.error({ err: e }, '[RemoteBridge] steward_judge_request handler failed'),
+      )
+      break
+
+    case 'agent_message_request':
+      handleAgentMessageRequest(msg).catch((e) =>
+        logger.error({ err: e }, '[RemoteBridge] agent_message_request handler failed'),
       )
       break
 
@@ -936,12 +1150,23 @@ const MAX_PONG_SILENCE_MS = 90_000 // 3 missed pings
 function startHeartbeat(): void {
   stopHeartbeat()
   state.lastPong = Date.now()
+  let lastTickAt = Date.now()
   state.pingTimer = setInterval(() => {
     if (!state.ws || state.ws.readyState !== 1) {
       stopHeartbeat()
       return
     }
-    if (Date.now() - state.lastPong > MAX_PONG_SILENCE_MS) {
+    const now = Date.now()
+    const tickGap = now - lastTickAt
+    lastTickAt = now
+    // setInterval pauses during system sleep — force reconnect if we missed several beats
+    if (tickGap > PING_INTERVAL_MS * 2.5) {
+      logger.warn({ tickGap }, '[RemoteBridge] Heartbeat gap (possible sleep) — probing connection')
+      state.lastPong = now
+      safeSend(state.ws, { type: 'ping', timestamp: now })
+      return
+    }
+    if (now - state.lastPong > MAX_PONG_SILENCE_MS) {
       logger.warn('[RemoteBridge] No pong received for too long, forcing reconnect')
       state.ws.close(4000, 'Heartbeat timeout')
       return
@@ -985,8 +1210,12 @@ async function connect(): Promise<void> {
     if (bridgeToken) {
       headers['Authorization'] = `Bearer ${bridgeToken}`
     }
-    // ws package accepts headers; native WebSocket does not (browser constraint)
-    ws = new (WS as any)(url.toString(), [], { headers }) as WebSocket
+    const wsOptions: Record<string, unknown> = { headers }
+    if (isEdgeTlsInsecure() && url.protocol === 'wss:') {
+      wsOptions.rejectUnauthorized = false
+    }
+    // ws package accepts headers + TLS options; native WebSocket does not (browser constraint)
+    ws = new (WS as any)(url.toString(), [], wsOptions) as WebSocket
   } catch {
     ws = new WS(url.toString()) as WebSocket
   }
@@ -1008,7 +1237,7 @@ async function connect(): Promise<void> {
       clientId,
       clientLabel,
       version: '1.0',
-      capabilities: ['task_receive', 'agent_status', 'agent_detail', 'agents_by_session', 'agent_session_update', 'heartbeat', 'chat_sync', 'session_transcript', 'session_continue', 'steward_create', 'steward_judge'],
+      capabilities: ['task_receive', 'agent_status', 'agent_detail', 'agents_by_session', 'agent_session_update', 'heartbeat', 'chat_sync', 'session_transcript', 'session_continue', 'steward_create', 'steward_update', 'steward_delete', 'steward_judge'],
       agents: getLocalAgentList(),
       timestamp: Date.now(),
     })
@@ -1078,6 +1307,21 @@ function scheduleReconnect(): void {
 
 let _started = false
 
+/** Notify upstream center that a local CLI session transcript changed (human-watch orchestrator). */
+export function pushSessionTranscriptChangedToUpstream(
+  kind: string,
+  sessionId: string,
+): void {
+  const trimmed = String(sessionId || '').trim()
+  if (!trimmed) return
+  if (!isLocalSessionKind(kind)) return
+  if (!state.ws || state.ws.readyState !== 1) return
+  safeSend(state.ws, {
+    type: 'session_transcript_changed',
+    session: { kind, sessionId: trimmed },
+  })
+}
+
 /**
  * Start the remote server bridge.
  * Safe to call multiple times — idempotent.
@@ -1089,7 +1333,20 @@ export function startRemoteBridge(): void {
     logger.info('[RemoteBridge] No upstream URL (env or gateway.server_url) — bridge disabled')
     return
   }
-  if (_started) return
+  state.isShuttingDown = false
+  if (isEdgeTlsInsecure()) {
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+    process.env.MC_EDGE_TLS_INSECURE = '1'
+  }
+  if (_started) {
+    if (!state.connected && !state.reconnectTimer) {
+      connect().catch((e) => {
+        logger.error({ err: e }, '[RemoteBridge] Connect retry failed')
+        scheduleReconnect()
+      })
+    }
+    return
+  }
   _started = true
 
   logger.info({ url: upstream.baseUrl, source: upstream.source }, '[RemoteBridge] Starting remote server bridge')
@@ -1097,6 +1354,18 @@ export function startRemoteBridge(): void {
     logger.error({ err: e }, '[RemoteBridge] Initial connect failed')
     scheduleReconnect()
   })
+}
+
+/** Stop then start — used by UI reconnect and apply-bootstrap. */
+export function restartRemoteBridge(): void {
+  stopRemoteBridge()
+  state.isShuttingDown = false
+  state.reconnectAttempts = 0
+  if (state.reconnectTimer) {
+    clearTimeout(state.reconnectTimer)
+    state.reconnectTimer = null
+  }
+  startRemoteBridge()
 }
 
 /**
@@ -1113,9 +1382,11 @@ export function stopRemoteBridge(): void {
     try { state.ws.close(1000, 'Server shutting down') } catch { /* ignore */ }
     state.ws = null
   }
+  state.connected = false
   state.resolvedUrl = ''
   state.discoverySource = null
   _started = false
+  state.isShuttingDown = false
   logger.info('[RemoteBridge] Bridge stopped')
 }
 

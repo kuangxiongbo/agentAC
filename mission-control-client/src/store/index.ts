@@ -255,6 +255,9 @@ export interface Conversation {
     lastUserPrompt?: string | null
     active?: boolean
     age?: string
+    /** True while dedicated session is being created (no session id yet). */
+    provisioning?: boolean
+    boundAgentId?: number
   }
   participants: string[]
   lastMessage?: ChatMessage

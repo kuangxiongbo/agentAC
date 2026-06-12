@@ -1,7 +1,508 @@
 # 操作日志 (operatelog)
 
+## 2026-06-06（续 6）
+
+- **Edge 开机即在线（只要不关机）**：
+  - 托盘启动时 `caffeinate -imsu -w <托盘pid>`，托盘存活期间阻止 macOS 系统/空闲睡眠（显示器可息屏）。
+  - Node 5101 仍用 `caffeinate -imsu` 包裹；开发脚本 `mc-keep-awake.sh` 同步加 `-u`（电池供电也保活）。
+  - 退出托盘时释放保活断言。
+
+## 2026-06-06（续 5）
+
+- **Edge 息屏保持在线（用户诉求：安装客户端后应持续活跃）**：
+  - 根因：托盘启动 5101 时仅设置 `MC_KEEP_AWAKE=1` 环境变量，未实际执行 `caffeinate`，息屏后 Node 被挂起、Bridge 心跳停止。
+  - `mission-control-tray/process.rs`：macOS 下用 `caffeinate -ims` 包裹 `node server.js`（允许显示器息屏，阻止系统/空闲睡眠）。
+  - 撤销服务端 90s stale 强制断连；改为每 30s 主动向 Edge 发 keepalive ping（仅 ping 发送失败时关闭 socket）。
+  - 客户端唤醒后先 probe ping 再判定断线，避免息屏恢复时误显示离线。
+
+## 2026-06-06（续 4）
+
+- **Bridge 息屏僵尸连接修复**：
+  - 根因：Mac 息屏后 Edge 5101 暂停心跳，但服务端 WebSocket 仍为 OPEN，`isBridgeClientOnline` 误判在线，发消息写入半开 TCP 后长时间无响应（最长 5 分钟）。
+  - 服务端 `bridge-server.ts`：按 `lastSeenAt` 90s 判定 stale，定时 sweep 关闭僵尸连接；`isBridgeClientOnline` / `findConnectedEdgeBridge` 同步校验；TCP keepalive；agent 消息默认超时降至 90s。
+  - 客户端 `remote-server-bridge.ts`：检测 heartbeat 定时器 gap（息屏唤醒）并主动重连。
+  - 单测：`bridge-server-stale.test.ts`。
+
+## 2026-06-06（续 3）
+
+- **i18n 清理**：移除 mission-control-client 中已废弃的 `localCliPermission*`（设置页 / Agent 详情）文案；补全 mission-control `en.json` 的 `licenseGate.localCliElevation*` 键。
+
+## 2026-06-06（续 2）
+
+- **聊天输入框临时提权按钮（订阅门控）**：
+  - 输入框旁星形「提权」按钮，仅对**当前一条消息**生效，发送后自动关闭。
+  - 订阅权益 `enableLocalCliElevation`（`license-schema.json`）；未订阅点击提示前往用户中心。
+  - 服务端 API 校验：`/api/chat/messages`、`/api/agents/message`、`/api/sessions/continue` 接受 `local_cli_elevated`。
+  - Bridge 透传至 Edge 5101，`deliver-agent-message` / `enqueueLocalSessionPrompt` 注入 `permissionMode: full`。
+  - 移除设置页与 Agent 详情中的全局/按 Agent 权限配置；保留 `MC_LOCAL_CLI_PERMISSION_MODE` 仅供开发调试。
+
+## 2026-06-06（续）
+
+- **本地 CLI 高权限模式（服务端聊天 → Edge 5101）**：
+  - 新增 `local-cli-permission.ts`：`standard`（默认）与 `full`（Codex `--dangerously-bypass-approvals-and-sandbox`、Claude `--dangerously-skip-permissions`）。
+  - 优先级：智能体 `config.mc_local_cli_permission` > 环境变量 `MC_LOCAL_CLI_PERMISSION_MODE` > 设置 `local_cli.permission_mode`。
+  - `local-session-executor` 在 full 模式下放宽会话 preamble 中的 Operating rules。
+  - **5101 设置页**与**智能体详情 → 概览**可配置；`.env.example` 增加 `MC_LOCAL_CLI_PERMISSION_MODE` 说明。
+  - 单测：`local-cli-permission.test.ts`（4 passed）。
+
+## 2026-06-06
+
+- **mission-control：推送 agentcenter:2.0.1（新 runtime zip df9b93eb + 托盘 ditto/Node22 修复）**：
+  - 重新打包 client runtime zip（69M，含顶层 `styled-jsx`/`@swc/helpers` 链接）；`df9b93eb4a8422de2f6386c1b7202dc53209e69cfa55c09710d06e30d8c14ea5`。
+  - 重编译 Edge 托盘（`ditto -xk` 解压 zip、`repair_runtime_peer_links`、Node 22+ 优先）；dmg `6fe17a2e…`。
+  - amd64 + arm64 推送；manifest digest **`sha256:a77a6e038a78bfada6980c76ae56059fa54b4204352b34a8853ebc287d1eaa96`**；`latest` 已更新。
+
+- **mission-control：推送 agentcenter:2.0.1（Edge 下载页 + tray dmg 1e923db7…）**：
+  - amd64 推送成功；arm64 元数据缓存失败后 `buildx prune` 重试成功。
+  - manifest digest **`sha256:e5ca8c2d2cbca0f1294ee4fb96df5b371de2138811847167942f015dd234d2b4`**；`latest` 已更新。
+  - 注：runtime zip 仍为 `61605e36…`（本机磁盘不足未能重打 client runtime）；5101 符号链接修复需后续重打 zip + 重编译托盘。
+
+- **Edge 5101 启动失败（server.js:16 require('next')）根因与修复**：
+  - 根因 1：Rust `zip` crate 解压 runtime zip 不保留 pnpm 符号链接，导致 `styled-jsx` 等 peer 依赖缺失。
+  - 根因 2：部分用户 Node 为 v20（日志末尾可见），E-Agent 需要 **Node 22+**。
+  - 修复：`runtime.rs` macOS 改用 `ditto -xk` 解压 zip；安装后 `repair_runtime_peer_links` 补齐顶层链接；`node_path.rs` 优先选用 22+ 并跳过 v20。
+  - 修复：`package-edge-runtime.sh` 为 `@swc/helpers` 等 scoped 包创建父目录后再 `ln -sf`。
+  - 用户侧：`rm -rf ~/.e-agent-edge/runtime` → 安装 Node 22+ → 重新「连接并启动」。
+
+- **mission-control：推送 agentcenter:2.0.1（Edge 下载页滚动/安装说明 + tray dmg）**：
+  - amd64 推送成功；arm64 Docker 元数据缓存失败后 `buildx prune` 重试成功。
+  - manifest digest **`sha256:595c1171278b32fe3076a960e07bbb7615efd375e200edcc4e4297b1cad1ebb7`**；`latest` 已更新。
+  - edge-tray dmg：`sha256:dc362081…`（amd64 构建时）/ `0b7b4315…`（arm64 构建时）。
+  - 服务器：`docker compose -f docker-compose.1panel.yml pull && docker compose -f docker-compose.1panel.yml up -d`。
+
+- **mission-control-client + tray：托盘连接信息自动同步 + 合并令牌字段**：
+  - 修复托盘在 5101 已运行时跳过 `apply-bootstrap`，导致 Web 设置页「服务网关地址」为空。
+  - 新增 `POST /api/edge/import-tray-config`：从 `~/.e-agent-edge/config.json` 导入 `gateway.server_url` / `gateway.token`；设置页加载时自动调用。
+  - 托盘 `submit_setup` 在 5101 已健康时预推送配置；`ensure_running` 沿用现有进程时仍写入 bootstrap 设置。
+  - 设置页移除重复的「边缘注册令牌」字段，仅保留「网关 API 令牌」（与托盘共用同一 key）。
+
+- **mission-control：Edge 下载页安装说明补全 + 滚动修复**：
+  - 根布局 `overflow-hidden` 导致长内容被截断；下载页改为 `h-full overflow-y-auto`，顶栏 sticky，去掉垂直居中。
+  - 安装步骤扩展为 9 步：dmg 通配符 `e-agent-edge-*.dmg`（兼容 Chrome `(1)` 后缀）、强调勿在 dmg 内运行、拖入后推出 dmg、开发者身份拦截说明与「仍要打开」路径、备用 codesign 命令。
+  - 更新 `messages/en.json`、`messages/zh.json` 中 `edgeDownload` 文案。
+
+- **mission-control：推送 agentcenter:2.0.1（含 ditto runtime zip + edge-tray）**：
+  - Edge runtime zip 已用 `ditto` 重打：`sha256:61605e36edc591d72530cfb5459192d7a408c4788f6cb41b699fb40d6a55dbbe`（约 121M）。
+  - Edge tray dmg：`sha256:fd50864b4208f065fe493e4206d096ad4918e5524b37b0a4d55f0ee960c3e676`。
+  - 修复 `sync-edge-tray-bundle.sh`：`cleanup_staging` EXIT trap 在 `set -e` 下误返回 exit 1，导致 multiarch 脚本 tray sync 后未进入 docker build。
+  - `docker-publish-multiarch.sh`：amd64 推送成功；arm64 因 Docker 元数据缓存失败（`node:22.22.0-slim` size validation），经 `buildx prune` + 单独 `docker-publish-local.sh` 重试成功。
+  - 多架构 manifest digest **`sha256:79d74d1149ff33806c2d411906da6c458500fd42a9dea85094e5a79e1307eab4`**；`latest` 已更新。
+  - 平台 digest：amd64 `sha256:8074f2d0323bfa3f2a2a12c7d7e6f06c9a52253bd9ecd2f3d16d065aa0d138c1`；arm64 `sha256:6af26044ce675cd750979516b75e583f8ec66cdff073c9f6d1114cf89fc45984`。
+  - 服务器：`docker compose -f docker-compose.1panel.yml pull && docker compose -f docker-compose.1panel.yml up -d`。
+  - Edge 用户若曾安装损坏 runtime：`rm -rf ~/.e-agent-edge/runtime` 后重新「连接并启动」。
+
+## 2026-05-19
+
+- **mission-control：Edge 托盘 .dmg 打入服务端镜像**：
+  - 新增 `scripts/sync-edge-tray-bundle.sh`，拷贝 tray .dmg 到 `public/edge-tray/` + manifest（与中心版本 2.0.1 配套）。
+  - `docker-publish-*.sh` 构建前自动 sync；缺少 tray manifest 则中止。
+  - 下载页从 manifest 解析 `/edge-tray/e-agent-edge-{version}-darwin-aarch64.dmg`。
+  - 已重新推送多架构镜像；digest `sha256:ae303a18feb0c0ada1ed3f4fc19f12209b39dbd281664ba06f3a4f2321cc39c7`。
+- **Edge runtime MODULE_NOT_FOUND（styled-jsx）修复**：
+  - 根因：zip 解压/copy 破坏 pnpm 符号链接，`node_modules/next` 被截断。
+  - `package-edge-runtime.sh` 改用 `ditto` 打包并补 `styled-jsx` 等 peer 链接。
+  - 托盘 `runtime.rs` macOS 用 `ditto` 安装 runtime，并加强 `is_runtime_usable` 检测。
+
+  - `resolveDistributionEnrollToken` 与 bootstrap 一致：MC_EDGE_ENROLL_TOKEN → 多企业 map → 全局 API Key → Bridge 令牌。
+  - 下载页展示完整可复制令牌，并标注来源（API Key 同步等）。
+- **mission-control：推送 agentcenter:2.0.1（含令牌同步 + edge-tray）**：
+  - manifest digest `sha256:7595cb75d4003c9a5062e2597918a9937df96cbe191d08d9ff25a311597344b0`；`latest` 已更新。
+- **Edge 安装 macOS Gatekeeper 说明 + dmg 重打包**：
+  - `sync-edge-tray-bundle.sh` 发布前 ad-hoc 签名并重新打 dmg。
+  - 下载页 `/edge/download` 安装说明含完整步骤与可复制终端命令（xattr / codesign）。
+
+- **mission-control：推送 agentcenter:2.0.1 多架构镜像**：
+  - amd64 + arm64 已推送；manifest digest `sha256:cf002a13eb1e1e99ee65179f3fafc6686d631a84335d418d58a1eb46508ea773`；`latest` 已更新。
+  - 含 Edge 下载页、/edge-tray/ 放行、download-info API 等最新改动。
+  - 服务器：`docker compose -f docker-compose.1panel.yml pull && docker compose -f docker-compose.1panel.yml up -d`
+
+- **mission-control：Edge 下载页改为可复制连接信息**：
+  - `.dmg` 无法在 Web 下载时按用户动态写入配置；页面改为展示完整「服务中心地址 + 分发令牌」并支持一键复制。
+  - 安装步骤：下载 dmg → 启动 Edge → 粘贴地址与令牌 → 连接并启动。
+  - API `download-info` 对登录用户返回完整 `enroll_token`；移除页面上的配置脚本入口。
+
+- **mission-control / mission-control-client：Edge 客户端下载入口**：
+  - 顶部栏右侧新增下载图标，跳转 `/edge/download`（本地 5101 客户端模式则打开上游服务中心下载页）。
+  - 连接状态浮层（网关 / 服务 / 中心 Bridge）底部增加「下载 Edge 客户端」链接。
+  - 新增下载页：展示中心地址、分发令牌（脱敏）、dmg 下载与 macOS 配置脚本（写入 `~/.e-agent-edge/config.json`）。
+  - API：`GET /api/edge/download-info`、`GET /api/edge/install-script`（需登录）。
+  - `proxy.ts` 放行 `/edge-tray/` 静态安装包；`.env.1panel.example` 增加 `MC_EDGE_TRAY_DOWNLOAD_URL` 说明。
+
+## 2026-05-29
+
+## 2026-06-05
+
+- **mission-control：推送 agentcenter:2.0.1（含 /edge-runtime/ 鉴权放行）**：
+  - 多架构 manifest（amd64+arm64）+ `latest` 已更新；digest `sha256:f5e300195b03...`。
+- **mission-control：修复 Edge runtime zip 下载 SHA256 失败**：
+  - 根因：`/edge-runtime/*.zip` 被 `proxy.ts` 鉴权重定向到 `/login`，托盘下载到 6 字节 `/login` 导致校验失败。
+  - `proxy.ts`：放行 `pathname.startsWith('/edge-runtime/')`，matcher 排除 `edge-runtime/`。
+  - 托盘 `runtime.rs`：校验失败时提示「可能被重定向到登录页」。
+  - **需重新构建并部署服务端镜像** 后 Edge「连接并启动」方可下载 zip。
+- **E-Agent Edge：退出行为 — 仅菜单栏「退出」停 5101，Dock/关窗只隐藏**：
+  - 菜单栏托盘「退出」→ `quit_from_tray`：停 5101 + 结束应用。
+  - 配置窗关闭 / Dock ⌘Q → `hide_to_background`：只隐藏窗口，5101 与菜单栏托盘继续运行。
+- **mission-control：修复 exec format error — 推送多架构 manifest（amd64+arm64）**：
+  - 原因：`docker-publish-local.sh` 在 Mac M 上仅产出 **linux/arm64**，x86 云服务器报 `exec /app/docker-entrypoint.sh: exec format error`。
+  - 已构建并推送 `2.0.1-amd64`（linux/amd64），与既有 arm64 合并为 manifest list `agentcenter:2.0.1`；**`:latest` 已同步指向同一多架构 manifest**。
+  - 更新 `scripts/docker-publish-multiarch.sh`（amd64 buildx + arm64 local + imagetools create）。
+- **mission-control：重新构建并推送 agentcenter:2.0.1 镜像**：
+  - 执行 `scripts/docker-publish-local.sh`（sync runtime + pnpm build + Dockerfile.runtime-only + push）。
+- **mission-control：推送 agentcenter:2.0.1 至阿里云 CR（含 Edge runtime）**：
+  - 本机 `pnpm build` + `Dockerfile.runtime-only` 打镜像（规避 Docker 内 apt 502）。
+  - 镜像：`crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1` 已 push。
+  - 新增 `scripts/docker-publish-local.sh`、`.dockerignore.publish`、`Dockerfile.runtime-only`。
+  - 服务端需 `docker compose pull && up -d` 拉新镜像后 manifest 503 才会消失。
+- **E-Agent Edge：服务端内置 runtime 配套发布（简化流程）**：
+  - 本机已打包 `client-runtime-2.0.1-darwin-aarch64.zip`（97M）并 sync 到 `mission-control/public/edge-runtime/`。
+  - 新增 `scripts/sync-edge-runtime-bundle.sh`：`pnpm sync:edge-runtime` 一键打包 client + 写 manifest（sha256）。
+  - 中心服 `loadEdgeRuntimeManifest()` 默认读 `public/edge-runtime/manifest.json`；API 自动把 `/edge-runtime/*.zip` 补全为站点绝对 URL。
+  - `docker build` / buildx 构建前自动 sync；zip 不提交 Git，manifest 可提交。
+  - 文档：`mission-control/deploy/EDGE-RUNTIME.md`。
+- **E-Agent Edge：本机修复 5101（standalone build + runtime 安装）**：
+  - 执行 `mission-control-client` 的 `pnpm install` / `pnpm build`，生成 `.next/standalone`。
+  - 将 standalone 复制到 `~/.e-agent-edge/runtime`（含 static/public、VERSION）。
+  - 手动启动验证：`curl http://127.0.0.1:5101/api/status?action=health` 返回 200。
+- **E-Agent Edge：runtime 清单 HTTP 503（服务中心未配置 manifest）**：
+  - 503 原因：`agent.1sheng.work` 未设置 `EDGE_RUNTIME_MANIFEST_PATH` / `EDGE_RUNTIME_MANIFEST_JSON`。
+  - 托盘：`fetch_manifest` 503 提示管理员配置；`install_from_local_standalone` 在下载失败时从 `MC_EDGE_STANDALONE_DIR` 或 `~/Desktop/agent指挥仓/mission-control-client/.next/standalone` 复制。
+  - 初始化顺序恢复为：中心 bootstrap → runtime → 启动 5101。
+- **E-Agent Edge：修复误导性错误「无法调用 apply-bootstrap」**：
+  - 根因仍是 5101 未起来（runtime 损坏）；原流程在健康检查前就 POST apply-bootstrap，界面误报。
+  - `ensure_running`：先 `wait_until_healthy` 再 `apply-bootstrap`；初始化顺序改为 runtime → 中心 bootstrap → 启动 5101。
+  - 已在本机执行 `rm -rf ~/.e-agent-edge/runtime` 清除损坏目录。
+- **E-Agent Edge：5101 无法启动 — runtime 损坏（Cannot find module 'next'）**：
+  - 根因：`~/.e-agent-edge/runtime` 为开发机复制的 standalone，`node_modules/next` 符号链接指向已删除的 `.next/standalone`，Node 能启动但 `server.js` 立即退出。
+  - `runtime::is_runtime_usable()` 校验 `next` 可解析；`ensure_runtime` 损坏时自动删除目录并重新下载/安装。
+  - `wait_until_healthy` 失败时附带 `~/.e-agent-edge/logs/node-server.log` 尾部。
+- **E-Agent Edge：修复 GUI 启动找不到 Node（No such file or directory）**：
+  - 新增 `node_path.rs`：从 Finder/.app 启动时 PATH 不含 Homebrew/nvm，改为依次探测 `MC_EDGE_NODE_PATH`、`which`、`/opt/homebrew/bin/node`、`/usr/local/bin/node`、fnm/volta、`.nvm/versions/node/v22+`、登录 shell `zsh -l -c 'command -v node'`。
+  - `Info.plist` 增加 `LSEnvironment.PATH`（含 `/opt/homebrew/bin`）。
+  - `process::start` 使用解析到的绝对路径启动 `node server.js`，并为子进程设置 `PATH`；Node 子进程 stderr 写入 `~/.e-agent-edge/logs/node-server.log`。
+  - 错误文案改为中文可操作指引（安装 Node 或设置 `MC_EDGE_NODE_PATH`）；**须完全退出旧进程后覆盖 `/Applications` 再打开**，否则仍显示旧版「请安装 Node.js 22+」。
+  - 已执行：`killall` → `cp` 新包 → `open -a "E-Agent Edge"`。
+- **E-Agent Edge：安装/启动自动拉起 5101，修复打开 Internal Server Error**：
+  - 新增 `process::ensure_running` / `is_healthy`：启动后健康检查 `/api/status?action=health`；已配置用户打开托盘即后台拉起服务。
+  - 端口被占用但服务异常时给出明确提示（避免裸连 `127.0.0.1:5101/` 看到 500）。
+  - 浏览器默认打开 `http://127.0.0.1:5101/chat`（非根路径 `/`）。
+  - `open_console` 前若未就绪会尝试 `ensure_running` 并提示先完成「连接并启动」。
+- **E-Agent Edge：点击托盘/Dock 打开连接配置页**：
+  - 左键点击菜单栏图标 → `open_tray_config`（同首次初始化 `setup.html`，不先停 5101）。
+  - 右键仍弹出托盘菜单；Dock 点击（`RunEvent::Reopen`）同样打开配置页。
+  - 菜单「连接设置…」仍为 `open_connection_setup`（先停 5101 再配置）。
+  - Cocoa 托盘（`MC_EDGE_COCOA_TRAY=1`）左键 `tray_click`、右键弹出菜单。
+  - `setup.html` 纳入构建拷贝；窗口标题改为「连接配置」。
+- **E-Agent Edge：菜单栏图标与软件 logo 统一**：
+  - `generate-tray-icons.sh`：`menu-bar-tray` / `tray-icon` 均从 `app-logo.png` 生成；`tray-icon-mono.ico` 由品牌 template 导出。
+  - macOS 默认 Tauri 托盘改用 `tray-icon@2x.png`（彩色、`icon_as_template(false)`）；`MC_EDGE_TRAY_TEMPLATE=1` 可回退单色反色。
+  - Cocoa/objc2 默认 `tray-icon@2x.png`；Windows 托盘 `tray-icon.png`。
+
+## 2026-05-19
+
+- **E-Agent Edge：Tauri 托盘 rect 从 y=1912 纠正到 (1488,0)**：
+  - 日志解读：Retina 物理坐标；`y=1912` 为屏底错位，`x=1488,y=0` 为菜单栏右侧（与 Clash 同区）。
+  - `menu_bar_visible`：仅当 `rect` 物理 `y>120` 时自动移除 TrayTarget；到位后不移除（对齐 Clash）。
+- **E-Agent Edge：菜单栏日志 visible=1 仍不可见 → 改默认 Clash 托盘**：
+  - 用户截图：Clash 猫头可见，Edge `objc_tray screen=(696,919)` 无图标；根因之一 `menu-bar-tray.png` **黑底**在深色菜单栏不可见。
+  - 默认后端改为 **Tauri/Clash**（`tray-icon-mono.ico` + template）；Cocoa 仅 `MC_EDGE_COCOA_TRAY=1`。
+  - Cocoa/objc2 默认改 **template 透明底** 图标。
+- **E-Agent Edge：菜单栏常驻排错（本机实测）**：
+  - 根因归纳：API `visible=1` 但用户盯右侧；图标实际在 `screen.x≈696`（中部）；刘海屏菜单栏 ~37pt（`y=919` 在 956 屏顶内），旧 `inMenuBar` 误判。
+  - 曾 `RemovalAllowed` 导致拖掉后长期隐藏；改 Default；默认**彩色**圆点；延迟 600/1800ms 刷新布局。
+  - 磁盘 100% 满导致无法打包 → `cargo clean` 释放 16G 后重编；`build.rs` 链接 AppKit/Foundation。
+  - 新增 `docs/macos-menubar-troubleshooting.md`。
+- **E-Agent Edge：攻关右侧 Clash 式菜单栏小图标（方案 B）**：
+  - 新增纯 Cocoa 模块 `edge_menubar.m` + `objc_tray.rs`（`NSStatusItem` + template PNG，无 `tray-icon`/TrayTarget），**默认后端**。
+  - `MC_EDGE_TAURI_TRAY=1` → Clash 同款 Tauri 托盘；`MC_EDGE_NATIVE_TRAY=1` → objc2 原生。
+  - Tauri 托盘修复改为默认仅 `setVisible(true)`；移除 TrayTarget / 标题需 `MC_EDGE_TRAY_FIX=1` / `MC_EDGE_TRAY_TITLE=1`。
+  - 顶部 WebView 快捷条默认**关闭**（`MC_EDGE_TOP_HELPER=1` 才开），避免遮挡排错。
+  - `build.rs` 用 `cc` 编译 Objective-C；README / `verify-menubar-tray.sh` 补充 macOS 15 菜单栏系统设置说明。
+
+- **E-Agent Edge：菜单栏快捷条（用户截图已可见）**：
+  - 将 `tray-panel.html` 纳入仓库（原仅在 `dist/`，被 gitignore）；`beforeBuildCommand` / `beforeDevCommand` 自动 `cp` 到 `dist/`。
+  - 快捷条样式：半透明深色、绿/红状态点、宽度约 248px；窗口 `transparent(true)` 减少白底。
+  - 说明：此为 `MC_EDGE_TOP_HELPER` 默认开启的**菜单栏行内嵌条**，非 Clash 式右侧 `NSStatusItem` 小图标；原生图标请查菜单栏**最左侧**或 `…` 折叠区。
+
+## 2026-05-28
+
+- **E-Agent Edge：菜单栏仍不可见 → 加强诊断 + 默认快捷条**：
+  - 用户截图右侧无 Edge；日志 `window=(0,-37)` 但屏幕截图无项 → 增加 `convertRectToScreen`、`hasImage`、`title`、`len=72` 日志；仅彩色 PNG（不用 template .ico）。
+  - 顶部快捷条恢复默认开启（`MC_EDGE_TOP_HELPER=0` 可关），保证可用入口。
+
+- **E-Agent Edge：默认纯原生 NSStatusItem + 本机验证**：
+  - 默认放弃 Tauri `TrayIconBuilder`（诊断 `rect y=1912` 错位）；改 `macos/native_tray.rs` 直接 `NSStatusBar.statusItem`，无 TrayTarget 子视图。
+  - 本机 release `.app` 诊断：`native_tray[install] isVisible=true button=(0,0,71x22) subviews=0 window=(0,-37,71x37)`（顶部菜单栏坐标，对比旧 Tauri `y=1912`）。
+  - 顶部快捷条默认关闭（`MC_EDGE_TOP_HELPER=1` 才开）；`scripts/verify-menubar-tray.sh` 一键 build/sign/open/读日志。
+  - `MC_EDGE_TAURI_TRAY=1` 可回退旧 Tauri 托盘（仅调试）。
+
+## 2026-05-22
+
+- **E-Agent Edge：Dock 出现 exec 说明裸二进制启动**：
+  - 用户截图 Dock 中 `exec` 图标：进程在跑但未用 `.app` 打包启动，菜单栏仍无 Edge。
+  - 默认改回 **Clash 模式** `TrayIconBuilder`（mono template）；`MC_EDGE_NATIVE_TRAY=1` 才走原生。
+  - 修复 `TRAY_CREATED` 逻辑错误导致托盘未创建；新增 `scripts/macos-open-app.sh`（build + codesign + open）。
+  - 诊断日志：`~/Library/Logs/E-Agent-Edge/tray-diag.log`。
+- **E-Agent Edge：纯原生 NSStatusItem 菜单栏（绕过 Tauri tray-icon）**：
+  - 用户反馈 `setVisible` + 去 TrayTarget 仍无圆点；新增 `macos/native_tray.rs`：objc2 直接 `NSStatusBar.statusItem`，`setVisible(true)` + 标题 Edge + 彩色 PNG，muda 菜单 + `App::on_menu_event`。
+  - 默认不再走 `TrayIconBuilder`；`MC_EDGE_TAURI_TRAY=1` 可回退旧路径。顶部快捷条默认开启作备用。
+- **E-Agent Edge：菜单栏托盘必现修复（核心）**：
+  - 新模块 `macos/menu_bar_visible.rs`：创建托盘后默认执行 `NSStatusItem.setVisible(true)`、移除 `TrayTarget` 遮挡层、设置彩色图标 + 标题「Edge」，并 5 次延迟重试。
+  - 根因：`tray-icon` 0.23 未调用 `setVisible`，且透明 `TrayTarget` 盖住按钮；与 Clash 同库但需显式修复才可在 macOS 15 显示。
+  - 顶部快捷条改回仅 `MC_EDGE_TOP_HELPER=1` 时显示；删除旧 `macos_tray_fix.rs`。
+  - 探测程序 `nsstatusitem-probe` 已加 `setVisible:YES` 便于对照。
+- **E-Agent Edge：macOS 托盘对齐 Clash Verge Rev**：
+  - 参考 `_tray-reference/clash-verge-rev/src-tauri/src/core/tray/mod.rs`：`TrayIconBuilder` + `tray-icon-mono.ico` + `icon_as_template(true)`，去掉 status 标题。
+  - 启动策略改为 **Regular**（与 Clash 一致），关 setup 窗/进后台时再 `Accessory`；托盘在 `RunEvent::Ready` 主线程延迟创建，不再在 `setup()` 同步创建。
+  - 默认关闭 `tauri-nspanel`（仅 `MC_EDGE_NSPANEL=1` 启用）；**顶部快捷条默认开启**（`MC_EDGE_TOP_HELPER=0` 可关）。
+  - 用户本机：ahkohd 示例与原生 `PROBE` 均无菜单栏图标，Clash 有图标 → 属环境差异，需 `tauri build` + 可选 `codesign` 后再测。
+- **托盘问题隔离：独立 clone ahkohd 官方示例在本机构建运行**：
+  - 路径：`_tray-reference/tauri-macos-menubar-app-example`（v2 分支），`pnpm install` + `pnpm tauri build` 成功。
+  - 产物：`.../bundle/macos/tauri-macos-menubar-app-example.app`；`open` 后进程存在（`pgrep tauri-macos-menubar`）。
+  - 本机菜单栏右侧截图（逻辑分辨率 1470×956）：仅有系统图标（控制中心/Wi‑Fi/电量/Spotlight/Siri/时间），**未见**示例 Tauri 托盘图标，与 E-Agent Edge 现象一致。
+  - **结论倾向**：更可能是本机 macOS 15.7 + Tauri/tray-icon 环境/菜单栏策略问题，而非仅 mission-control-tray 业务代码导致；建议用户本机肉眼确认该 `.app`，并检查菜单栏「…」折叠区、是否安装 Bartender 等、与 Clash Verge（原生托盘）对照。
+  - **用户确认**：官方示例 `.app` 本机也**看不到**菜单栏小图标，隔离实验成立。
+  - **用户确认**：示例应用** Dock 底部有图标**（进程在跑），仅菜单栏托盘不可见；说明是「状态栏项显示」问题，非应用未启动。
+  - 新增 `_tray-reference/nsstatusitem-probe/`：Swift 原生 `NSStatusItem`（标题 `PROBE`）探测脚本，用于区分「Tauri 层」与「系统层」；运行 `./build-and-run.sh`。
+- **E-Agent Edge：按 ahkohd + EasyCLI 方案改造 macOS 托盘壳**：
+  - 依赖：`tauri-nspanel`（v2 分支）、`macos-private-api`；`tauri.conf.json` 增加隐藏窗 `edge-shell` + `macOSPrivateApi`。
+  - 新模块 `src-tauri/src/macos/{mod,tray,panel}.rs`：`Accessory`、NSPanel、`template` 图标菜单栏托盘；业务仍用 `bootstrap`/`runtime`/`process`。
+  - `Info.plist` 关闭 `LSUIElement`，改由 `Accessory` 隐藏 Dock；`macos_tray_fix` 仅 `MC_EDGE_TRAY_LEGACY_FIX=1` 启用。
+  - 对齐 EasyCLI：setup 窗口在服务运行中关闭时仅隐藏；托盘菜单增加「检查托盘应用更新」占位。
+  - 参考仓库：ahkohd/tauri-macos-menubar-app-example、router-for-me/EasyCLI、clash-verge-rev（托盘对照）。
+- **E-Agent Edge：.app 仍无菜单栏图标（TrayTarget 遮挡 + 默认修复）**：
+  - 根因：Tauri `tray-icon` 在 `NSStatusBarButton` 上叠加 `TrayTarget` 透明层，挡住图标/标题；template 36×36 在部分主题下几乎不可见。
+  - `macos_tray_fix` 默认开启：移除 `TrayTarget` 子视图，用彩色 `menu-bar-tray.png` 重设图标 + 标题 `Edge`；启动与 `RunEvent::Ready` 及延迟 4 次重试。
+  - 初始托盘改用 `menu-bar-tray.png`、`icon_as_template(false)`；菜单增加「显示顶部快捷条」；`MC_EDGE_TRAY_FIX=0` 可关修复。
+- **E-Agent Edge：macOS 15 控制中心无应用项 + dev 自动顶部快捷条**：
+  - macOS 15「控制中心→仅菜单栏」通常只列系统项（时钟/Siri 等），第三方托盘应用不会出现，属正常，不能靠此页开关托盘。
+  - 新增 `macos_launch.rs`：检测是否 `.app` bundle；`pnpm tauri dev` 裸二进制时**默认**显示屏幕顶部 `tray-panel` 快捷条；`MC_EDGE_TOP_HELPER=0` 可关；打包 `.app` 后默认不显示快捷条。
+  - 启动日志说明：要菜单栏图标请 `pnpm tauri build` 后 `open .../E-Agent Edge.app`。
+- **E-Agent Edge：修复 `show_menu` 编译错误（Tauri 2）**：
+  - `TrayIcon` 无 `show_menu()`；已删除左键回调里的调用，仅保留 `TrayIconBuilder::show_menu_on_left_click(true)`。
+  - `cargo build`（mission-control-tray/src-tauri）已通过；若仍报错请完全退出旧 `tauri dev` 后重新编译。
+- **E-Agent Edge：初始化页保存并回填 API TOKEN**：
+  - 令牌本就写入 `~/.e-agent-edge/config.json`；新增 `get_saved_setup`，打开连接设置时自动填入地址/令牌/自签选项。
+  - 已保存时令牌可留空直接点「连接并启动」沿用上次；页面提示保存位置与留空规则。
+- **E-Agent Edge：Bridge 重连失效（isShuttingDown 卡死）**：
+  - `stopRemoteBridge` 后 `isShuttingDown` 未清除，`connect()` 直接 return，「点击重新连接」无效；`restartRemoteBridge` + `startRemoteBridge` 重置状态。
+- **E-Agent Edge：中心服 Bridge「已断开」修复（自签 HTTPS）**：
+  - 根因：`agent.1sheng.work` 为自签证书；`remote-server-bridge` 的 `/api/bridge/info` 与 `wss://` 未走 TLS 跳过，导致无法发现/连接 Bridge。
+  - `remote-server-bridge.ts`：`bridge/info` 改用 `edgeUpstreamFetch`；`wss` 连接在 `tls_insecure` 时 `rejectUnauthorized: false`。
+  - 托盘 `process.rs`：`tls_insecure:true` 时向 5101 子进程注入 `NODE_TLS_REJECT_UNAUTHORIZED=0`。
+- **E-Agent Edge：macOS 15 托盘已创建但看不见**：
+  - 日志 `rect y=1912` 为 tray-icon 内部坐标，不代表菜单位置；默认**关闭** `macos_tray_fix`（隐藏 TrayTarget 在 15.7 上反而可能不显示）。
+  - 改用 template 图标 + 标题 Edge；左键 `show_menu_on_left_click(true)` 弹出菜单、双击打开控制台；可选 `MC_EDGE_TOP_HELPER=1` 顶部快捷条。
+- **E-Agent Edge：macOS 菜单栏托盘不可见排查**：
+  - 常见误用：只跑 `pnpm prod:restart`（5101 网页）≠ 托盘；须单独运行 `mission-control-tray` 的 `pnpm tauri dev` 或安装 `.app`。
+  - `macos_tray_fix` 改为隐藏 TrayTarget（不删除），红色圆点 + 标题 Edge；启动日志提示在「…」折叠区查找。
+- **E-Agent Edge：macOS 仅用系统菜单栏图标（取消默认浮动条）**：
+  - 控制条改回标准 `NSStatusItem`：顶部菜单栏「Edge」图标 + 左键菜单；浮动 WebView 条仅 `MC_EDGE_TRAY_PANEL=1` 调试时启用。
+- **E-Agent Edge：控制条嵌入 macOS 菜单栏行**：
+  - 控制条窗口设为 `NSStatusWindowLevel`，`y=屏幕顶`、右侧预留系统图标区，高度约 26px，视觉与菜单栏同一行。
+  - 若 `tray.rect()` 有效则贴靠红点「Edge」状态项左侧；菜单栏图标改回红色圆点（非 template）。
+- **E-Agent Edge：macOS 无菜单栏图标且无浮动条**：
+  - 浮动控制条此前需 `MC_EDGE_TRAY_PANEL=1` 才显示；现 **macOS 默认** 在屏幕右上角（`work_area`）显示红框 `tray-panel`。
+  - 取消代码里 `ActivationPolicy::Accessory`（与 LSUIElement 叠加可能导致状态栏不显示）；菜单栏改用 **template 图标 + 标题 Edge**。
+  - `macos_tray_fix` 仅移除 `TrayTarget` 子视图并延迟 3 次重试；托盘菜单增加「显示顶部控制条」。
+- **E-Agent Edge：修复反复打开大量浏览器标签页**：
+  - `setup.html` 在 `phase=done` 时每次 `refreshStatus`（2s）都调用 `open_console`；已改为完成后停止轮询，且不再在轮询里自动开页。
+  - 首次连接成功由 Rust `run_setup_pipeline` 调用一次 `open_console`；`open_console` 增加 10s 防抖。
+  - 托盘后台启动 `run_if_configured(..., false)`，不再每次启动都弹浏览器。
+- **E-Agent Edge：修复「连接并启动」apply-bootstrap 403**：
+  - 原因：本机 5101 由 `pnpm prod:restart` 启动时未设 `MC_EDGE_ALLOW_BOOTSTRAP=1`，托盘 `wait_and_apply_local_settings` 写入被拒。
+  - `apply-bootstrap/route.ts`：本机 loopback 且带 `x-edge-tray: 1` 或进程已设 `MC_EDGE_ALLOW_BOOTSTRAP=1` 时允许写入。
+  - `start-standalone.sh`：默认 `export MC_EDGE_ALLOW_BOOTSTRAP=1`。
+  - 托盘 `bootstrap.rs`：请求头 `x-edge-tray: 1`；`process.rs`：5101 已被占用时明确提示先 `pnpm prod:restart --stop`。
+- **托盘 macOS 菜单栏图标根因修复**：
+  - `tray-icon` 在 `NSStatusBarButton` 上叠加透明 `TrayTarget` 子视图，挡住图标/标题；`macos_tray_fix.rs` 启动后移除子视图并设置标题 `Edge`。
+- **托盘 macOS：菜单栏图标不可见时的顶部控制条**：
+  - 诊断 `rect` 已创建但用户看不到（刘海/多屏/坐标 y=1912）；新增 `tray-panel.html` 浮动条（主屏右上角，打开控制台/连接设置）。
+  - 菜单栏标题改为 `Edge` + 红色圆标。
+- **托盘 macOS 菜单栏仍不可见（二次修复）**：
+  - 菜单栏显示红色圆标 `menu-bar-tray.png`（非 template）+ 文字标题 `E`（微信输入法左侧）。
+  - 启动时打印 tray `rect` 便于确认系统是否注册了 status item。
+- **托盘 macOS 菜单栏图标消失（根因修复）**：
+  - `TrayIcon` 被立即 drop 会从菜单栏移除；现 `app.manage(AppTray(tray))` 保持存活。
+- **托盘 macOS 菜单栏不可见**：
+  - 始终 `ActivationPolicy::Accessory`（仅顶部菜单栏，不占 Dock）。
+  - 启动后终端提示菜单位置；已配置时自动打开 5101 浏览器。
+- **托盘**：删除未使用的 `default_manifest_url` / `default_bootstrap_url`，消除编译 warning。
+- **中心 mission-control 镜像构建并推送 ACR**：
+  - `linux/amd64` → `crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1` 与 `:latest`
+  - 含 `/api/edge/bootstrap`、`/api/releases/edge-runtime-manifest` 及 `proxy.ts` 公开路径
+  - 生产需：`docker compose pull && up -d --force-recreate`；`1panel.env` 配置 `MC_EDGE_ENROLL_ALLOW_API_KEY=1` 等
+- **E-Agent Edge：安装后 Web 初始化（仅连接地址 + API TOKEN）**：
+  - 托盘首次启动弹出 `setup.html` 窗口；`submit_setup` 保存 `~/.e-agent-edge/config.json` 后执行 bootstrap → runtime → 启动 5101 → 自动打开浏览器。
+  - 字段与中心「本站点连接信息」一致；可选自签 TLS；托盘菜单「连接设置…」可重新配置。
+  - `config.setup_completed` 标记完成状态；未配置时不自动后台 bootstrap。
+- **E-Agent Edge：5101 proxy-bootstrap 502（自签 TLS + 中心 API 未部署）**：
+  - `edge-local-bootstrap.ts`：中心 fetch 失败或返回 HTML/非 JSON 时，用本机 `gateway.*` 设置合成 bootstrap（托盘 Web 通道可成功）。
+  - `start-standalone.sh`：读取 `~/.e-agent-edge/config.json` 的 `tls_insecure:true` 时导出 `NODE_TLS_REJECT_UNAUTHORIZED=0`。
+- **E-Agent Edge：修复已复制 runtime 仍拉中心 manifest 401**：
+  - 托盘 `runtime.rs`：`resolve_server_js()` 同时识别 `~/.e-agent-edge/runtime/server.js`（5101 复制）与 `runtime/runtime/server.js`（zip 安装）；`ensure_runtime` 已有 `server.js` 则跳过下载，下载失败时若本地已安装则降级继续。
+  - 5101 `edge-upstream-fetch.ts`：`proxy-bootstrap` / `proxy-runtime-manifest` 支持 `NODE_TLS_REJECT_UNAUTHORIZED=0` 与 `MC_EDGE_TLS_INSECURE=1`，缓解 `fetch failed`（自签证书）。
+- **E-Agent Edge：从 5101 复制 runtime（绕开中心 zip 401）**：
+  - `POST /api/edge/provision-tray-runtime`：将当前 standalone 复制到 `~/.e-agent-edge/runtime`。
+  - 托盘 `ensure_runtime` 优先调用该接口，再尝试 manifest 下载。
+- **E-Agent Edge：经 Web 客户端 (5101) 通道拉 bootstrap**：
+  - `GET /api/edge/proxy-bootstrap`：用 5101 已有 `gateway.server_url` + `gateway.token` 代请求中心（与 Bridge 同配置，绕开托盘单独 enroll/TLS）。
+  - 托盘优先 `http://127.0.0.1:5101/api/edge/proxy-bootstrap`，失败再直连中心或本地降级。
+- **E-Agent Edge bootstrap 401 修复**：
+  - 中心 `proxy.ts` 将 `/api/edge/bootstrap`、`/api/releases/edge-runtime-manifest` 加入公开 API（由 enroll token 鉴权，不再被中间件 401）。
+  - `edge-bootstrap`：未设 `MC_EDGE_ENROLL_TOKEN` 时默认允许与 `API_KEY`/`security.api_key` 相同的令牌（5101 网关令牌）。
+  - 托盘：中心仍 401 时用本地 5101 配置降级启动（不下载 runtime manifest 时需已安装 runtime）。
+- **E-Agent Edge：TLS 自签证书（代理/VPN）**：托盘支持 `tls_insecure` / `EDGE_TLS_INSECURE=1`；已写入 `~/.e-agent-edge/config.json`。
+- **运维：从本机 5101 写入托盘 config**（`GET /api/settings` → `~/.e-agent-edge/config.json`，含 center_url / enroll_token / mac001）。
+- **E-Agent Edge：从 5101 读取注册令牌 + Web 设置可改**：
+  - `GET /api/edge/tray-config`（本机）：返回 `gateway.server_url`、`edge.enroll_token`（缺省用 `gateway.token`）等；托盘启动时自动拉取。
+  - `POST /api/edge/sync-tray-config`：将 Web 设置写入 `~/.e-agent-edge/config.json`。
+  - 设置页新增「边缘注册令牌」与「同步到托盘配置」。
+- **E-Agent Edge：菜单栏托盘 vs Dock + 品牌图标**：
+  - 说明：macOS **Dock 右键**为系统菜单；业务菜单在 **顶部菜单栏托盘**（`LSUIElement` + `ActivationPolicy::Accessory`）。
+  - 图标：`scripts/generate-tray-icons.sh` 从 `app-logo.png` 生成 bundle 与 `tray-icon-template.png`（菜单栏单色适配）。
+- **E-Agent Edge 托盘菜单：Web 控制台**：
+  - 托盘右键：**打开 Web 控制台（本机）**（`127.0.0.1:5101`）、**打开服务中心**（`center_url`）；双击托盘图标打开本机控制台。
+- **E-Agent Edge 托盘：服务中心 bootstrap + 自动入网 + 主机名客户端**：
+  - 中心 `GET /api/edge/bootstrap`：校验 `MC_EDGE_ENROLL_TOKEN`，返回企业信息、`gateway.*` 连接配置、runtime manifest、按 hostname 生成的 `client_name`。
+  - 本地 `POST /api/edge/apply-bootstrap`（仅托盘启动且 `MC_EDGE_ALLOW_BOOTSTRAP=1`）：写入 settings 并重启 Bridge。
+  - 托盘：拉 bootstrap → 下载 runtime → 启动 Node → apply 配置；`gateway.client_name` = OS hostname；`device.client_id` 按 enroll+device 稳定派生。
+  - `remote-server-bridge` 支持 `MC_EDGE_CLIENT_NAME` 环境变量兜底。
+- **E-Agent Edge 托盘（方案 B：首次启动下载 runtime）**：
+  - 新增 `mission-control-tray/`（Tauri 2）：系统托盘菜单（打开控制台 / 重启边缘服务 / 检查并更新 Runtime / 退出）；双击托盘打开 `http://127.0.0.1:5101`。
+  - 首次运行：从 `{center_url}/api/releases/edge-runtime-manifest` 拉清单 → 下载 `client-runtime-{version}-{platform}.zip` → SHA256 校验 → 解压到 `~/.e-agent-edge/runtime` → `node server.js`（数据目录 `~/.e-agent-edge/data`）。
+  - `mission-control-client/scripts/package-edge-runtime.sh`：构建 standalone 并打 zip 到 `releases/dist/`。
+  - `releases/edge-runtime-manifest.example.json`：各平台 zip URL + sha256 示例。
+  - 中心服 `GET /api/releases/edge-runtime-manifest`：读取 `EDGE_RUNTIME_MANIFEST_PATH` 或 `EDGE_RUNTIME_MANIFEST_JSON`。
+  - CI：`.github/workflows/edge-runtime-release.yml`（tag `edge-runtime-v*` 多平台打包 artifact）。
+  - 文档：`mission-control-tray/README.md`。
+- **prod-restart.sh 停止已退出进程时 exit 1**：
+  - 修复 `stop_pid`：进程不存在时返回 0，避免 `set -e` 导致 `--stop` / `prod:build` 在 `stop_all` 阶段失败。
+- **本地 client 24h 防待机（可息屏、保持网络）**：
+  - `scripts/mc-keep-awake.sh`：standalone 默认 `MC_KEEP_AWAKE=1`，macOS 下 `caffeinate -ims` 阻止系统/空闲睡眠，**不**阻止显示器息屏（无 `-d`）。
+  - `start-standalone.sh` 经 `mc_exec_keep_awake` 启动 `node server.js`；设 `MC_KEEP_AWAKE=0` 可恢复系统默认睡眠。
+- **中心服镜像推送 ACR（创建智能体仅挂 Main + 人工值守规则等）**：
+  - buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:af182d417d7f9a61a778a2476664ba8b05ca44f5b148e160c1d31f5d519b7338`**。
+  - 镜像：`crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1`
+  - 生产：`docker compose -f deploy/docker-compose.1panel.yml pull && docker compose -f deploy/docker-compose.1panel.yml up -d --force-recreate`
+- **本地创建智能体：去掉 Worker 上级下拉**：
+  - 第 1 步已选 Main 运行时类型后，第 2 步仅只读展示「主运行时」，不再列出其它 Worker 作上级；`parent_id` 仍自动挂到对应 Main（`mission-control` + `mission-control-client`）。
+- **中心服镜像推送 ACR（人工值守规则准确率+命中率 + diagnose + Tab 修复）**：
+  - buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:573c57a92eec1dcae349612515e0075688a951e49eab0e0efabcd5bd9d438703`**。
+  - 镜像：`crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1`
+  - 生产：`docker compose -f deploy/docker-compose.1panel.yml pull && docker compose -f deploy/docker-compose.1panel.yml up -d --force-recreate`
+- **人工值守规则：准确率 + 命中率平衡**：
+  - 强/弱话术分层：强信号（请确认/只读/不能创建等）查最近 2 条 assistant；弱信号（继续吗/下一步怎么做）仅最后一条 assistant。
+  - `require_last_message_from_assistant`：用户已回复则 `awaiting_user_reply` 不介入，降误触。
+  - 默认 idle 50s / 有信号 30s；无时间戳仅强信号或 pending_tool 可命中；移除宽泛词「是否」「需要你」。
+- **人工值守默认规则提高命中率**：
+  - `idle_timeout_seconds` 90→45；新增 `idle_timeout_with_stuck_seconds` 25（有确认/工具受阻时用更短空闲）；`exclude_if_tool` 120→60s；扩展关键词；无时间戳且有受阻信号时可命中（`match_when_stuck_without_timestamps`）；修复无时间戳时 `lastActivityAt` 误用 `now` 导致永远不算空闲。
+- **人工值守无干预：规则放宽 + 会话匹配 + 诊断 API**：
+  - 根因：默认规则需 **idle≥90s 且** 确认类话术；「你确认后」「只读/不能创建」未命中旧关键词；`worker_session_id` 与 Bridge 索引 `session_key` 不一致时 transcript 事件找不到绑定；`no_session_kind` 仅 debug 无审计。
+  - 优化：扩展 `confirmation_patterns`（含你确认/只读/不能创建等）、最近 3 条 assistant 消息扫描；`listEnabledBindingsForTranscriptUpdate` 按索引 session_key 兜底；`no_session_kind` 写入审计；新增 **`GET /api/human-watch/diagnose?binding_id=`** 返回检查项、规则评估、最近干预记录与 hints。
+  - 文件：`human-watch-rules.ts`、`human-watch-bindings.ts`、`human-watch-orchestrator.ts`、`human-watch-diagnose.ts`、`api/human-watch/diagnose/route.ts`、测试。
+- **中心服镜像推送 ACR（人工值守 Tab 加载修复 + display_name + files 200）**：
+  - 构建前修复 `event-bus.ts` 补充 `human_watch.bindings_synced` 的 `EventType`（否则 `pnpm build` 失败）。
+  - buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:08d3212045ae24cef6565cae6fac9b8a6983380e8edf0d8b5b8473252424cf29`**。
+  - 镜像：`crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1`
+  - 生产：`docker compose -f deploy/docker-compose.1panel.yml pull && docker compose -f deploy/docker-compose.1panel.yml up -d --force-recreate`
+- **人工值守 Tab 一直「加载人工值守配置」+ 智能体名称显示错误**：
+  - 根因：`workerResolved` 每次渲染为新对象 → `load` 依赖变化 → 无限重复请求；详情标题用 `agentState.name` 未用 `getAgentDisplayName`；Bridge 智能体 `GET /api/agents/{id}/files` 误查本地表返回 400。
+  - 修复：`useMemo` 稳定 `workerResolved`；标题改为 `getAgentDisplayName`；`files` 对 `bridge_index` / 无 workspace 返回空文件集而非 400；`getAgentDisplayName` 兼容 `sync_client_id` 前缀剥离；`mission-control-client` 同步显示名逻辑与详情标题；Bridge 列表项 API 增加 `display_name` 字段。
+- **人工值守一直无干预（边缘 transcript 未上报中心）**：
+  - 根因：中心编排只监听 `session.transcript.updated`，但边缘 Codex/Claude 写 jsonl 时仅本地广播，**未**经 Bridge 发 `session_transcript_changed`（此前仅在 continue 代发时上报）；绑定 `worker_session_id` 也可能与当前 `session_key` 不一致。
+  - 修复：客户端 `session-realtime` 在 transcript 变更时调用 `pushSessionTranscriptChangedToUpstream`；中心 `syncHumanWatchBindingSessionIds` 在 Bridge 索引同步后对齐 `worker_session_id`；编排启动时立即执行一次 poll。
+  - 文件：`mission-control-client` `session-realtime.ts`、`remote-server-bridge.ts`；`mission-control` `human-watch-bindings.ts`、`sync-agent-index.ts`、`human-watch-orchestrator.ts`。
+- **中心服镜像推送 ACR（人工值守绑定 Tab + edge-identity）**：
+  - buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:7f8d57c735af18795103852b1f3e127a4cd25ca9fce15c42c5740b2fac41192c`**。
+  - 镜像：`crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1`
+  - 生产：`docker compose -f deploy/docker-compose.1panel.yml pull && docker compose up -d --force-recreate`
+- **人工值守绑定 Tab 无法显示已绑定关系（mc-local 边缘客户端）**：
+  - 根因：详情刷新后 `node_id` / `local_agent_id` 丢失，或仅按本地字段匹配绑定；创建时已写入 `human_watch_bindings` 但 Tab 提前显示「仅边缘 Bridge…」。
+  - 修复：新增 `GET /api/agents/[id]/edge-identity` + `resolveAgentEdgeIdentity`（按 sync 索引 id / `remote_name` / `original_name` 解析）；`useAgentEdgeIdentity` 供 Worker/值守绑定 Tab 使用；支持按 `sync_index_id` 匹配绑定；Worker Tab 显示当前值守并可「更新绑定」换值守 Agent。
+  - 文件：`resolve-agent-edge-identity.ts`、`use-agent-edge-identity.ts`、两个 bind tab、`agent-card-helpers.ts`、`sync-agent-index.ts`、i18n。
+- **中心服 Worker 详情「人工值守」Tab 显示值守 Agent**：
+  - 根因：Bridge 在线拉取边缘详情时 `config.local_agent_id` 被覆盖丢失，Tab 用 `worker_local_agent_id` 匹配绑定失败，显示「尚未绑定」。
+  - 修复：`GET /api/agents/[id]` 合并 `mergeBridgeIndexIntoConfig`；`HumanWatchWorkerBindTab` 同时按 `worker_sync_index_id` / `worker_local_agent_id` 匹配，并用 `resolveHumanWatchStewardLabel` 显示值守智能体名（绑定表 `steward_name` 或列表 `getAgentDisplayName`）。
+  - 文件：`sync-agent-index.ts`、`agent-card-helpers.ts`、`agents/[id]/route.ts`、`human-watch-worker-bind-tab.tsx`、测试 `human-watch-binding-match.test.ts`。
+- **客户端 standalone 与 dev 共用 `.data` 数据库**：`start-standalone.sh` / `prod-restart` 设置 `MISSION_CONTROL_DB_PATH` 指向项目根 `.data`，修复 prod(5101) 与 dev(5001) 配置（网关地址、令牌）互不见的问题。
+- **客户端 `command.ts` TS 构建**：`child.stdout`/`stderr`/`stdin` 可能为 null，改为可选链与判空。
+- **客户端构建修复 + 长期运行脚本**：`conversation-list` 补 `sessionId` 类型；新增 `scripts/prod-restart.sh`（`pnpm prod:restart` / `prod:stop` / `prod:build`），standalone 后台 **5101**。
+- **客户端端口规划（避免冲突）**：新增 `scripts/mc-ports.sh` — **dev 5001** / **standalone·install 5101** / 中心服保留 **3000**；`dev-restart`、`start-standalone`、`deploy-standalone`、`install.sh`、`.env.example` 已对齐。
+- **客户端 `start-standalone.sh`**：修复 macOS `HOSTNAME=*.local` 导致 `ENOTFOUND`；默认端口 **5101**；启动时打印访问 URL。
+- **客户端脚本可执行权限**：为 `scripts/start-standalone.sh`、`deploy-standalone.sh` 等补充 `chmod +x`，修复直接 `./start-standalone.sh` 报 `permission denied`。
+- **服务端镜像推送 ACR（最新：session_key 绑定 + Bridge 发消息 + TS 修复）**：
+  - 构建前修复 `findAgentBoundToSessionRecord` 泛型（`getAgentDisplayName` 类型错误）。
+  - buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:bb11192f3bedbacdf7a5fb59f835b36ec543f1e0454db0a03656d0ea8312f62e`**。
+  - 镜像：`crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1`
+  - 生产：`docker compose pull && docker compose up -d --force-recreate`（`deploy/docker-compose.1panel.yml`）。
+
+## 2026-05-21
+
+- **服务端镜像推送 ACR（尝试）**：首次 buildx 因 BuildKit 磁盘 `input/output error` 失败；重启 Docker 后本机 daemon 未就绪，**未完成推送**。Docker 恢复后于 `mission-control/` 执行：`MC_DOCKER_PUSH=1 MC_DOCKER_PLATFORM=linux/amd64 bash scripts/docker-buildx-multiarch.sh`（含聊天列表 `session_key` 绑定、Bridge 发消息等）。
+- **中心服聊天列表智能体名（边缘会话绑定修复）**：
+  - 根因：中心 `sync_sessions` 的会话 `id` 为 `client:kind:sessionId`，列表却用 `session_key === s.id` 匹配；Bridge 索引未同步 `session_key`，且同步会话 `agent` 字段为 Codex 目录 slug（`test`）而非智能体名。
+  - 修复：迁移 `063_sync_agent_index_session_key`；`agent_status` 写入 `session_key`；`findAgentBoundToSessionRecord` 按 `sessionId/key/id` 匹配；默认标题 `Codex CLI • {智能体显示名}`。若仍显示旧名，检查是否曾在列表「重命名」过（`session-prefs` 优先于默认名）。
+- **本地客户端重启**：`mission-control-client` 执行 `pnpm dev:restart`；`http://127.0.0.1:5001` Ready，PID **50664**（含 Bridge `agent_message_request` 等新代码）。
+- **服务端镜像推送 ACR（指挥栏 Bridge 发消息 + 聊天列表智能体名）**：
+  - buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:9fce5f0a124e0c9fa70c4d705be13fa9c90ab25f0fa7ab3face6bd6731796de9`**。
+  - 镜像：`crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1`
+  - 生产：`docker compose pull && docker compose up -d --force-recreate`（`deploy/docker-compose.1panel.yml`）。
+  - **边缘 client** 需同步部署 `agent_message_request` 处理（仅拉中心镜像不够）。
+- **中心服指挥栏向边缘智能体发消息（Bridge 转发）**：
+  - `POST /api/agents/message`：中心 `agents` 表未命中时，用 `getBridgeAgentIndexByRecipient` 解析 `sync_agent_index`（`remote_name` / `original_name`），经 Bridge `agent_message_request` 转发至边缘执行。
+  - 中心：`bridge-server.ts` 新增 `requestBridgeClientAgentMessage`；`sync-agent-index.ts` 新增 `getBridgeAgentIndexByRecipient`；路由 `maxDuration=300`。
+  - 边缘：`deliver-agent-message.ts` 抽取投递逻辑；`remote-server-bridge.ts` 处理 `agent_message_request`。
+  - 测试：`sync-agent-index-bridge.test.ts` 覆盖收件人解析。
+  - **部署**：中心服与边缘 client 均需更新（仅推中心镜像不够，边缘需同步 client 代码/镜像）。
+- **服务端镜像推送 ACR（中心服聊天列表智能体名）**：
+  - buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:83292c1ab72a73a616d8932163aea4d52799efe540a54dfcafd1d477ceb9226f`**。
+  - 镜像：`crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1`
+  - 生产：`docker compose pull && docker compose up -d --force-recreate`（`deploy/docker-compose.1panel.yml`）。
+- **中心服聊天列表显示智能体名**：
+  - `mission-control/src/components/chat/conversation-list.tsx`：按 `agents.session_key === session.id` 匹配绑定 Agent，默认标题为 `{运行时} • {智能体名}`（`getAgentDisplayName`，与客户端逻辑一致）；`loadConversations` 依赖 `agents`。
+- **服务端镜像推送 ACR（人工值守全局规则 + 设置 UI）**：
+  - 修复 `human-watch-rules-config.tsx` 构建 TS 类型后 buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:7658880c09730fcec0f4d6cf4ec89dddca97ae5d42b44566bb191b8c33e7f144`**。
+  - 镜像：`crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1`
+  - 生产：`docker compose pull && docker compose up -d --force-recreate`（`deploy/docker-compose.1panel.yml`）。
+- **人工值守全局规则 UI 精简**：设置 → 通用仅保留「启用规则」开关 +「配置」按钮；详细 L1–L3 参数在弹窗 `HumanWatchRulesDetailModal` 中编辑。
+- **人工值守全局规则移至设置页**：
+  - 中心服 **设置 → 通用**（admin）编辑全局 L1–L3 规则；`GET|PATCH /api/human-watch/rules` 改为 **admin** 权限、**不校验** enableHumanWatch 订阅。
+  - 智能体绑定 Tab 只读规则摘要 + 跳转设置；侧栏无独立「人工值守」配置入口（`/human-watch` 页仅绑定列表/导出提示）。
+- **人工值守判断规则改为租户全局配置**：
+  - 迁移 `062_human_watch_global_rules`：`tenants.human_watch_rules_json`；`GET|PATCH /api/human-watch/rules`。
+  - 编排器 `resolveHumanWatchRulesForBinding` 仅读全局规则，忽略 `binding.rules_override`；新建绑定不再写入 per-binding 规则。
+  - UI：侧栏 **「人工值守」** 页编辑全局规则；智能体绑定 Tab 只读摘要 + **本绑定设置**（启用/模式）。
+- **人工值守规则 UI 全量可配**（后并入全局页）：`HumanWatchRulesConfig` 支持编辑绑定启用/模式、L1 空闲、工具排除窗口、L2/L3 信号、确认关键词（多行）、组合逻辑、静默期、每小时上限；Worker/值守绑定 Tab 传入 `bindingMode`/`bindingEnabled`。
+- **人工值守：值守仅大模型介入**：
+  - 新建/默认值守 `steward.llm_enabled: true`（中心 `human-watch-defaults`、边缘 `human-watch-steward`）；更新值守 config 时强制保持 `llm_enabled`。
+  - 编排器规则命中后**仅**走值守判官 LLM（Worker 摘要 → 判官会话 → 回复）；取消固定 `prompt_template` 回退；判官失败/空回复记 `intervention_skipped`（`steward_judge_*`）。
+  - `parseStewardConfigFromAgent` 对 `human-watch` / `human_watch` 强制启用 LLM；默认判官模板与 SOUL 改为「先读上下文再像人回复」。
+  - i18n 规则说明改为「规则触发判官代发」。
+- **客户端快速重启脚本**：`mission-control-client/scripts/dev-restart.sh`（`pnpm dev:restart` / `pnpm dev:stop`），先 kill 占用 5001 与 next dev 进程再启动。
+- **新智能体独立 Codex 会话**：首次建会话使用 `{workspace}/.e-agent/agent-{id}` 隔离目录，避免 `codex exec` 复用同仓库下已有「test」线程；忽略 stdout 中已存在 thread id；列表显示 `Codex • {智能体名}`。
+- **恢复创建时后台绑会话 + 原聊天列表**：值守/本地 Agent 创建时重新 `enqueueProvisionAgentDedicatedSession`；聊天列表恢复 **隐藏值守专用会话**（去掉占位会话合并）；发消息在已有 `session_key` 时走 **enqueue 快速路径**，仅无绑定时 `await` 建会话。
+- **本地客户端重启**：释放 5001 后于 `mission-control-client` 执行 `pnpm dev`；`http://127.0.0.1:5001` Ready。
+- **智能体发消息「真成功」= 写入聊天会话**：
+  - `POST /api/agents/message` 对本地运行时改为 **`await executeBoundLocalAgentPrompt`**（不再仅 `enqueue` 即返回 `success`）；响应增加 `delivered: true` 与 `session_key`；路由 `maxDuration=300`。
+  - 详情页发送成功后 **种子化聊天列表项**、跳转对应 `session:*` 会话，并 `dispatchSessionPendingPrompt` 展示用户行；文案区分 `messageDelivered` / `messageSendingLong`。
+  - 聊天 `SessionConversationView` 对 `boundAgentId` 匹配实时事件；占位页展示 `seedUserPrompt`。
+- **值守 Agent 发消息后聊天无会话（根因修复）**：
+  - 创建值守时不再后台单独跑 READY 引导（避免与首条用户消息争抢同一 Codex 队列、长时间无 `session_key`）。
+  - `persistAgentSessionBinding` / 后台 prompt 完成后刷新 Codex 扫描与会话列表缓存，并广播 `session.list.updated`。
+  - 聊天列表为无 `session_key` 的值守 Agent 显示 **进行中占位会话**；发消息后自动跳转该占位页并轮询直至绑定真实 `session_id`。
+  - Codex `start` 在解析新 session 前 `invalidateCodexSessionScan`。
+- **本地客户端聊天显示值守会话**：`conversation-list` 不再隐藏值守 `session_key` 对应会话，列表显示 **「值守」** 标记；智能体详情发消息后自动跳转聊天（有 session 时），无 session 时提示正在创建专用会话。
+- **本地客户端识别人工值守类型**：`agent-squad-panel-phase3` 卡片/详情展示 **「值守」** 徽章与 **「人工值守」** 角色文案；`isHumanWatchAgent`（`role=human-watch` 或 `config.agent_kind=human_watch`）；值守卡片青色描边；详情增加 SOUL Tab；编排选人继续排除值守 Agent。
+- **本地客户端重启**：释放 5001 后于 `mission-control-client` 执行 `pnpm dev`；`http://127.0.0.1:5001` Ready，`GET /api/init` 200。
+- **服务端镜像推送 ACR（人工值守编辑/改绑/删除）**：buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:89a886193d5f6c7fb7b43786809f6a0654f9035e5092b7e1b9a6e338078a8c93`**。生产：`docker compose pull && docker compose up -d --force-recreate`；边缘 client 需同步部署（Bridge `steward_update` / `steward_delete`）。
+
 ## 2026-05-20
 
+- **人工值守：编辑 / 改绑 / 删除（中心服 + 边缘 Bridge）**：
+  - **绑定**：`PATCH /api/human-watch/bindings/:id` 支持改绑 Worker/Steward（`patchHumanWatchBinding`）；新增 `DELETE` 解除绑定。
+  - **值守 Agent**：Bridge `steward_update` / `steward_delete`；`PATCH|DELETE /api/human-watch/stewards`；中心 `PUT|DELETE /api/agents/[id]` 识别 `bridge_index` 值守 Agent 并转发边缘。
+  - **边缘**：`updateHumanWatchStewardAgent` / `deleteHumanWatchStewardAgent`；删除时释放会话队列。
+  - **UI**：Worker「人工值守」Tab 改绑走 PATCH、可解除绑定；值守「绑定 Worker」Tab 可编辑名称/SOUL、保存规则、逐条解除 Worker 绑定；智能体详情删除对值守 Agent 生效。
 - **服务端镜像推送 ACR（人工值守创建绑定 + 默认规则 + 会话绑定）**：buildx 推送 **`1sheng/agentcenter:2.0.1`** / **`:latest`**（**linux/amd64**），manifest **`sha256:da5e17ca518179eb8543c374f89ad7e1488e3deb3c75e08499b023f074c8ac39`**。生产：`docker compose pull && docker compose up -d --force-recreate`。
 - **添加人工值守支持创建时绑定 Worker**：弹窗增加「同时绑定 Worker」下拉；`POST /api/human-watch/stewards` 支持 `worker_local_agent_id`；绑定解析在索引未同步时经 Bridge 拉取 agent 详情兜底。
 - **添加人工值守弹窗展示默认规则**：`human-watch-create-steward-modal` 嵌入 `HumanWatchRulesConfig` 与创建后绑定说明。

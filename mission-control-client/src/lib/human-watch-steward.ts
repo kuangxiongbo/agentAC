@@ -6,6 +6,7 @@ import type { BindableSessionKind } from './agent-session-binding'
 import { isBindableSessionKind } from './agent-session-binding'
 import {
   enqueueProvisionAgentDedicatedSession,
+  releaseAgentExecutionQueues,
   shouldAutoProvisionSessionOnCreate,
 } from './local-session-executor'
 
@@ -13,9 +14,9 @@ export const HUMAN_WATCH_AGENT_KIND = 'human_watch'
 export const HUMAN_WATCH_AGENT_ROLE = 'human-watch'
 
 export const DEFAULT_STEWARD_SOUL = [
-  '你是人工值守（Human Watch）判官智能体。',
-  '专用会话仅用于判断 Worker 是否需要人工式跟进提示，不直接执行 Worker 任务。',
-  '收到判官请求时，仅输出简短、可代发的跟进话术。',
+  '你是人工值守（Human Watch）判官智能体，仅通过大模型介入。',
+  '收到 Worker 会话摘要时，先理解上下文，再像人一样判断应如何回复（确认、选项或明确指令）。',
+  '只输出一条可直接发给 Worker 的用户消息，不要解释、不要前缀；不直接执行 Worker 任务。',
 ].join('\n')
 
 function frameworkColumnForKind(kind: BindableSessionKind): string {
@@ -56,7 +57,7 @@ function buildDefaultStewardConfig(): Record<string, unknown> {
         judge_max_chars: 32000,
       },
       fingerprint_dedupe: true,
-      llm_enabled: false,
+      llm_enabled: true,
       llm_sweep_enabled: false,
       llm_sweep_interval_minutes: 30,
       rules,
@@ -75,8 +76,10 @@ export interface CreateHumanWatchStewardInput {
   authorized?: boolean
 }
 
+export type AgentWithParsedConfig = Omit<Agent, 'config'> & { config: Record<string, unknown> }
+
 export interface CreateHumanWatchStewardResult {
-  agent: Agent & { config: Record<string, unknown> }
+  agent: AgentWithParsedConfig
   sessionProvisioning: boolean
 }
 
@@ -146,7 +149,7 @@ export function createHumanWatchStewardAgent(
     .prepare('SELECT * FROM agents WHERE id = ? AND workspace_id = ?')
     .get(agentId, workspaceId) as Agent
 
-  const parsedAgent = {
+  const parsedAgent: AgentWithParsedConfig = {
     ...createdAgent,
     config: JSON.parse(createdAgent.config || '{}') as Record<string, unknown>,
   }
@@ -172,4 +175,125 @@ export function createHumanWatchStewardAgent(
   )
 
   return { agent: parsedAgent, sessionProvisioning }
+}
+
+export interface UpdateHumanWatchStewardInput {
+  id: number
+  name?: string | null
+  soul_content?: string | null
+  config_patch?: Record<string, unknown> | null
+  workspaceId?: number
+}
+
+export function updateHumanWatchStewardAgent(
+  input: UpdateHumanWatchStewardInput,
+): AgentWithParsedConfig {
+  const workspaceId = input.workspaceId ?? 1
+  const db = getDatabase()
+  const row = db
+    .prepare('SELECT * FROM agents WHERE id = ? AND workspace_id = ?')
+    .get(input.id, workspaceId) as Agent | undefined
+
+  if (!row) {
+    throw new Error('Agent not found')
+  }
+
+  const existingConfig = row.config ? (JSON.parse(row.config) as Record<string, unknown>) : {}
+  if (
+    String(row.role || '').trim() !== HUMAN_WATCH_AGENT_ROLE &&
+    String(existingConfig.agent_kind || '').trim() !== HUMAN_WATCH_AGENT_KIND
+  ) {
+    throw new Error('Agent is not a human-watch steward')
+  }
+
+  const now = Math.floor(Date.now() / 1000)
+  const fields: string[] = ['updated_at = ?']
+  const values: unknown[] = [now]
+
+  if (input.name != null && String(input.name).trim()) {
+    fields.push('name = ?')
+    values.push(String(input.name).trim())
+  }
+
+  if (input.soul_content != null) {
+    fields.push('soul_content = ?')
+    values.push(String(input.soul_content).trim() || DEFAULT_STEWARD_SOUL)
+  }
+
+  if (input.config_patch && typeof input.config_patch === 'object') {
+    const merged = { ...existingConfig, ...input.config_patch }
+    const steward =
+      merged.steward && typeof merged.steward === 'object' && !Array.isArray(merged.steward)
+        ? (merged.steward as Record<string, unknown>)
+        : {}
+    merged.steward = { ...steward, llm_enabled: true }
+    fields.push('config = ?')
+    values.push(JSON.stringify(merged))
+  }
+
+  values.push(input.id, workspaceId)
+  db.prepare(`UPDATE agents SET ${fields.join(', ')} WHERE id = ? AND workspace_id = ?`).run(
+    ...values,
+  )
+
+  const updated = db
+    .prepare('SELECT * FROM agents WHERE id = ? AND workspace_id = ?')
+    .get(input.id, workspaceId) as Agent
+
+  const parsed: AgentWithParsedConfig = {
+    ...updated,
+    config: JSON.parse(updated.config || '{}') as Record<string, unknown>,
+  }
+
+  eventBus.broadcast('agent.updated', parsed)
+  logger.info({ agentId: input.id }, '[HumanWatch] Steward agent updated on edge')
+
+  return parsed
+}
+
+export function deleteHumanWatchStewardAgent(
+  agentId: number,
+  workspaceId = 1,
+): { deleted: string; id: number } {
+  const db = getDatabase()
+  const row = db
+    .prepare('SELECT * FROM agents WHERE id = ? AND workspace_id = ?')
+    .get(agentId, workspaceId) as Agent | undefined
+
+  if (!row) {
+    throw new Error('Agent not found')
+  }
+
+  const config = row.config ? (JSON.parse(row.config) as Record<string, unknown>) : {}
+  if (
+    String(row.role || '').trim() !== HUMAN_WATCH_AGENT_ROLE &&
+    String(config.agent_kind || '').trim() !== HUMAN_WATCH_AGENT_KIND
+  ) {
+    throw new Error('Agent is not a human-watch steward')
+  }
+
+  releaseAgentExecutionQueues({
+    id: row.id,
+    name: row.name,
+    framework: row.framework,
+    session_key: row.session_key,
+    config: row.config,
+  })
+
+  db.prepare('DELETE FROM agents WHERE id = ? AND workspace_id = ?').run(agentId, workspaceId)
+
+  db_helpers.logActivity(
+    'agent_deleted',
+    'agent',
+    agentId,
+    'bridge',
+    `Deleted human-watch steward: ${row.name}`,
+    { name: row.name, role: row.role },
+    workspaceId,
+  )
+
+  eventBus.broadcast('agent.deleted', { id: agentId, name: row.name })
+  logger.info({ agentId, name: row.name }, '[HumanWatch] Steward agent deleted on edge')
+
+  return { deleted: row.name, id: agentId }
 }

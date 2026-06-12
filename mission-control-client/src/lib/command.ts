@@ -37,11 +37,11 @@ export function runCommand(
       }, options.timeoutMs)
     }
 
-    child.stdout.on('data', (data) => {
+    child.stdout?.on('data', (data) => {
       stdout += data.toString()
     })
 
-    child.stderr.on('data', (data) => {
+    child.stderr?.on('data', (data) => {
       stderr += data.toString()
     })
 
@@ -65,7 +65,7 @@ export function runCommand(
       reject(error)
     })
 
-    if (options.input) {
+    if (options.input && child.stdin) {
       child.stdin.write(options.input)
       child.stdin.end()
     }

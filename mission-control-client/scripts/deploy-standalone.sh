@@ -4,10 +4,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=mc-ports.sh
+source "$PROJECT_ROOT/scripts/mc-ports.sh"
 
 BRANCH="${BRANCH:-$(git -C "$PROJECT_ROOT" branch --show-current)}"
-PORT="${PORT:-3000}"
-LISTEN_HOST="${MC_HOSTNAME:-0.0.0.0}"
+PORT="${PORT:-$MC_STANDALONE_PORT}"
+LISTEN_HOST="${MC_STANDALONE_HOST:-${MC_HOSTNAME:-0.0.0.0}}"
 LOG_PATH="${LOG_PATH:-/tmp/mc.log}"
 VERIFY_HOST="${VERIFY_HOST:-127.0.0.1}"
 PID_FILE="${PID_FILE:-$PROJECT_ROOT/.next/standalone/server.pid}"
@@ -206,7 +208,7 @@ pnpm build
 echo "==> starting standalone server"
 load_env
 
-PORT="$PORT" HOSTNAME="$LISTEN_HOST" nohup bash "$PROJECT_ROOT/scripts/start-standalone.sh" >"$LOG_PATH" 2>&1 &
+PORT="$PORT" MC_STANDALONE_HOST="$LISTEN_HOST" nohup bash "$PROJECT_ROOT/scripts/start-standalone.sh" >"$LOG_PATH" 2>&1 &
 new_pid=$!
 echo "$new_pid" > "$PID_FILE"
 

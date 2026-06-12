@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-MC_PORT="${1:-3000}"
+MC_PORT="${1:-5101}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 

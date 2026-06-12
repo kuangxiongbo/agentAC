@@ -17,7 +17,9 @@ import {
   dispatchSessionPendingPrompt,
   type SessionRealtimeKind,
 } from '@/lib/session-realtime-events'
-import { getAgentDisplayName } from '@/lib/agent-card-helpers'
+import { getAgentDisplayName, isHumanWatchAgent } from '@/lib/agent-card-helpers'
+import { useNavigateToPanel } from '@/lib/navigation'
+import { useAgentCenterStore } from '@/store'
 
 const log = createClientLogger('AgentDetailTabs')
 
@@ -175,6 +177,8 @@ export function OverviewTab({
   onAgentSessionBound?: (sessionKey: string) => void
 }) {
   const t = useTranslations('agentDetail')
+  const navigateToPanel = useNavigateToPanel()
+  const setActiveConversation = useAgentCenterStore((s) => s.setActiveConversation)
   const [messageFrom, setMessageFrom] = useState('system')
   const [directMessage, setDirectMessage] = useState('')
   const [messageStatus, setMessageStatus] = useState<string | null>(null)
@@ -237,6 +241,7 @@ export function OverviewTab({
 
   const isManualSessionMode = sessionMode === 'manual'
   const isBackgroundSessionProvisioning = needsSessionProvision && !isManualSessionMode
+  const isStewardAgent = isHumanWatchAgent(agent)
 
   useEffect(() => {
     if (!isBackgroundSessionProvisioning || !agent.id || agent.session_key) return
@@ -333,7 +338,13 @@ export function OverviewTab({
       if (!response.ok) throw new Error(data.error || t('messageFailed'))
       setDirectMessage('')
       setMessageStatusKind('success')
-      setMessageStatus(data.accepted ? t('messageAccepted') : t('messageSent'))
+      if (data.delivered) {
+        setMessageStatus(t('messageDelivered'))
+      } else if (data.accepted) {
+        setMessageStatus(t('messageAccepted'))
+      } else {
+        setMessageStatus(t('messageSent'))
+      }
       if (data.session_key && onAgentSessionBound) {
         onAgentSessionBound(data.session_key)
       }
@@ -345,6 +356,16 @@ export function OverviewTab({
           'prompt_queued',
           data.agent_id ?? agent.id,
         )
+      }
+      const sessionKey = String(data.session_key || agent.session_key || '').trim()
+      const sessionKind = String(data.session_kind || '').trim()
+      if (isStewardAgent && sessionKey && sessionKind) {
+        setActiveConversation(`session:${sessionKind}:${sessionKey}`)
+        navigateToPanel('chat')
+        setMessageStatus(t('humanWatchOpenInChat'))
+      } else if (isStewardAgent && data.accepted && !sessionKey) {
+        setMessageStatusKind('info')
+        setMessageStatus(t('humanWatchMessageProvisioning'))
       }
       setTimeout(() => {
         setMessageStatus(null)
@@ -617,6 +638,9 @@ export function OverviewTab({
                     : t('sendMessagePlaceholder', { name: agent.name })
               }
             />
+            {isStewardAgent && (
+              <p className="text-[11px] text-cyan-200/80 leading-relaxed">{t('humanWatchChatHint')}</p>
+            )}
             {isBackgroundSessionProvisioning && (
               <p className="text-[11px] text-cyan-200/80 leading-relaxed">{t('sessionAutoProvisionHint')}</p>
             )}
@@ -1223,19 +1247,11 @@ export function CreateAgentModal({
     () => runtimeManagedParents.find((agent) => agent.framework === formData.framework),
     [runtimeManagedParents, formData.framework]
   )
-  const parentCandidates = useMemo(
-    () => existingAgents
-      .filter(
-        (agent) =>
-          !agent.hidden &&
-          agent.id !== Number(formData.id) &&
-          agent.framework === formData.framework &&
-          !isRuntimeManagedAgent(agent) &&
-          agent.role !== 'main-agent',
-      )
-      .sort((a, b) => a.name.localeCompare(b.name)),
-    [existingAgents, formData.framework, formData.id]
-  )
+  const mainRuntimeLabel = useMemo(() => {
+    if (selectedMainAgent) return getAgentDisplayName(selectedMainAgent)
+    const meta = getMainAgentRuntimeMeta(formData.framework)
+    return meta?.label || formData.framework
+  }, [selectedMainAgent, formData.framework])
 
   useEffect(() => {
     if (detectedRuntimeOptions.length === 0) return
@@ -1643,25 +1659,13 @@ export function CreateAgentModal({
                   />
                 </div>
                 <div>
-                   <label className="block text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1.5">{t('parentAgent')}</label>
-                   <select
-                     value={formData.parent_id || ''}
-                     onChange={(e) => setFormData(prev => ({ ...prev, parent_id: e.target.value || '' }))}
-                     className="w-full bg-surface-1 text-foreground border border-border rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-primary/20"
-                   >
-                     {parentCandidates.length === 0 ? (
-                       <option value="">{selectedMainAgent ? selectedMainAgent.name : 'No parent available'}</option>
-                     ) : (
-                       parentCandidates.map(a => (
-                         <option key={a.id} value={a.id}>
-                           {getAgentDisplayName(a)}
-                         </option>
-                       ))
-                     )}
-                   </select>
-                   <p className="mt-1 text-[10px] text-muted-foreground/60">
-                     Child agents are created under the selected main runtime family.
-                   </p>
+                  <label className="block text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1.5">
+                    {t('mainRuntimeFamily')}
+                  </label>
+                  <div className="w-full rounded-lg border border-border bg-surface-1/80 px-3 py-2.5 text-sm text-foreground">
+                    {mainRuntimeLabel}
+                  </div>
+                  <p className="mt-1 text-[10px] text-muted-foreground/60">{t('mainRuntimeFamilyHint')}</p>
                 </div>
               </div>
             </div>
@@ -1799,7 +1803,7 @@ export function CreateAgentModal({
 
                     <div className="grid grid-cols-2 gap-y-4 gap-x-8 pt-5 border-t border-border/40 text-xs">
                       <ReviewItem label={t('idLabel')} value={formData.id} mono />
-                      <ReviewItem label={t('parentAgent')} value={existingAgents.find(a => a.id === Number(formData.parent_id))?.name || selectedMainAgent?.name || 'Top Level'} />
+                      <ReviewItem label={t('mainRuntimeFamily')} value={mainRuntimeLabel} />
                       <ReviewItem label={t('model')} value={MODEL_TIER_LABELS[formData.modelTier]} />
                       <ReviewItem label={t('templateLabel')} value={selectedTemplateData?.label || t('custom')} />
                       {formData.workspace_path && (

@@ -45,6 +45,17 @@ function scheduleBroadcast(eventType: 'session.list.updated' | 'session.transcri
     setTimeout(() => {
       state.timers.delete(timerKey)
       eventBus.broadcast(eventType, payload)
+      if (eventType === 'session.transcript.updated') {
+        const sessionId = String(payload.sessionId || payload.sessionKey || '').trim()
+        const kind = payload.sessionKind
+        if (sessionId && kind) {
+          void import('./remote-server-bridge')
+            .then((mod) => mod.pushSessionTranscriptChangedToUpstream(kind, sessionId))
+            .catch(() => {
+              /* bridge optional */
+            })
+        }
+      }
     }, WATCH_DEBOUNCE_MS)
   )
 }
@@ -61,7 +72,7 @@ function emitTranscriptUpdate(
   source: SessionRealtimeSource,
   reason: string,
   sessionId?: string,
-  extras?: Pick<SessionRealtimePayload, 'pendingPrompt'>,
+  extras?: Pick<SessionRealtimePayload, 'pendingPrompt' | 'agentId'>,
 ) {
   scheduleBroadcast('session.transcript.updated', {
     source,

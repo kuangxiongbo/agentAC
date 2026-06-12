@@ -28,6 +28,7 @@ import {
   getAgentClientId,
   getAgentClientLabel,
   getFrameworkSectionLabel,
+  isHumanWatchAgent,
   isOperativeUserAgent,
   isRuntimeMainAnchorAgent,
 } from '@/lib/agent-card-helpers'
@@ -857,6 +858,7 @@ function AgentDetailModalPhase3({
   }
 
   const isOpenClaw = (agentState.framework || 'openclaw') === 'openclaw'
+  const isSteward = isHumanWatchAgent(agentState)
 
   const tabs = [
     { id: 'overview', label: t('overviewTab') },
@@ -868,10 +870,10 @@ function AgentDetailModalPhase3({
       { id: 'cron', label: t('cronTab') },
       { id: 'soul', label: t('soulTab') },
       { id: 'memory', label: t('memoryTab') },
-    ] : []),
+    ] : isSteward ? [{ id: 'soul', label: t('soulTab') }] : []),
     { id: 'tasks', label: t('tasksTab') },
     { id: 'config', label: t('configTab') },
-    { id: 'activity', label: t('activityTab') }
+    { id: 'activity', label: t('activityTab') },
   ]
 
   const handleDelete = async (removeWorkspace: boolean) => {
@@ -908,8 +910,13 @@ function AgentDetailModalPhase3({
             <div className="flex items-center gap-3 min-w-0">
               <AgentAvatar name={agent.name} size="md" />
               <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-lg font-semibold text-foreground leading-tight truncate">{agentState.name}</h3>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-lg font-semibold text-foreground leading-tight truncate">{getAgentDisplayName(agentState)}</h3>
+                  {isSteward ? (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full border bg-cyan-500/15 text-cyan-300 border-cyan-500/30 shrink-0">
+                      {t('humanWatchBadge')}
+                    </span>
+                  ) : null}
                   <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border ${statusBadgeStyles[agentState.status]}`}>
                     <span className={`w-1.5 h-1.5 rounded-full ${statusColors[agentState.status]}`} />
                     {t(agentState.status as 'idle' | 'busy' | 'offline' | 'error')}
@@ -921,7 +928,9 @@ function AgentDetailModalPhase3({
                   )}
                 </div>
                 <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-sm text-muted-foreground">{agentState.role}</span>
+                  <span className="text-sm text-muted-foreground">
+                    {isSteward ? t('humanWatchRoleLabel') : agentState.role}
+                  </span>
                   <span className="text-xs text-muted-foreground/60">·</span>
                   <span className="text-xs text-muted-foreground/60">{t('seenAgo', { time: formatLastSeen(agentState.last_seen) })}</span>
                 </div>
@@ -1288,7 +1297,11 @@ function AgentCardWithSubAgents({
   return (
     <div className="space-y-3">
       <div
-        className="group relative overflow-hidden rounded-xl border border-border/70 bg-card p-4 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-border hover:shadow-lg cursor-pointer"
+        className={`group relative overflow-hidden rounded-xl border bg-card p-4 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:shadow-lg cursor-pointer ${
+          isHumanWatchAgent(agent)
+            ? 'border-cyan-500/25 hover:border-cyan-500/40'
+            : 'border-border/70 hover:border-border'
+        }`}
         onClick={() => onSelect(agent)}
       >
         <div className={`pointer-events-none absolute inset-y-0 left-0 w-1 bg-gradient-to-b ${(statusCardStyles[agent.status] || defaultCardStyle).edge}`} />
@@ -1298,8 +1311,13 @@ function AgentCardWithSubAgents({
           <div className="flex items-center gap-2.5 min-w-0">
             <AgentAvatar name={displayName} size="md" />
             <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-wrap">
                 <h3 className="font-semibold text-foreground truncate text-sm">{displayName}</h3>
+                {isHumanWatchAgent(agent) && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded-full border bg-cyan-500/15 text-cyan-300 border-cyan-500/30 shrink-0">
+                    {t('humanWatchBadge')}
+                  </span>
+                )}
                 {getAgentSourceLabel(agent) && (
                   <span className={`text-[9px] px-1.5 py-0.5 rounded-full border ${
                     (agent as any).source === 'local'
@@ -1313,7 +1331,8 @@ function AgentCardWithSubAgents({
                 )}
               </div>
               <p className="text-[11px] text-muted-foreground truncate">
-                {agent.role}{modelName && <> · <span className="font-mono text-muted-foreground/60">{modelName}</span></>}
+                {isHumanWatchAgent(agent) ? t('humanWatchRoleLabel') : agent.role}
+                {modelName && <> · <span className="font-mono text-muted-foreground/60">{modelName}</span></>}
               </p>
             </div>
           </div>

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
-import { getRemoteBridgeStatus, startRemoteBridge, stopRemoteBridge, sendBridgeEvent } from '@/lib/remote-server-bridge'
+import { getRemoteBridgeStatus, startRemoteBridge, stopRemoteBridge, restartRemoteBridge, sendBridgeEvent } from '@/lib/remote-server-bridge'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -42,10 +42,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, message: 'Bridge stopped', bridge: getRemoteBridgeStatus() })
 
     case 'reconnect':
-      stopRemoteBridge()
-      // small delay so ws is fully closed before reconnecting
-      await new Promise(r => setTimeout(r, 500))
-      startRemoteBridge()
+      restartRemoteBridge()
+      await new Promise((r) => setTimeout(r, 800))
       return NextResponse.json({ ok: true, message: 'Bridge reconnecting', bridge: getRemoteBridgeStatus() })
 
     case 'status_push': {

@@ -1,6 +1,6 @@
 {
   "name": "mission-control",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "OpenClaw E-AgentCenter — open-source agent orchestration dashboard",
   "scripts": {
     "verify:node": "node scripts/check-node-version.mjs",
@@ -10,8 +10,13 @@
     "mc:mcp": "node scripts/mc-mcp-server.cjs",
     "mc:tui": "node scripts/mc-tui.cjs",
     "dev": "pnpm run verify:node && next dev --hostname 127.0.0.1 --port 5001",
+    "dev:restart": "bash scripts/dev-restart.sh",
+    "dev:stop": "bash scripts/dev-restart.sh --stop",
+    "prod:restart": "bash scripts/prod-restart.sh",
+    "prod:stop": "bash scripts/prod-restart.sh --stop",
+    "prod:build": "bash scripts/prod-restart.sh --build",
     "build": "pnpm run verify:node && next build",
-    "start": "pnpm run verify:node && next start --hostname 0.0.0.0 --port ${PORT:-3000}",
+    "start": "pnpm run verify:node && next start --hostname 0.0.0.0 --port ${PORT:-5101}",
     "start:standalone": "pnpm run verify:node && bash scripts/start-standalone.sh",
     "deploy:standalone": "pnpm run verify:node && bash scripts/deploy-standalone.sh",
     "lint": "pnpm run verify:node && eslint .",

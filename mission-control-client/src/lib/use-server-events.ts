@@ -141,6 +141,9 @@ export function useServerEvents() {
         case 'agent.status_changed':
           if (event.data?.id) {
             updateAgent(event.data.id, event.data)
+            if (typeof window !== 'undefined' && event.data.session_key) {
+              window.dispatchEvent(new CustomEvent(SESSION_LIST_UPDATED_EVENT))
+            }
           }
           break
 

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDatabase, db_helpers } from '@/lib/db'
-import { runOpenClaw } from '@/lib/command'
+import { getDatabase } from '@/lib/db'
 import { requireRole } from '@/lib/auth'
 import { validateBody, createMessageSchema } from '@/lib/validation'
 import { mutationLimiter } from '@/lib/rate-limit'
@@ -8,11 +7,12 @@ import { logger } from '@/lib/logger'
 import { scanForInjection } from '@/lib/injection-guard'
 import { scanForSecrets } from '@/lib/secret-scanner'
 import { logSecurityEvent } from '@/lib/security-events'
-import {
-  agentBlocksMessageUntilSessionReady,
-  enqueueBoundLocalAgentPrompt,
-  getLocalSessionKindForFramework,
-} from '@/lib/local-session-executor'
+import { deliverAgentMessage } from '@/lib/deliver-agent-message'
+import { assertLocalCliElevationAllowed } from '@/lib/local-cli-elevation-auth'
+import { isLocalCliElevatedFlag } from '@/lib/parse-local-cli-elevated'
+
+/** First message without a bound session may run Codex/Claude bootstrap. */
+export const maxDuration = 300
 
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'operator')
@@ -24,10 +24,21 @@ export async function POST(request: NextRequest) {
   try {
     const result = await validateBody(request, createMessageSchema)
     if ('error' in result) return result.error
-    const { to, message } = result.data
+    const { to, message, local_cli_elevated: localCliElevatedRaw } = result.data
     const from = auth.user.display_name || auth.user.username || 'system'
+    const localCliElevated = isLocalCliElevatedFlag(localCliElevatedRaw)
+    const elevationGate = await assertLocalCliElevationAllowed({ elevated: localCliElevated })
+    if (!elevationGate.ok) {
+      return NextResponse.json(
+        {
+          error: elevationGate.error,
+          code: elevationGate.code,
+          subscriptionsUrl: elevationGate.subscriptionsUrl,
+        },
+        { status: elevationGate.status }
+      )
+    }
 
-    // Scan message for injection — this gets forwarded directly to an agent
     const injectionReport = scanForInjection(message, { context: 'prompt' })
     if (!injectionReport.safe) {
       const criticals = injectionReport.matches.filter(m => m.severity === 'critical')
@@ -53,71 +64,27 @@ export async function POST(request: NextRequest) {
     if (!agent) {
       return NextResponse.json({ error: 'Recipient agent not found' }, { status: 404 })
     }
-    const localSessionKind = getLocalSessionKindForFramework(agent.framework)
-    if (!agent.session_key && !localSessionKind) {
-      return NextResponse.json(
-        { error: 'Recipient agent has no session key configured' },
-        { status: 400 }
-      )
-    }
 
-    if (agentBlocksMessageUntilSessionReady(agent)) {
-      return NextResponse.json(
-        { error: 'Create and bind a dedicated session before sending messages to this agent.' },
-        { status: 409 }
-      )
-    }
-
-    let localSessionKey: string | null = null
-    let queuedPrompt: string | null = null
-    let queuedSessionKind: string | null = null
-
-    if (localSessionKind) {
-      queuedPrompt = `Message from ${from}: ${message}`
-      const queued = enqueueBoundLocalAgentPrompt(agent, queuedPrompt)
-      localSessionKey = queued.sessionKey
-      queuedSessionKind = queued.kind
-    } else {
-      await runOpenClaw(
-        [
-          'gateway',
-          'sessions_send',
-          '--session',
-          agent.session_key,
-          '--message',
-          `Message from ${from}: ${message}`
-        ],
-        { timeoutMs: 10000 }
-      )
-    }
-
-    db_helpers.createNotification(
-      to,
-      'message',
-      'Direct Message',
-      `${from}: ${message.substring(0, 200)}${message.length > 200 ? '...' : ''}`,
-      'agent',
-      agent.id,
-      workspaceId
-    )
-
-    db_helpers.logActivity(
-      'agent_message',
-      'agent',
-      agent.id,
+    const delivered = await deliverAgentMessage({
+      agent,
+      message,
       from,
-      `Sent message to ${to}`,
-      { to },
-      workspaceId
-    )
+      workspaceId,
+      localCliElevated,
+    })
+    if (!delivered.ok) {
+      return NextResponse.json({ error: delivered.error }, { status: delivered.status })
+    }
 
     return NextResponse.json({
       success: true,
-      accepted: Boolean(localSessionKind),
-      agent_id: agent.id,
-      ...(localSessionKey ? { session_key: localSessionKey } : {}),
-      ...(queuedSessionKind ? { session_kind: queuedSessionKind } : {}),
-      ...(queuedPrompt ? { queued_prompt: queuedPrompt } : {}),
+      accepted: delivered.accepted,
+      delivered: delivered.delivered,
+      agent_id: delivered.agent_id,
+      ...(delivered.session_key ? { session_key: delivered.session_key } : {}),
+      ...(delivered.session_kind ? { session_kind: delivered.session_kind } : {}),
+      ...(delivered.queued_prompt ? { queued_prompt: delivered.queued_prompt } : {}),
+      ...(delivered.reply_preview ? { reply_preview: delivered.reply_preview } : {}),
     })
   } catch (error) {
     logger.error({ err: error }, 'POST /api/agents/message error')

@@ -46,6 +46,7 @@ vi.mock('@/lib/command', () => ({
 
 vi.mock('@/lib/codex-sessions', () => ({
   scanCodexSessions,
+  invalidateCodexSessionScan: vi.fn(),
 }))
 
 const findClaudeSessionProjectPath = vi.fn()
@@ -58,6 +59,7 @@ vi.mock('@/lib/claude-sessions', () => ({
   findClaudeSessionFilePath,
   readLastClaudeSessionReply,
   syncClaudeSessions,
+  invalidateClaudeSessionSync: vi.fn(),
 }))
 
 vi.mock('@/lib/db', () => ({
@@ -342,14 +344,30 @@ describe('local-session-executor', () => {
   })
 
   it('auto provisions codex and binds the detected new session id', async () => {
-    scanCodexSessions
-      .mockReturnValueOnce([
-        { sessionId: 'old-session', projectPath: '/tmp', lastMessageAt: new Date(Date.now() - 60000).toISOString() },
-      ])
-      .mockReturnValueOnce([
-        { sessionId: 'new-session', projectPath: '/tmp', lastMessageAt: new Date().toISOString() },
-      ])
-    runCommand.mockResolvedValue({ stdout: '{"text":"codex-new-reply"}', stderr: '', code: 0 })
+    const dedicatedCwd = expect.stringMatching(/agent-11|agent-sessions\/11/)
+    let scanPass = 0
+    scanCodexSessions.mockImplementation(() => {
+      scanPass += 1
+      if (scanPass === 1) {
+        return [{
+          sessionId: 'old-session',
+          projectPath: '/tmp',
+          firstMessageAt: new Date(Date.now() - 60000).toISOString(),
+          lastMessageAt: new Date(Date.now() - 60000).toISOString(),
+        }]
+      }
+      return [{
+        sessionId: 'new-session',
+        projectPath: '/tmp',
+        firstMessageAt: new Date().toISOString(),
+        lastMessageAt: new Date().toISOString(),
+      }]
+    })
+    runCommand.mockResolvedValue({
+      stdout: '{"type":"thread.started","thread_id":"new-session"}\n{"type":"item.completed","item":{"text":"codex-new-reply"}}',
+      stderr: '',
+      code: 0,
+    })
     agentRow = {
       id: 11,
       name: 'backend',
@@ -372,7 +390,7 @@ describe('local-session-executor', () => {
       1,
       codexBin,
       ['exec', expect.stringContaining('Now respond to the following user message in character:'), '--skip-git-repo-check', '--json', '-o', expect.stringMatching(/^\/tmp\/mc-codex-start-/)],
-      cmdOpts({ cwd: '/tmp' }),
+      cmdOpts({ cwd: dedicatedCwd }),
     )
     expect(result.sessionId).toBe('new-session')
     expect(runUpdate).toHaveBeenLastCalledWith(
@@ -460,15 +478,38 @@ describe('local-session-executor', () => {
   })
 
   it('does not pick codex sessions reserved by other agents when auto provisioning', async () => {
-    const now = Date.now()
     otherAgentsSessionKeys = [{ session_key: 'taken-session' }]
-    scanCodexSessions
-      .mockReturnValueOnce([{ sessionId: 'old-session', projectPath: '/tmp', lastMessageAt: new Date(now - 60000).toISOString() }])
-      .mockReturnValue([
-        { sessionId: 'taken-session', projectPath: '/tmp', lastMessageAt: new Date(now + 1000).toISOString() },
-        { sessionId: 'free-session', projectPath: '/tmp', lastMessageAt: new Date(now + 2000).toISOString() },
-      ])
-    runCommand.mockResolvedValue({ stdout: '{"text":"codex-new-reply"}', stderr: '', code: 0 })
+    let scanPass = 0
+    scanCodexSessions.mockImplementation(() => {
+      scanPass += 1
+      if (scanPass === 1) {
+        return [{
+          sessionId: 'old-session',
+          projectPath: '/tmp',
+          firstMessageAt: new Date(Date.now() - 60000).toISOString(),
+          lastMessageAt: new Date(Date.now() - 60000).toISOString(),
+        }]
+      }
+      return [
+        {
+          sessionId: 'taken-session',
+          projectPath: '/tmp',
+          firstMessageAt: new Date().toISOString(),
+          lastMessageAt: new Date().toISOString(),
+        },
+        {
+          sessionId: 'free-session',
+          projectPath: '/tmp',
+          firstMessageAt: new Date().toISOString(),
+          lastMessageAt: new Date().toISOString(),
+        },
+      ]
+    })
+    runCommand.mockResolvedValue({
+      stdout: '{"type":"thread.started","thread_id":"free-session"}\n{"type":"item.completed","item":{"text":"codex-new-reply"}}',
+      stderr: '',
+      code: 0,
+    })
     agentRow = {
       id: 12,
       name: 'worker',

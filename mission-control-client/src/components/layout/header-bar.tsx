@@ -11,8 +11,10 @@ import { Button } from '@/components/ui/button'
 import { ThemeSelector } from '@/components/ui/theme-selector'
 import { LanguageSwitcher } from '@/components/ui/language-switcher'
 import { DigitalClock } from '@/components/ui/digital-clock'
+import { EdgeDownloadHeaderButton, EdgeDownloadTooltipLink } from '@/components/edge/edge-download-link'
 import { getNavigationMetrics, navigationMetricEventName } from '@/lib/navigation-metrics'
 import { useBridgeStatus } from '@/lib/use-bridge-status'
+import { useEdgeDownloadHref } from '@/lib/use-edge-download-href'
 
 interface SearchResult {
   type: string
@@ -49,6 +51,7 @@ export function HeaderBar() {
   const navigateToPanel = useNavigateToPanel()
   const prefetchPanel = usePrefetchPanel()
   const th = useTranslations('header')
+  const edgeDownloadHref = useEdgeDownloadHref()
 
   const activeSessions = sessions.filter(s => s.active).length
 
@@ -364,6 +367,8 @@ export function HeaderBar() {
             <SearchIcon />
           </Button>
 
+          <EdgeDownloadHeaderButton href={edgeDownloadHref} />
+
           <Button
             variant="ghost"
             size="icon-sm"
@@ -469,6 +474,7 @@ function ModeBadge({
   const tg = useTranslations('gatewayFloater')
   const navigateToPanel = useNavigateToPanel()
   const isLocal = dashboardMode === 'local'
+  const edgeDownloadHref = useEdgeDownloadHref()
   const [showTooltip, setShowTooltip] = useState(false)
   const { bridge, state: bridgeState, host: bridgeHost, reconnecting, reconnect } = useBridgeStatus(4000, isLocal)
 
@@ -592,6 +598,7 @@ function ModeBadge({
                 </button>
               </div>
             )}
+            <EdgeDownloadTooltipLink href={edgeDownloadHref} />
           </div>
         )}
       </div>
@@ -686,6 +693,7 @@ function ModeBadge({
               {th('clickToReconnect')}
             </div>
           )}
+          <EdgeDownloadTooltipLink href={edgeDownloadHref} />
         </div>
       )}
     </div>

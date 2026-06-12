@@ -13,6 +13,7 @@ import {
   getMainAgentRuntimeMeta,
   MAIN_AGENT_RUNTIME_ORDER,
 } from '@/lib/runtime-agents'
+import { findAgentBoundToSessionRecord, getAgentDisplayName } from '@/lib/agent-card-helpers'
 import { isHumanWatchAgent } from '@/lib/human-watch-helpers'
 
 const log = createClientLogger('ConversationList')
@@ -23,6 +24,7 @@ type RuntimeGroup = 'claude' | 'codex' | 'openclaw' | 'cursor' | 'opencode' | 'h
 type SessionRecord = {
   id: string
   key?: string
+  sessionId?: string
   agent?: string
   kind?: string
   source?: string
@@ -90,6 +92,7 @@ function readSessions(payload: unknown): SessionRecord[] {
       lastActivity: readNumber(session?.lastActivity),
       workingDir: typeof session?.workingDir === 'string' || session?.workingDir === null ? session.workingDir : undefined,
       lastUserPrompt: typeof session?.lastUserPrompt === 'string' || session?.lastUserPrompt === null ? session.lastUserPrompt : undefined,
+      sessionId: readString(session?.sessionId),
     }]
   })
 }
@@ -150,6 +153,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
     agents,
   } = useAgentCenterStore()
 
+  /** 值守 Agent 专用会话：不在聊天列表展示（判官内部会话） */
   const hiddenStewardSessionIds = useMemo(() => {
     const ids = new Set<string>()
     for (const agent of agents) {
@@ -305,9 +309,17 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
           const kindLabel = runtimeMeta?.label || 'Other'
           const prefKey = `${sessionKind}:${s.id}`
           const pref = prefs[prefKey] || {}
-          const defaultName = s.source === 'local'
-            ? `${kindLabel} • ${s.key || s.id}`
-            : `${s.agent || kindLabel} • ${s.key || s.id}`
+          const boundAgent = findAgentBoundToSessionRecord(agents, {
+            id: s.id,
+            sessionId: s.sessionId,
+            key: s.key,
+          })
+          const agentLabel = boundAgent ? getAgentDisplayName(boundAgent) : null
+          const defaultName = agentLabel
+            ? `${kindLabel} • ${agentLabel}`
+            : s.source === 'local'
+              ? `${kindLabel} • ${s.key || s.id}`
+              : `${s.agent || kindLabel} • ${s.key || s.id}`
           const sessionName = pref.name || defaultName
           const displayModel =
             s.model && s.model.trim() && s.model.toLowerCase() !== 'unknown' ? s.model : null
@@ -349,7 +361,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
           }
         })
         .sort((a: Conversation, b: Conversation) => b.updatedAt - a.updatedAt)
-  }, [])
+  }, [agents])
 
   const loadConversations = useCallback(async (options?: { append?: boolean; refresh?: boolean }) => {
     const append = options?.append === true

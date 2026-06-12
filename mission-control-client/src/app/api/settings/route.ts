@@ -32,6 +32,18 @@ const settingDefinitions: Record<string, { category: string; description: string
   'gateway.client_name': { category: 'gateway', description: 'Client prefix used when syncing local agents to the remote server', default: 'LocalClient' },
   'gateway.token': { category: 'gateway', description: 'API key used for upstream E-Agent-Client sync', default: '' },
 
+  // Edge tray (E-Agent Edge)
+  'edge.enroll_token': {
+    category: 'edge',
+    description: 'Enterprise enroll token for E-Agent Edge tray first-run bootstrap (defaults to gateway.token)',
+    default: '',
+  },
+  'edge.enterprise_name': { category: 'edge', description: 'Enterprise display name from center bootstrap', default: '' },
+  'edge.enterprise_slug': { category: 'edge', description: 'Enterprise slug from center bootstrap', default: '' },
+  'edge.hostname': { category: 'edge', description: 'OS hostname recorded at edge enroll', default: '' },
+  'edge.enrolled_at': { category: 'edge', description: 'Unix timestamp when edge enrolled', default: '' },
+  'edge.tenant_id': { category: 'edge', description: 'Tenant id from center bootstrap', default: '' },
+
   // Chat
   'chat.coordinator_target_agent': {
     category: 'chat',

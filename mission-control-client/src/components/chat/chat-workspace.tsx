@@ -6,13 +6,16 @@ import { useAgentCenterStore, type Conversation, type ChatAttachment } from '@/s
 import { useSmartPoll } from '@/lib/use-smart-poll'
 import { createClientLogger } from '@/lib/client-logger'
 import {
+  SESSION_LIST_UPDATED_EVENT,
   SESSION_TRANSCRIPT_UPDATED_EVENT,
   sessionKindFromSource,
   type SessionRealtimePayload,
 } from '@/lib/session-realtime-events'
+import { Loader } from '@/components/ui/loader'
 import { ConversationList } from './conversation-list'
 import { MessageList } from './message-list'
 import { ChatInput } from './chat-input'
+import { LocalCliElevationButton } from './local-cli-elevation-button'
 import { Button } from '@/components/ui/button'
 import {
   SessionMessage,
@@ -191,7 +194,11 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
   }, [isOverlay, onClose])
 
   // Send message handler with optimistic updates
-  const handleSend = async (content: string, attachments?: ChatAttachment[]) => {
+  const handleSend = async (
+    content: string,
+    attachments?: ChatAttachment[],
+    options?: { localCliElevated?: boolean },
+  ) => {
     if (!activeConversation) return
 
     const mentionMatch = content.match(/^@(\w+)\s/)
@@ -232,6 +239,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
           message_type: 'text',
           attachments,
           forward: true,
+          ...(options?.localCliElevated ? { local_cli_elevated: true } : {}),
         }),
       })
 
@@ -640,6 +648,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
               <SessionConversationView
                 key={activeConversation}
                 session={selectedConversation.session}
+                seedUserPrompt={selectedConversation.lastMessage?.content}
                 messages={sessionTranscript}
                 loading={sessionTranscriptLoading}
                 error={sessionTranscriptError}
@@ -669,8 +678,103 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
   )
 }
 
+function ProvisioningSessionView({
+  agentId,
+  sessionKind,
+  displayName,
+  agents,
+  setActiveConversation,
+  updateAgent,
+  initialPendingLine,
+}: {
+  agentId: number
+  sessionKind: NonNullable<Conversation['session']>['sessionKind']
+  displayName: string
+  agents: ReturnType<typeof useAgentCenterStore.getState>['agents']
+  setActiveConversation: (id: string | null) => void
+  updateAgent: (agentId: number, updates: Partial<(typeof agents)[number]>) => void
+  initialPendingLine?: string | null
+}) {
+  const t = useTranslations('chat')
+  const [errorText, setErrorText] = useState<string | null>(null)
+  const [pendingLine, setPendingLine] = useState<string | null>(initialPendingLine?.trim() || null)
+  const agent = agents.find((row) => row.id === agentId)
+
+  useEffect(() => {
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/agents/${agentId}`)
+        if (!response.ok || cancelled) return
+        const data = await response.json()
+        const row = data?.agent
+        const nextKey = String(row?.session_key || '').trim()
+        const cfg = row?.config && typeof row.config === 'object' ? row.config as Record<string, unknown> : {}
+        const err = String(cfg.last_session_error || cfg.session_bootstrap_error || '').trim()
+        if (err) setErrorText(err)
+        if (nextKey) {
+          updateAgent(agentId, { session_key: nextKey, status: row?.status || 'idle' })
+          setActiveConversation(`session:${sessionKind}:${nextKey}`)
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent(SESSION_LIST_UPDATED_EVENT))
+          }
+        }
+      } catch {
+        // ignore transient poll errors
+      }
+    }
+
+    void poll()
+    const timer = setInterval(() => void poll(), 2000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [agentId, sessionKind, setActiveConversation, updateAgent])
+
+  useEffect(() => {
+    if (initialPendingLine?.trim()) {
+      setPendingLine(initialPendingLine.trim())
+    }
+  }, [initialPendingLine])
+
+  useEffect(() => {
+    const handleTranscriptUpdated = (rawEvent: Event) => {
+      const detail = (rawEvent as CustomEvent<SessionRealtimePayload | undefined>).detail
+      if (detail?.agentId !== agentId) return
+      if (detail.pendingPrompt?.trim()) {
+        setPendingLine(detail.pendingPrompt.trim())
+      }
+      if (detail.reason === 'prompt_failed') {
+        setErrorText((prev) => prev || t('provisioningSessionFailed', { error: 'background prompt failed' }))
+      }
+    }
+    window.addEventListener(SESSION_TRANSCRIPT_UPDATED_EVENT, handleTranscriptUpdated)
+    return () => window.removeEventListener(SESSION_TRANSCRIPT_UPDATED_EVENT, handleTranscriptUpdated)
+  }, [agentId, t])
+
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+      <Loader variant="inline" label={t('provisioningSessionTitle')} />
+      <div className="text-sm font-medium text-foreground">{displayName || agent?.name}</div>
+      <p className="max-w-md text-xs text-muted-foreground">{t('provisioningSessionHint')}</p>
+      {pendingLine && (
+        <p className="max-w-lg truncate text-xs text-muted-foreground" title={pendingLine}>
+          {pendingLine}
+        </p>
+      )}
+      {errorText && (
+        <p className="max-w-md text-xs text-destructive">
+          {t('provisioningSessionFailed', { error: errorText })}
+        </p>
+      )}
+    </div>
+  )
+}
+
 function SessionConversationView({
   session,
+  seedUserPrompt,
   messages,
   loading,
   error,
@@ -681,6 +785,7 @@ function SessionConversationView({
   onSavePreferences,
 }: {
   session: NonNullable<Conversation['session']>
+  seedUserPrompt?: string
   messages: SessionTranscriptMessage[]
   loading: boolean
   error: string | null
@@ -691,7 +796,21 @@ function SessionConversationView({
   onSavePreferences: (payload: { prefKey: string; displayName?: string; colorTag?: string }) => Promise<void>
 }) {
   const t = useTranslations('chat')
-  const { centralMode, agents: storeAgents } = useAgentCenterStore()
+  const { centralMode, agents: storeAgents, setActiveConversation, updateAgent } = useAgentCenterStore()
+
+  if (session.provisioning && session.boundAgentId != null) {
+    return (
+      <ProvisioningSessionView
+        agentId={session.boundAgentId}
+        sessionKind={session.sessionKind}
+        displayName={session.displayName || ''}
+        agents={storeAgents}
+        setActiveConversation={setActiveConversation}
+        updateAgent={updateAgent}
+        initialPendingLine={seedUserPrompt}
+      />
+    )
+  }
   const [bindAgentName, setBindAgentName] = useState('')
   const isGatewaySession = session.sessionKind === 'gateway'
   const isRemoteEdgeSession = Boolean(session.nodeId)
@@ -703,6 +822,7 @@ function SessionConversationView({
   const stickToBottomRef = useRef(true)
   const [showNewTranscript, setShowNewTranscript] = useState(false)
   const [continuePrompt, setContinuePrompt] = useState('')
+  const [continueElevated, setContinueElevated] = useState(false)
   const [continueBusy, setContinueBusy] = useState(false)
   const [awaitingReplySeconds, setAwaitingReplySeconds] = useState(0)
   const [continueError, setContinueError] = useState<string | null>(null)
@@ -746,6 +866,13 @@ function SessionConversationView({
 
   const sessionMatchesRealtimeEvent = useCallback((detail?: SessionRealtimePayload) => {
     if (shouldRefreshSelectedSession(session, detail)) return true
+    if (
+      detail?.agentId != null &&
+      session.boundAgentId != null &&
+      detail.agentId === session.boundAgentId
+    ) {
+      return true
+    }
     if (detail?.agentId != null && linkedAgents.some((agent) => agent.id === detail.agentId)) {
       return true
     }
@@ -1037,6 +1164,8 @@ function SessionConversationView({
     setPendingUserMessage(optimisticUser)
     transcriptBaselineRef.current = messages.length
     setContinuePrompt('')
+    const elevatedForTurn = continueElevated
+    setContinueElevated(false)
     stickToBottomRef.current = true
     setContinueBusy(true)
     setContinueError(null)
@@ -1056,6 +1185,7 @@ function SessionConversationView({
             message_type: 'text',
             forward: true,
             sessionKey: session.sessionKey || undefined,
+            ...(elevatedForTurn ? { local_cli_elevated: true } : {}),
           }),
         })
         const data = await res.json().catch(() => ({}))
@@ -1083,6 +1213,7 @@ function SessionConversationView({
             prompt,
             ...(session.nodeId ? { client_id: session.nodeId } : {}),
             ...(session.workingDir ? { working_dir: session.workingDir } : {}),
+            ...(elevatedForTurn ? { local_cli_elevated: true } : {}),
           }),
         })
         const data = await res.json().catch(() => ({}))
@@ -1495,6 +1626,14 @@ function SessionConversationView({
             disabled={needsEdgeClientForContinue || continueBusy || backgroundPromptBusy}
             className="h-7 flex-1 rounded border border-border/40 bg-surface-1 px-2 font-mono-tight text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-50"
           />
+          {!isGatewaySession && (
+            <LocalCliElevationButton
+              elevated={continueElevated}
+              onElevatedChange={setContinueElevated}
+              disabled={needsEdgeClientForContinue || continueBusy || backgroundPromptBusy}
+              size="sm"
+            />
+          )}
           <Button
             onClick={handleContinueSession}
             size="sm"
@@ -1643,11 +1782,6 @@ function shouldRefreshSelectedSession(
     && detail.sessionId
     && detail.sessionId !== session.sessionId
   ) {
-    return false
-  }
-
-  // Agent-only events (no session id yet) are matched via linkedAgents in the chat view.
-  if (!detail.sessionId && !detail.sessionKey && detail.agentId != null) {
     return false
   }
 

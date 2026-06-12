@@ -1,20 +1,29 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import {
   findClaudeSessionFilePath,
   findClaudeSessionProjectPath,
+  invalidateClaudeSessionSync,
   readLastClaudeSessionReply,
   syncClaudeSessions,
 } from './claude-sessions'
 import { invalidateMergedSessionsCache } from './sessions-list-cache'
 import { invalidateCodexSessionScan, scanCodexSessions } from './codex-sessions'
 import { runCommand } from './command'
+import { config } from './config'
 import { getDatabase } from './db'
 import { logger } from './logger'
 import { eventBus } from './event-bus'
 import { notifySessionTranscriptUpdated } from './session-realtime'
+import { sessionSourceFromKind } from './session-realtime-events'
+import {
+  buildLocalCliOperatingRules,
+  resolveLocalCliPermissionMode,
+  withLocalCliPermissionArgs,
+  type LocalCliPermissionMode,
+} from './local-cli-permission'
 
 export type LocalSessionKind = 'claude-code' | 'codex-cli' | 'cursor' | 'opencode' | 'hermes'
 
@@ -43,6 +52,8 @@ export interface LocalPromptEnqueueResult {
 
 interface LocalSessionExecutionOptions {
   workingDirectory?: string | null
+  permissionMode?: LocalCliPermissionMode | null
+  agent?: LocalRuntimeAgentRef | null
 }
 
 export interface LocalRuntimeAgentRef {
@@ -222,6 +233,43 @@ export function getLocalRuntimeWorkingDirectory(input: {
   return undefined
 }
 
+/**
+ * Per-agent Codex cwd so `codex exec` does not resume the latest thread in a shared repo
+ * (e.g. an existing "test" session). Persisted on bind as mc_session_project_path.
+ */
+function ensureDedicatedAgentWorkingDirectory(agent: LocalRuntimeAgentRef): string {
+  const parsed = getParsedLocalAgentSessionConfig(agent)
+  const stored = resolveWorkingDirectory(parsed.rawConfig.mc_session_project_path)
+  const existingKey = getExistingAgentSessionKey(agent)
+  if (stored && existingKey) {
+    return stored
+  }
+
+  const agentId = typeof agent.id === 'number' && Number.isFinite(agent.id) ? agent.id : null
+  const slug = (asTrimmedString(agent.name) || 'agent')
+    .replace(/[^\w\u4e00-\u9fff-]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'agent'
+  const workspaceBase = getLocalRuntimeWorkingDirectory(agent)
+  const root = workspaceBase
+    ? path.join(workspaceBase, '.e-agent', agentId != null ? `agent-${agentId}` : slug)
+    : path.join(config.homeDir, '.e-agent-client', 'agent-sessions', agentId != null ? String(agentId) : slug)
+
+  mkdirSync(root, { recursive: true })
+  return root
+}
+
+function resolveCodexWorkingDirectoryForAgent(agent: LocalRuntimeAgentRef): string {
+  const sessionKey = getExistingAgentSessionKey(agent)
+  if (sessionKey) {
+    return (
+      resolveLocalExecutionWorkingDirectory('codex-cli', sessionKey, agent)
+      || ensureDedicatedAgentWorkingDirectory(agent)
+    )
+  }
+  return ensureDedicatedAgentWorkingDirectory(agent)
+}
+
 /** Claude `--resume` only works from the project cwd where the session JSONL was created. */
 export function resolveLocalExecutionWorkingDirectory(
   kind: LocalSessionKind,
@@ -281,8 +329,14 @@ function codexSessionMatchesWorkspace(
   workingDirectory: string | undefined,
 ): boolean {
   if (!workingDirectory) return true
-  if (!session.projectPath) return false
-  return path.resolve(session.projectPath) === path.resolve(workingDirectory)
+  if (!session.projectPath) return true
+  const sessionPath = path.resolve(session.projectPath)
+  const cwd = path.resolve(workingDirectory)
+  if (sessionPath === cwd) return true
+  // Codex often records the git/repo root while we exec from `.e-agent/agent-{id}`.
+  if (cwd.startsWith(sessionPath + path.sep)) return true
+  if (sessionPath.startsWith(cwd + path.sep)) return true
+  return false
 }
 
 function validateAgentSessionBinding(
@@ -328,14 +382,12 @@ function pickNewCodexSessionId(input: {
   const candidate = detected.find((session) => {
     if (input.knownSessionIds.has(session.sessionId)) return false
     if (input.reservedSessionKeys.has(session.sessionId)) return false
-    if (!session.lastMessageAt) return false
+    if (!session.lastMessageAt || !session.firstMessageAt) return false
     const lastMessageAt = new Date(session.lastMessageAt).getTime()
+    const firstMessageAt = new Date(session.firstMessageAt).getTime()
     if (lastMessageAt < input.startedAt - 5_000) return false
-    if (
-      input.workingDirectory &&
-      session.projectPath &&
-      path.resolve(session.projectPath) !== path.resolve(input.workingDirectory)
-    ) {
+    if (firstMessageAt < input.startedAt - 5_000) return false
+    if (!codexSessionMatchesWorkspace(session, input.workingDirectory || undefined)) {
       return false
     }
     return true
@@ -408,9 +460,13 @@ function buildAgentRoleDefinition(agent: LocalRuntimeAgentRef | null | undefined
   return result || null
 }
 
-function buildSessionRolePreamble(agent: LocalRuntimeAgentRef): string | null {
+function buildSessionRolePreamble(
+  agent: LocalRuntimeAgentRef,
+  permissionMode?: LocalCliPermissionMode,
+): string | null {
   const roleDefinition = buildAgentRoleDefinition(agent)
   if (!roleDefinition) return null
+  const mode = permissionMode ?? resolveLocalCliPermissionMode(agent)
 
   return [
     'E-Agent-Client dedicated-session setup.',
@@ -419,16 +475,16 @@ function buildSessionRolePreamble(agent: LocalRuntimeAgentRef): string | null {
     '',
     roleDefinition,
     '',
-    'Operating rules:',
-    '1. Stay within this role and its scope.',
-    '2. Keep responses aligned with the role definition unless a higher-priority system instruction overrides it.',
-    '3. If a request conflicts with the role, explain the conflict instead of silently changing identity.',
+    ...buildLocalCliOperatingRules(mode),
   ].join('\n')
 }
 
 /** Standalone bootstrap (e.g. role refresh without a user turn). */
-function buildSessionBootstrapPrompt(agent: LocalRuntimeAgentRef): string | null {
-  const preamble = buildSessionRolePreamble(agent)
+function buildSessionBootstrapPrompt(
+  agent: LocalRuntimeAgentRef,
+  permissionMode?: LocalCliPermissionMode,
+): string | null {
+  const preamble = buildSessionRolePreamble(agent, permissionMode)
   if (!preamble) return null
 
   return [
@@ -443,8 +499,9 @@ function buildSessionBootstrapPrompt(agent: LocalRuntimeAgentRef): string | null
 function buildSessionBootstrapWithUserPrompt(
   agent: LocalRuntimeAgentRef,
   userPrompt: string,
+  permissionMode?: LocalCliPermissionMode,
 ): string | null {
-  const preamble = buildSessionRolePreamble(agent)
+  const preamble = buildSessionRolePreamble(agent, permissionMode)
   if (!preamble) return null
 
   return [
@@ -517,6 +574,35 @@ function getFreshAgentRecord(agent: LocalRuntimeAgentRef): LocalRuntimeAgentRef 
   }
 }
 
+function notifyLocalSessionVisibility(
+  kind: LocalSessionKind,
+  sessionId: string | null | undefined,
+  reason: string,
+  agentId?: number | null,
+) {
+  if (kind === 'codex-cli') {
+    invalidateCodexSessionScan()
+  }
+  if (kind === 'claude-code') {
+    invalidateClaudeSessionSync()
+  }
+  invalidateMergedSessionsCache()
+  const source = sessionSourceFromKind(kind)
+  if (source) {
+    eventBus.broadcast('session.list.updated', {
+      source,
+      sessionKind: kind,
+      sessionId: sessionId || undefined,
+      sessionKey: sessionId || undefined,
+      reason,
+      ...(agentId != null ? { agentId } : {}),
+    })
+  }
+  notifySessionTranscriptUpdated(kind, sessionId || '', reason, {
+    ...(agentId != null ? { agentId } : {}),
+  })
+}
+
 function persistAgentSessionBinding(
   agent: LocalRuntimeAgentRef,
   input: {
@@ -581,6 +667,12 @@ function persistAgentSessionBinding(
         session_key: nextSessionKey,
         session_state: input.state,
       })
+      if (nextSessionKey) {
+        const kind = getLocalSessionKindForFramework(fresh.framework)
+        if (kind) {
+          notifyLocalSessionVisibility(kind, nextSessionKey, 'session_bound', agent.id)
+        }
+      }
     }
   } catch (error) {
     logger.warn({ err: error, agentId: agent.id }, 'Failed to persist agent session binding')
@@ -728,12 +820,30 @@ function isIgnorableCodexStderr(stderr: string): boolean {
   )
 }
 
+function resolveExecutionPermissionMode(options: LocalSessionExecutionOptions): LocalCliPermissionMode {
+  return resolveLocalCliPermissionMode(options.agent, options.permissionMode)
+}
+
+function buildAgentExecutionOptions(
+  agent: LocalRuntimeAgentRef,
+  workingDirectory?: string,
+): LocalSessionExecutionOptions {
+  const permissionMode = resolveLocalCliPermissionMode(agent)
+  return {
+    workingDirectory,
+    permissionMode,
+    agent,
+  }
+}
+
 async function runCodexExecCommand(
   args: string[],
   options: LocalSessionExecutionOptions,
 ): Promise<{ stdout: string; stderr: string }> {
+  const permissionMode = resolveExecutionPermissionMode(options)
+  const finalArgs = withLocalCliPermissionArgs('codex', args, permissionMode)
   try {
-    const result = await runCommand(resolveCodexBin(), args, buildCommandOptions(options))
+    const result = await runCommand(resolveCodexBin(), finalArgs, buildCommandOptions(options))
     return { stdout: result.stdout, stderr: result.stderr }
   } catch (error: unknown) {
     const err = error as { stdout?: string; stderr?: string; message?: string }
@@ -870,7 +980,8 @@ async function bootstrapAgentSession(
   roleHash: string | null,
   workingDirectory?: string,
 ): Promise<void> {
-  const bootstrapPrompt = buildSessionBootstrapPrompt(agent)
+  const permissionMode = resolveLocalCliPermissionMode(agent)
+  const bootstrapPrompt = buildSessionBootstrapPrompt(agent, permissionMode)
   if (!bootstrapPrompt || !roleHash) {
     persistAgentSessionBinding(agent, {
       sessionKey: sessionId,
@@ -897,7 +1008,7 @@ async function bootstrapAgentSession(
   })
 
   try {
-    await executeLocalSessionPrompt(kind, sessionId, bootstrapPrompt, { workingDirectory })
+    await executeLocalSessionPrompt(kind, sessionId, bootstrapPrompt, buildAgentExecutionOptions(agent, workingDirectory))
     persistAgentSessionBinding(agent, {
       sessionKey: sessionId,
       state: 'ready',
@@ -929,7 +1040,13 @@ const LOCAL_RUNTIME_EXECUTORS: Record<LocalSessionKind, LocalRuntimeExecutorAdap
     frameworks: ['claude', 'claude-code', 'claude-sdk'],
     async execute(sessionId, prompt, options) {
       ensureValidSessionId(sessionId)
-      const result = await runCommand('claude', ['--print', '--resume', sessionId, prompt], buildCommandOptions(options))
+      const permissionMode = resolveExecutionPermissionMode(options)
+      const args = withLocalCliPermissionArgs(
+        'claude',
+        ['--print', '--resume', sessionId, prompt],
+        permissionMode,
+      )
+      const result = await runCommand('claude', args, buildCommandOptions(options))
       return {
         sessionId,
         reply: (result.stdout || '').trim() || (result.stderr || '').trim(),
@@ -938,10 +1055,16 @@ const LOCAL_RUNTIME_EXECUTORS: Record<LocalSessionKind, LocalRuntimeExecutorAdap
     async start(prompt, options) {
       const sessionId = randomUUID()
       const commandOptions = buildCommandOptions(options)
+      const permissionMode = resolveExecutionPermissionMode(options)
+      const args = withLocalCliPermissionArgs(
+        'claude',
+        ['--print', '--session-id', sessionId, prompt],
+        permissionMode,
+      )
       try {
         const result = await runCommand(
           'claude',
-          ['--print', '--session-id', sessionId, prompt],
+          args,
           commandOptions,
         )
         scheduleClaudeSessionIndexRefresh()
@@ -1027,8 +1150,16 @@ const LOCAL_RUNTIME_EXECUTORS: Record<LocalSessionKind, LocalRuntimeExecutorAdap
 
       const parsed = extractStructuredOutput(commandResult?.stdout || '')
       let sessionId = parsed.sessionId
+      if (sessionId && knownSessionIds.has(sessionId)) {
+        logger.warn(
+          { sessionId, agentName: options.agentName },
+          'Codex returned an existing thread id during dedicated-session start; ignoring to avoid binding a shared session',
+        )
+        sessionId = null
+      }
 
       if (!sessionId) {
+        invalidateCodexSessionScan()
         const workingDirectory = resolveWorkingDirectory(options.workingDirectory) || null
         sessionId = pickNewCodexSessionId({
           knownSessionIds,
@@ -1241,6 +1372,9 @@ async function executeBoundLocalAgentPromptCore(
     if (!isAgentStillRegistered(freshAgent)) {
       return EMPTY_EXECUTION_RESULT
     }
+    const permissionMode = resolveLocalCliPermissionMode(freshAgent)
+    const agentExecOptions = (cwd?: string) =>
+      buildAgentExecutionOptions(freshAgent, cwd ?? workingDirectory)
     let activeSessionKey = getExistingAgentSessionKey(freshAgent)
     const roleHash = computeAgentRoleHash(freshAgent)
     const parsedConfig = getParsedLocalAgentSessionConfig(freshAgent)
@@ -1301,13 +1435,13 @@ async function executeBoundLocalAgentPromptCore(
             })
             shouldReprovisionAfterReset = true
           } else {
-            const combinedBootstrap = buildSessionBootstrapWithUserPrompt(freshAgent, prompt)
+            const combinedBootstrap = buildSessionBootstrapWithUserPrompt(freshAgent, prompt, permissionMode)
             if (combinedBootstrap) {
               const bootstrapResult = await executeLocalSessionPrompt(
                 kind,
                 activeSessionKey,
                 combinedBootstrap,
-                { workingDirectory: executionWorkingDirectory },
+                agentExecOptions(executionWorkingDirectory),
               )
               persistAgentSessionBinding(freshAgent, {
                 sessionKey: bootstrapResult.sessionId || activeSessionKey,
@@ -1357,7 +1491,7 @@ async function executeBoundLocalAgentPromptCore(
           kind,
           reboundSessionKey,
           prompt,
-          { workingDirectory: reboundCwd },
+          agentExecOptions(reboundCwd),
         )
         persistAgentSessionBinding(reboundAgent, {
           sessionKey: result.sessionId || reboundSessionKey,
@@ -1422,13 +1556,16 @@ async function executeBoundLocalAgentPromptCore(
     })
 
     try {
-      const needsRoleBootstrap = Boolean(buildSessionRolePreamble(freshAgent))
+      const needsRoleBootstrap = Boolean(buildSessionRolePreamble(freshAgent, permissionMode))
       const startupPrompt = needsRoleBootstrap
-        ? (buildSessionBootstrapWithUserPrompt(freshAgent, prompt) || prompt)
+        ? (buildSessionBootstrapWithUserPrompt(freshAgent, prompt, permissionMode) || prompt)
         : prompt
-      const provisionWorkingDirectory = resolveCwd(null)
+      const provisionWorkingDirectory =
+        kind === 'codex-cli'
+          ? resolveCodexWorkingDirectoryForAgent(freshAgent)
+          : resolveCwd(null)
       const result = await adapter.start(startupPrompt, {
-        workingDirectory: provisionWorkingDirectory,
+        ...buildAgentExecutionOptions(freshAgent, provisionWorkingDirectory),
         agentName: asTrimmedString(freshAgent.name),
         excludeAgentId: freshAgent.id ?? null,
       })
@@ -1501,11 +1638,16 @@ export async function provisionAgentDedicatedSession(
   }
 
   const roleHash = computeAgentRoleHash(freshAgent)
-  const workingDirectory = getLocalRuntimeWorkingDirectory({
-    workspacePath: freshAgent.workspace_path,
-    config: freshAgent.config,
-  })
-  const bootstrapPrompt = buildSessionBootstrapPrompt(freshAgent)
+  const kindForCwd = getLocalSessionKindForFramework(freshAgent.framework)
+  const workingDirectory =
+    kindForCwd === 'codex-cli'
+      ? resolveCodexWorkingDirectoryForAgent(freshAgent)
+      : getLocalRuntimeWorkingDirectory({
+          workspacePath: freshAgent.workspace_path,
+          config: freshAgent.config,
+        })
+  const permissionMode = resolveLocalCliPermissionMode(freshAgent)
+  const bootstrapPrompt = buildSessionBootstrapPrompt(freshAgent, permissionMode)
     || [
       'E-Agent-Client dedicated-session setup.',
       'Reply with exactly: READY',
@@ -1525,7 +1667,7 @@ export async function provisionAgentDedicatedSession(
 
     try {
       const result = await adapter.start!(bootstrapPrompt, {
-        workingDirectory,
+        ...buildAgentExecutionOptions(freshAgent, workingDirectory),
         agentName: asTrimmedString(freshAgent.name),
         excludeAgentId: freshAgent.id ?? null,
       })
@@ -1641,14 +1783,22 @@ export async function executeBoundLocalAgentPrompt(
   }
 
   const overrideSessionKey = asTrimmedString(options.overrideSessionKey)
+  const freshForCwd = getFreshAgentRecord(agentInput)
   const workingDirectory = resolveWorkingDirectory(options.workingDirectory)
-    || getLocalRuntimeWorkingDirectory({
-      workspacePath: agentInput.workspace_path,
-      config: agentInput.config,
-    })
+    || (kind === 'codex-cli'
+      ? resolveCodexWorkingDirectoryForAgent(freshForCwd)
+      : getLocalRuntimeWorkingDirectory({
+          workspacePath: freshForCwd.workspace_path,
+          config: freshForCwd.config,
+        }))
 
   if (overrideSessionKey) {
-    return executeLocalSessionPrompt(kind, overrideSessionKey, prompt, { workingDirectory })
+    return executeLocalSessionPrompt(
+      kind,
+      overrideSessionKey,
+      prompt,
+      buildAgentExecutionOptions(freshForCwd, workingDirectory),
+    )
   }
 
   const executionKey = getSerializedAgentExecutionKey(agentInput, kind)
@@ -1690,11 +1840,27 @@ function scheduleSerializedLocalPrompt(
 
   void runSerializedAgentExecution(executionKey, operation)
     .then((result) => {
-      notifyPromptLifecycle(kind, result.sessionId || sessionIdHint, 'prompt_completed')
+      const sessionId = result.sessionId || sessionIdHint
+      notifyPromptLifecycle(kind, sessionId, 'prompt_completed', undefined, agentId)
+      if (result.sessionId && result.sessionId !== sessionIdHint) {
+        notifyLocalSessionVisibility(kind, result.sessionId, 'session_provisioned', agentId)
+      }
     })
     .catch((error) => {
-      logger.error({ err: error, kind, sessionIdHint }, 'Background local prompt failed')
-      notifyPromptLifecycle(kind, sessionIdHint, 'prompt_failed')
+      logger.error({ err: error, kind, sessionIdHint, agentId }, 'Background local prompt failed')
+      notifyPromptLifecycle(kind, sessionIdHint, 'prompt_failed', undefined, agentId)
+      if (typeof agentId === 'number') {
+        const rebound = getFreshAgentRecord({ id: agentId })
+        const parsed = getParsedLocalAgentSessionConfig(rebound)
+        if (parsed.state === 'broken' || parsed.lastSessionError) {
+          eventBus.broadcast('agent.updated', {
+            id: agentId,
+            session_key: rebound.session_key ?? null,
+            session_state: parsed.state,
+            last_session_error: parsed.lastSessionError,
+          })
+        }
+      }
     })
 }
 
@@ -1715,13 +1881,14 @@ export function enqueueBoundLocalAgentPrompt(
   }
 
   const overrideSessionKey = asTrimmedString(options.overrideSessionKey)
-  const workingDirectory = resolveWorkingDirectory(options.workingDirectory)
-    || getLocalRuntimeWorkingDirectory({
-      workspacePath: agentInput.workspace_path,
-      config: agentInput.config,
-    })
-
   const freshAgent = getFreshAgentRecord(agentInput)
+  const workingDirectory = resolveWorkingDirectory(options.workingDirectory)
+    || (kind === 'codex-cli'
+      ? resolveCodexWorkingDirectoryForAgent(freshAgent)
+      : getLocalRuntimeWorkingDirectory({
+          workspacePath: freshAgent.workspace_path,
+          config: freshAgent.config,
+        }))
   const parsed = getParsedLocalAgentSessionConfig(freshAgent)
   const sessionKeyHint = overrideSessionKey || getExistingAgentSessionKey(freshAgent)
 
@@ -1742,7 +1909,12 @@ export function enqueueBoundLocalAgentPrompt(
     ? resolveLocalExecutionWorkingDirectory(kind, overrideSessionKey, freshAgent, workingDirectory)
     : workingDirectory
   const operation = overrideSessionKey
-    ? () => executeLocalSessionPrompt(kind, overrideSessionKey, prompt, { workingDirectory: executionCwd })
+    ? () => executeLocalSessionPrompt(
+      kind,
+      overrideSessionKey,
+      prompt,
+      buildAgentExecutionOptions(freshAgent, executionCwd),
+    )
     : () => executeBoundLocalAgentPromptCore(freshAgent, prompt, kind, workingDirectory)
 
   scheduleSerializedLocalPrompt(executionKey, kind, sessionKeyHint, async () => {
