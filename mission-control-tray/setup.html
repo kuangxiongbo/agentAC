@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>E-Agent Edge — 连接初始化</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0f1115;
+        --card: #1a1d24;
+        --border: #2a2f3a;
+        --text: #e8eaed;
+        --muted: #9aa0a6;
+        --accent: #c62828;
+        --accent-hover: #e53935;
+        --ok: #43a047;
+        --err: #ef5350;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+      .panel {
+        width: 100%;
+        max-width: 440px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 28px 24px;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 6px;
+        font-weight: 600;
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.5;
+        margin-bottom: 22px;
+      }
+      label {
+        display: block;
+        font-size: 13px;
+        font-weight: 500;
+        margin-bottom: 6px;
+      }
+      input[type='text'],
+      input[type='password'] {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--text);
+        font-size: 14px;
+        margin-bottom: 16px;
+      }
+      input:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 0;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 20px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .row input {
+        margin: 0;
+      }
+      button {
+        width: 100%;
+        padding: 11px;
+        border: none;
+        border-radius: 8px;
+        background: var(--accent);
+        color: #fff;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        background: var(--accent-hover);
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .status {
+        margin-top: 16px;
+        font-size: 12px;
+        min-height: 40px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+      .status.error {
+        color: var(--err);
+      }
+      .status.ok {
+        color: var(--ok);
+      }
+      .done-actions {
+        display: none;
+        margin-top: 12px;
+        gap: 8px;
+      }
+      .done-actions.visible {
+        display: flex;
+        flex-direction: column;
+      }
+      .secondary {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text);
+      }
+      .update-card {
+        display: none;
+        margin: 0 0 18px;
+        padding: 12px;
+        border: 1px solid rgba(67, 160, 71, 0.35);
+        border-radius: 10px;
+        background: rgba(67, 160, 71, 0.12);
+      }
+      .update-card.visible {
+        display: block;
+      }
+      .update-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--ok);
+        margin-bottom: 5px;
+      }
+      .update-body {
+        font-size: 12px;
+        color: var(--text);
+        line-height: 1.5;
+        margin-bottom: 10px;
+      }
+      .update-actions {
+        display: flex;
+        gap: 8px;
+      }
+      .update-actions button {
+        flex: 1;
+        padding: 8px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <h1>连接 E-Agent 服务中心</h1>
+      <p class="hint">
+        请在服务中心「本站点连接信息」中复制<strong>连接地址</strong>与<strong>认证令牌 (API TOKEN)</strong>，粘贴到下方。连接信息会保存在本机
+        <code>~/.e-agent-edge/config.json</code>，下次打开自动填入。配置成功后将自动打开本机 Web 控制台。
+      </p>
+
+      <div id="update_card" class="update-card">
+        <div class="update-title" id="update_title">发现托盘应用更新</div>
+        <div class="update-body" id="update_body"></div>
+        <div class="update-actions">
+          <button type="button" id="download_update">下载新版 DMG</button>
+          <button type="button" id="dismiss_update" class="secondary">稍后</button>
+        </div>
+      </div>
+
+      <form id="form">
+        <label for="center_url">连接地址</label>
+        <input
+          id="center_url"
+          type="text"
+          placeholder="https://agent.1sheng.work"
+          autocomplete="url"
+          required
+        />
+
+        <label for="api_token">认证令牌 (API TOKEN)</label>
+        <input
+          id="api_token"
+          type="password"
+          placeholder="从服务中心复制 API TOKEN"
+          autocomplete="off"
+        />
+        <p id="token_saved_hint" class="hint" style="margin-top: -10px; margin-bottom: 16px; display: none">
+          已保存上次令牌，留空将沿用；修改后点击连接会更新保存。
+        </p>
+
+        <div class="row">
+          <input id="tls_insecure" type="checkbox" />
+          <label for="tls_insecure" style="margin: 0; font-weight: 400"
+            >企业内网 / 自签 HTTPS 证书（跳过证书校验）</label
+          >
+        </div>
+
+        <button type="submit" id="submit_btn">连接并启动</button>
+      </form>
+
+      <div id="status" class="status"></div>
+      <div id="done_actions" class="done-actions">
+        <button type="button" id="open_console">打开 Web 控制台 (5101)</button>
+        <button type="button" id="close_win" class="secondary">关闭此窗口</button>
+      </div>
+    </div>
+
+    <script>
+      const invoke = window.__TAURI__?.core?.invoke
+      const listen = window.__TAURI__?.event?.listen
+
+      const form = document.getElementById('form')
+      const statusEl = document.getElementById('status')
+      const submitBtn = document.getElementById('submit_btn')
+      const doneActions = document.getElementById('done_actions')
+      const centerInput = document.getElementById('center_url')
+      const tokenInput = document.getElementById('api_token')
+      const tlsInput = document.getElementById('tls_insecure')
+      const tokenSavedHint = document.getElementById('token_saved_hint')
+      const updateCard = document.getElementById('update_card')
+      const updateTitle = document.getElementById('update_title')
+      const updateBody = document.getElementById('update_body')
+
+      let lastPhase = 'idle'
+      let hasSavedToken = false
+      let refreshTimer = null
+      let updateDismissedVersion = localStorage.getItem('edge-tray-update-dismissed') || ''
+
+      function setStatus(text, kind) {
+        statusEl.textContent = text
+        statusEl.className = 'status' + (kind ? ' ' + kind : '')
+      }
+
+      function applyStatus(s) {
+        if (!s) return
+        const phase = s.phase || 'idle'
+        if (phase === 'done') {
+          setStatus(s.message || '初始化完成', 'ok')
+          submitBtn.disabled = false
+          doneActions.classList.add('visible')
+          if (refreshTimer) {
+            clearInterval(refreshTimer)
+            refreshTimer = null
+          }
+          lastPhase = 'done'
+          return
+        }
+        if (phase === 'error') {
+          setStatus(s.error || s.message || '失败', 'error')
+          submitBtn.disabled = false
+          lastPhase = 'error'
+          return
+        }
+        if (phase !== 'idle') {
+          setStatus(s.message || '处理中…', '')
+          submitBtn.disabled = true
+          doneActions.classList.remove('visible')
+        }
+        lastPhase = phase
+      }
+
+      async function loadSavedForm() {
+        if (!invoke) return
+        try {
+          const saved = await invoke('get_saved_setup')
+          if (saved.centerUrl) centerInput.value = saved.centerUrl
+          tlsInput.checked = !!saved.tlsInsecure
+          hasSavedToken = !!saved.hasSavedToken
+          if (saved.apiToken) {
+            tokenInput.value = saved.apiToken
+            tokenInput.placeholder = '已保存，留空则沿用上次令牌'
+          }
+          if (hasSavedToken) {
+            tokenSavedHint.style.display = 'block'
+            tokenInput.removeAttribute('required')
+          }
+        } catch (_) {
+          centerInput.value = 'https://agent.1sheng.work'
+        }
+      }
+
+      async function refreshStatus() {
+        if (!invoke) return
+        try {
+          const s = await invoke('get_setup_status')
+          applyStatus(s)
+        } catch (_) {}
+      }
+
+      if (listen) {
+        listen('setup-status', (e) => applyStatus(e.payload)).catch(() => {})
+        listen('tray-update', (e) => applyTrayUpdate(e.payload)).catch(() => {})
+      }
+
+      function applyTrayUpdate(info) {
+        if (!info || !info.update_available) return
+        const latest = info.latest_version || ''
+        if (latest && latest === updateDismissedVersion) return
+        updateTitle.textContent = `发现托盘应用更新 ${latest}`
+        updateBody.textContent = `当前版本 ${info.current_version || '-'}，新版本 ${latest || '-'}。请下载新版 DMG 后覆盖安装；后续版本会继续自动提醒。`
+        updateCard.classList.add('visible')
+      }
+
+      async function checkTrayUpdate(force = false) {
+        if (!invoke) return
+        try {
+          const info = await invoke('check_tray_update', { force })
+          applyTrayUpdate(info)
+        } catch (_) {}
+      }
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault()
+        if (!invoke) {
+          setStatus('请在 E-Agent Edge 应用窗口中打开此页面', 'error')
+          return
+        }
+        setStatus('正在提交…', '')
+        submitBtn.disabled = true
+        doneActions.classList.remove('visible')
+        try {
+          const token = tokenInput.value.trim()
+          if (!token && !hasSavedToken) {
+            setStatus('请填写认证令牌 (API TOKEN)', 'error')
+            submitBtn.disabled = false
+            return
+          }
+          await invoke('submit_setup', {
+            centerUrl: centerInput.value,
+            apiToken: token,
+            tlsInsecure: tlsInput.checked,
+          })
+          const poll = setInterval(async () => {
+            const s = await invoke('get_setup_status')
+            applyStatus(s)
+            if (s.phase === 'done' || s.phase === 'error') clearInterval(poll)
+          }, 600)
+        } catch (err) {
+          setStatus(String(err), 'error')
+          submitBtn.disabled = false
+        }
+      })
+
+      document.getElementById('open_console').addEventListener('click', () => {
+        invoke('open_console').catch((e) => setStatus(String(e), 'error'))
+      })
+      document.getElementById('close_win').addEventListener('click', () => {
+        invoke('close_setup_window').catch(() => window.close())
+      })
+      document.getElementById('download_update').addEventListener('click', () => {
+        invoke('open_tray_update_download').catch((e) => setStatus(String(e), 'error'))
+      })
+      document.getElementById('dismiss_update').addEventListener('click', () => {
+        const title = updateTitle.textContent || ''
+        const match = title.match(/更新\\s+(.+)$/)
+        updateDismissedVersion = match ? match[1] : ''
+        if (updateDismissedVersion) localStorage.setItem('edge-tray-update-dismissed', updateDismissedVersion)
+        updateCard.classList.remove('visible')
+      })
+
+      loadSavedForm()
+      refreshStatus()
+      checkTrayUpdate(false)
+      refreshTimer = setInterval(() => {
+        if (lastPhase === 'done') return
+        refreshStatus()
+      }, 2000)
+    </script>
+  </body>
+</html>

@@ -39,6 +39,7 @@ public/edge-runtime/*.zip
 
 # Edge 托盘 .dmg（体积大；manifest.json 可提交，构建前运行 scripts/sync-edge-tray-bundle.sh）
 public/edge-tray/*.dmg
+!public/edge-tray/e-agent-edge-*-darwin-aarch64.dmg
 
 # Playwright
 test-results/

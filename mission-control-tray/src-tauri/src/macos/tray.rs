@@ -1,0 +1,67 @@
+//! 托盘菜单动作（原生 NSStatusItem 与 Tauri 托盘共用）
+
+use crate::setup::{open_connection_setup, open_setup_window, open_tray_config, quit_from_tray};
+use crate::{bootstrap, config, open_web_console, process, runtime, show_notice, tray_update};
+use config::{center_web_url, load_config};
+use tauri::AppHandle;
+use tauri_plugin_opener::OpenerExt;
+
+pub fn handle_tray_menu(app: &AppHandle, id: &str) {
+    match id {
+        "tray_click" => {
+            let _ = open_tray_config(app);
+        }
+        "open_local" | "open" => open_web_console(app),
+        "open_center" => {
+            let cfg = load_config();
+            let url = center_web_url(&cfg);
+            let _ = app.opener().open_url(&url, None::<&str>);
+        }
+        "connection_setup" => {
+            let _ = super::set_activation_policy_regular(app);
+            let _ = open_connection_setup(app.clone());
+        }
+        "restart" => {
+            let cfg = load_config();
+            if !config::is_setup_complete(&cfg) {
+                let _ = open_setup_window(app);
+                return;
+            }
+            let payload = bootstrap::load_cached_bootstrap();
+            match process::restart(&cfg, payload.as_ref()) {
+                Ok(()) => show_notice("边缘服务已重启"),
+                Err(e) => show_notice(&e),
+            }
+        }
+        "update" => {
+            let cfg = load_config();
+            match runtime::download_and_install(&cfg, true) {
+                Ok(msg) => {
+                    let payload = bootstrap::load_cached_bootstrap();
+                    let _ = process::restart(&cfg, payload.as_ref());
+                    show_notice(&msg);
+                }
+                Err(e) => show_notice(&e),
+            }
+        }
+        "check_tray_update" => {
+            let status = tray_update::check_for_update(true);
+            if status.update_available {
+                let _ = open_setup_window(app);
+                show_notice(&format!(
+                    "发现托盘应用新版本 {}，请在连接窗口点击下载更新",
+                    status.latest_version.unwrap_or_default()
+                ));
+            } else if let Some(error) = status.error {
+                show_notice(&error);
+            } else {
+                show_notice(&format!(
+                    "托盘应用已是最新版本 {}",
+                    status.current_version
+                ));
+            }
+        }
+        "quit" => quit_from_tray(app),
+        _ => {}
+    }
+}

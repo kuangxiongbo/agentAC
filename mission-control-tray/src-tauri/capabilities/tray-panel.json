@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "tray-panel",
+  "description": "Floating tray helper panel",
+  "windows": ["tray-panel"],
+  "permissions": ["core:default", "opener:default"]
+}
