@@ -6,6 +6,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { resolveWithin } from '@/lib/paths'
 import { getAgentWorkspaceCandidates, readAgentWorkspaceFile } from '@/lib/agent-workspace'
+import { getAgentDisplayName } from '@/lib/agent-card-helpers'
+import { getBridgeAgentIndexById, mergeBridgeIndexIntoConfig } from '@/lib/sync-agent-index'
 import { logger } from '@/lib/logger'
 
 const ALLOWED_FILES = new Set([
@@ -55,19 +57,70 @@ export async function GET(
     const { id } = await params
     const db = getDatabase()
     const workspaceId = auth.user.workspace_id ?? 1
+
+    const numericId = Number(id)
+    if (Number.isFinite(numericId)) {
+      const indexRow = getBridgeAgentIndexById(numericId)
+      if (indexRow) {
+        const emptyFiles = ['agent.md', 'identity.md', 'soul.md', 'WORKING.md', 'MEMORY.md', 'TOOLS.md', 'AGENTS.md', 'MISSION.md', 'USER.md'].reduce(
+          (acc, file) => {
+            acc[file] = { exists: false, content: '' }
+            return acc
+          },
+          {} as Record<string, { exists: boolean; content: string }>,
+        )
+        const config = mergeBridgeIndexIntoConfig({}, indexRow)
+        return NextResponse.json({
+          agent: {
+            id: indexRow.id,
+            name: indexRow.remote_name,
+            display_name: getAgentDisplayName({
+              name: indexRow.remote_name,
+              config,
+              source: 'bridge_index',
+              node_id: indexRow.client_id,
+            }),
+          },
+          workspace: null,
+          bridge_agent: true,
+          files: emptyFiles,
+        })
+      }
+    }
+
     const agent = getAgentByIdOrName(db, id, workspaceId)
     if (!agent) return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
 
     const agentConfig = agent.config ? JSON.parse(agent.config) : {}
     const candidates = getAgentWorkspaceCandidates(agentConfig, agent.name)
+    const defaultFileNames = [
+      'agent.md',
+      'identity.md',
+      'soul.md',
+      'WORKING.md',
+      'MEMORY.md',
+      'TOOLS.md',
+      'AGENTS.md',
+      'MISSION.md',
+      'USER.md',
+    ]
+    const emptyPayload = defaultFileNames.reduce(
+      (acc, file) => {
+        acc[file] = { exists: false, content: '' }
+        return acc
+      },
+      {} as Record<string, { exists: boolean; content: string }>,
+    )
     if (candidates.length === 0) {
-      return NextResponse.json({ error: 'Agent workspace is not configured' }, { status: 400 })
+      return NextResponse.json({
+        agent: { id: agent.id, name: agent.name },
+        workspace: null,
+        files: emptyPayload,
+      })
     }
     const safeWorkspace = candidates[0]
     const requested = (new URL(request.url).searchParams.get('file') || '').trim()
-    const files = requested
-      ? [requested]
-      : ['agent.md', 'identity.md', 'soul.md', 'WORKING.md', 'MEMORY.md', 'TOOLS.md', 'AGENTS.md', 'MISSION.md', 'USER.md']
+    const files = requested ? [requested] : defaultFileNames
 
     const payload: Record<string, { exists: boolean; content: string }> = {}
     for (const file of files) {

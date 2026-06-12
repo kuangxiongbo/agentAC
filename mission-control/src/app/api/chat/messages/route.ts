@@ -8,6 +8,8 @@ import { logger } from '@/lib/logger'
 import { scanForInjection, sanitizeForPrompt } from '@/lib/injection-guard'
 import { callOpenClawGateway } from '@/lib/openclaw-gateway'
 import { resolveCoordinatorDeliveryTarget } from '@/lib/coordinator-routing'
+import { assertLocalCliElevationAllowed } from '@/lib/local-cli-elevation-auth'
+import { isLocalCliElevatedFlag } from '@/lib/parse-local-cli-elevated'
 
 type ForwardInfo = {
   attempted: boolean
@@ -343,6 +345,24 @@ export async function POST(request: NextRequest) {
     const message_type = body.message_type || 'text'
     const conversation_id = body.conversation_id || `conv_${Date.now()}`
     const metadata = body.metadata || null
+    const localCliElevated = isLocalCliElevatedFlag(body.local_cli_elevated)
+
+    if (localCliElevated) {
+      const elevationGate = await assertLocalCliElevationAllowed({
+        user: auth.user,
+        elevated: true,
+      })
+      if (!elevationGate.ok) {
+        return NextResponse.json(
+          {
+            error: elevationGate.error,
+            code: elevationGate.code,
+            subscriptionsUrl: elevationGate.subscriptionsUrl,
+          },
+          { status: elevationGate.status },
+        )
+      }
+    }
 
     if (!content) {
       return NextResponse.json(

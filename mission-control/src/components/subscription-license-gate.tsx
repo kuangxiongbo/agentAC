@@ -50,6 +50,21 @@ export function useHumanWatchEntitled(): boolean {
   return Boolean(license.entitlements?.enableHumanWatch)
 }
 
+export function useLocalCliElevationEntitled(): boolean {
+  const { license } = useAgentCenterStore()
+  if (!license) return false
+  if (licenseEnforcementBypassed(license)) return true
+  if (license.requiresSubscription && !license.allowed) return false
+  return Boolean(license.entitlements?.enableLocalCliElevation)
+}
+
+function licenseEnforcementBypassed(license: LicenseSnapshot): boolean {
+  if (license.allowed && license.licensed && license.source === 'default') {
+    return license.requiresSubscription !== true
+  }
+  return false
+}
+
 export function HumanWatchEntitlementNotice({ className = '' }: { className?: string }) {
   const t = useTranslations('licenseGate')
   const { license } = useAgentCenterStore()

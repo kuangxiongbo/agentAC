@@ -78,6 +78,10 @@ export function HumanWatchPanel() {
 
       {error ? <p className="text-sm text-rose-400">{error}</p> : null}
 
+      <p className="text-sm text-muted-foreground rounded-lg border border-border/60 bg-surface-1/40 px-3 py-2">
+        {t('globalRulesMovedToSettings')}
+      </p>
+
       <section className="rounded-xl border border-border/70 bg-card p-4 space-y-3">
         <h2 className="text-sm font-semibold">{t('bindingsTitle')}</h2>
         <p className="text-xs text-muted-foreground">{t('bindingsAuditOnlyHint')}</p>

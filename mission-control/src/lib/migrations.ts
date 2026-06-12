@@ -1677,6 +1677,24 @@ const migrations: Migration[] = [
       }
     },
   },
+  {
+    id: '063_sync_agent_index_session_key',
+    up: (db) => {
+      const cols = db.prepare(`PRAGMA table_info(sync_agent_index)`).all() as Array<{ name: string }>
+      if (!cols.some((c) => c.name === 'session_key')) {
+        db.exec(`ALTER TABLE sync_agent_index ADD COLUMN session_key TEXT`)
+      }
+    },
+  },
+  {
+    id: '062_human_watch_global_rules',
+    up(db: Database.Database) {
+      const columns = db.prepare(`PRAGMA table_info(tenants)`).all() as Array<{ name: string }>
+      if (!columns.some((col) => col.name === 'human_watch_rules_json')) {
+        db.exec(`ALTER TABLE tenants ADD COLUMN human_watch_rules_json TEXT`)
+      }
+    },
+  },
 ]
 
 export function runMigrations(db: Database.Database) {

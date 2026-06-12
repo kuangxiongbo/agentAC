@@ -8,6 +8,7 @@ import { useAgentCenterStore } from '@/store'
 import { useNavigateToPanel } from '@/lib/navigation'
 import { SecurityScanCard } from '@/components/onboarding/security-scan-card'
 import { AgentRuntimesSection } from '@/components/settings/agent-runtimes-section'
+import { HumanWatchGlobalRulesSection } from '@/components/settings/human-watch-global-rules-section'
 import { LicenseSettingsSection } from '@/components/panels/license-settings-section'
 import { Loader } from '@/components/ui/loader'
 import { clearOnboardingDismissedThisSession, clearOnboardingReplayFromStart } from '@/lib/onboarding-session'
@@ -605,6 +606,8 @@ export function SettingsPanel() {
                 </p>
               </div>
             )}
+
+            {centralMode ? <HumanWatchGlobalRulesSection /> : null}
 
             {/* Hermes Agent Integration */}
             {hermesStatus?.installed && (

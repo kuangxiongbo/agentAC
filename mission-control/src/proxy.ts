@@ -196,7 +196,9 @@ export function proxy(request: NextRequest) {
   const isPublicApi =
     pathname === '/api/index' ||
     pathname === '/api/bridge/info' ||
-    pathname === '/api/docs'
+    pathname === '/api/docs' ||
+    pathname === '/api/edge/bootstrap' ||
+    pathname === '/api/releases/edge-runtime-manifest'
 
   if (
     pathname === '/login' ||
@@ -204,6 +206,8 @@ export function proxy(request: NextRequest) {
     pathname === '/auth/enter' ||
     pathname === '/auth/callback' ||
     pathname === '/setup' ||
+    pathname.startsWith('/edge-runtime/') ||
+    pathname.startsWith('/edge-tray/') ||
     pathname.startsWith('/api/auth/') ||
     pathname === '/api/setup' ||
     pathname === '/docs' ||
@@ -252,5 +256,5 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|brand/).*)']
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|brand/|edge-runtime/|edge-tray/).*)'],
 }

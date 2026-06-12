@@ -13,6 +13,7 @@ import {
   getMainAgentRuntimeMeta,
   MAIN_AGENT_RUNTIME_ORDER,
 } from '@/lib/runtime-agents'
+import { findAgentBoundToSessionRecord, getAgentDisplayName } from '@/lib/agent-card-helpers'
 import { isHumanWatchAgent } from '@/lib/human-watch-helpers'
 
 const log = createClientLogger('ConversationList')
@@ -314,9 +315,17 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
           const prefKey = `${sessionKind}:${s.id}`
           const pref = prefs[prefKey] || {}
           const nodeLabel = s.nodeLabel || (s.source === 'client' ? s.agent : undefined)
-          const defaultName = s.source === 'local'
-            ? `${kindLabel} • ${s.key || s.id}`
-            : `${s.agent || kindLabel} • ${s.key || s.id}`
+          const boundAgent = findAgentBoundToSessionRecord(agents, {
+            id: s.id,
+            sessionId: s.sessionId,
+            key: s.key,
+          })
+          const agentLabel = boundAgent ? getAgentDisplayName(boundAgent) : null
+          const defaultName = agentLabel
+            ? `${kindLabel} • ${agentLabel}`
+            : s.source === 'local'
+              ? `${kindLabel} • ${s.key || s.id}`
+              : `${s.agent || kindLabel} • ${s.key || s.id}`
           const sessionName = pref.name || defaultName
           const displayModel =
             s.model && s.model.trim() && s.model.toLowerCase() !== 'unknown' ? s.model : null
@@ -366,7 +375,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
     } catch (err) {
       log.error('Failed to load conversations:', err)
     }
-  }, [setConversations])
+  }, [setConversations, agents])
 
   useEffect(() => {
     const handleSessionListUpdated = () => {

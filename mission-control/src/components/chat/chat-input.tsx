@@ -5,16 +5,18 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 import { useTranslations } from 'next-intl'
 import { useAgentCenterStore, type ChatAttachment } from '@/store'
 import { Button } from '@/components/ui/button'
+import { LocalCliElevationButton } from '@/components/chat/local-cli-elevation-button'
 
 interface ChatInputProps {
-  onSend: (content: string, attachments?: ChatAttachment[]) => void
+  onSend: (content: string, attachments?: ChatAttachment[], options?: { localCliElevated?: boolean }) => void
   onAbort?: () => void
   disabled?: boolean
   agents?: Array<{ name: string; role: string }>
   isGenerating?: boolean
+  showLocalCliElevation?: boolean
 }
 
-export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating }: ChatInputProps) {
+export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating, showLocalCliElevation = true }: ChatInputProps) {
   const t = useTranslations('chat')
   const { chatInput, setChatInput, isSendingMessage } = useAgentCenterStore()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -24,6 +26,7 @@ export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating
   const [mentionIndex, setMentionIndex] = useState(0)
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
+  const [localCliElevated, setLocalCliElevated] = useState(false)
 
   const filteredAgents = agents.filter(a =>
     a.name.toLowerCase().includes(mentionFilter.toLowerCase())
@@ -177,9 +180,12 @@ export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating
   const handleSend = () => {
     const trimmed = chatInput.trim()
     if ((!trimmed && attachments.length === 0) || disabled || isSendingMessage) return
-    onSend(trimmed, attachments.length > 0 ? attachments : undefined)
+    onSend(trimmed, attachments.length > 0 ? attachments : undefined, {
+      localCliElevated: localCliElevated || undefined,
+    })
     setChatInput('')
     setAttachments([])
+    setLocalCliElevated(false)
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
@@ -301,6 +307,14 @@ export function ChatInput({ onSend, onAbort, disabled, agents = [], isGenerating
           rows={1}
           className="flex-1 resize-none bg-surface-1 rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50 disabled:opacity-40 transition-all"
         />
+
+        {showLocalCliElevation && (
+          <LocalCliElevationButton
+            elevated={localCliElevated}
+            onElevatedChange={setLocalCliElevated}
+            disabled={disabled || isSendingMessage}
+          />
+        )}
 
         {/* Stop / Send button */}
         {isGenerating && onAbort ? (

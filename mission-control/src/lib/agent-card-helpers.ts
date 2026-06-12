@@ -18,6 +18,23 @@ export function readAgentConfigRecord(config: unknown): Record<string, unknown> 
 }
 
 /** Prefer edge original_name over mc-local-{clientId}-{name} remote aliases. */
+/** Match agent.session_key to CLI session id/key (incl. center synced composite list ids). */
+export function findAgentBoundToSessionRecord<T extends { session_key?: string | null }>(
+  agents: T[],
+  session: { id?: string; sessionId?: string; key?: string },
+): T | undefined {
+  const keys = new Set<string>()
+  for (const value of [session.sessionId, session.id, session.key]) {
+    const trimmed = String(value || '').trim()
+    if (trimmed) keys.add(trimmed)
+  }
+  if (keys.size === 0) return undefined
+  return agents.find((agent) => {
+    const bound = String(agent.session_key || '').trim()
+    return bound.length > 0 && keys.has(bound)
+  })
+}
+
 export function getAgentDisplayName(agent: {
   name: string
   config?: unknown
@@ -31,22 +48,33 @@ export function getAgentDisplayName(agent: {
   const nodeId =
     (typeof agent.node_id === 'string' && agent.node_id) ||
     (typeof config.bridge_client_id === 'string' ? config.bridge_client_id : '')
-  if (
-    (agent.source === 'bridge_index' || agent.source === 'client') &&
-    nodeId &&
-    agent.name.startsWith(`${nodeId}-`)
-  ) {
+  if (nodeId && agent.name.startsWith(`${nodeId}-`)) {
     const stripped = agent.name.slice(nodeId.length + 1).trim()
+    if (stripped) return stripped
+  }
+  const syncClient = typeof config.sync_client_id === 'string' ? config.sync_client_id.trim() : ''
+  if (syncClient && agent.name.startsWith(`${syncClient}-`)) {
+    const stripped = agent.name.slice(syncClient.length + 1).trim()
     if (stripped) return stripped
   }
   return agent.name
 }
 
-export function getAgentClientId(agent: { node_id?: string | null; config?: unknown }): string | null {
+export function getAgentClientId(agent: {
+  node_id?: string | null
+  config?: unknown
+  bridge_client_id?: string | null
+}): string | null {
+  const topLevel =
+    typeof agent.bridge_client_id === 'string' && agent.bridge_client_id.trim()
+      ? agent.bridge_client_id.trim()
+      : ''
   const config = readAgentConfigRecord(agent.config)
   const nodeId =
+    topLevel ||
     (typeof agent.node_id === 'string' && agent.node_id.trim()) ||
-    (typeof config.bridge_client_id === 'string' ? config.bridge_client_id.trim() : '')
+    (typeof config.bridge_client_id === 'string' ? config.bridge_client_id.trim() : '') ||
+    (typeof config.sync_client_id === 'string' ? config.sync_client_id.trim() : '')
   return nodeId || null
 }
 
@@ -56,13 +84,93 @@ export function getAgentLocalAgentId(agent: {
   source?: string
   node_id?: string | null
   config?: unknown
+  edge_local_agent_id?: number | null
 }): number | null {
+  if (typeof agent.edge_local_agent_id === 'number' && Number.isFinite(agent.edge_local_agent_id)) {
+    return agent.edge_local_agent_id
+  }
   const config = readAgentConfigRecord(agent.config)
   const fromConfig = config.local_agent_id
   if (typeof fromConfig === 'number' && Number.isFinite(fromConfig)) return fromConfig
   if (agent.source === 'bridge_index' || agent.source === 'client') return null
   if (typeof agent.id === 'number' && Number.isFinite(agent.id)) return agent.id
   return null
+}
+
+/** sync_agent_index row id for bridge_index list/detail rows. */
+export function getAgentBridgeSyncIndexId(agent: {
+  id?: number
+  source?: string
+}): number | null {
+  if (agent.source === 'bridge_index' && typeof agent.id === 'number' && Number.isFinite(agent.id)) {
+    return agent.id
+  }
+  return null
+}
+
+export function humanWatchBindingMatchesWorker(
+  binding: {
+    worker_local_agent_id: number | null
+    worker_sync_index_id?: number | null
+  },
+  agent: {
+    id?: number
+    source?: string
+    config?: unknown
+    edge_local_agent_id?: number | null
+    bridge_client_id?: string | null
+    node_id?: string | null
+  },
+  resolved?: { local_agent_id: number | null; sync_index_id: number | null },
+): boolean {
+  const localId = resolved?.local_agent_id ?? getAgentLocalAgentId(agent)
+  if (localId != null && binding.worker_local_agent_id === localId) return true
+  const syncId = resolved?.sync_index_id ?? getAgentBridgeSyncIndexId(agent)
+  if (syncId != null && binding.worker_sync_index_id === syncId) return true
+  return false
+}
+
+export function humanWatchBindingMatchesSteward(
+  binding: {
+    steward_local_agent_id: number | null
+    steward_sync_index_id?: number | null
+  },
+  agent: {
+    id?: number
+    source?: string
+    config?: unknown
+    edge_local_agent_id?: number | null
+  },
+  resolved?: { local_agent_id: number | null; sync_index_id: number | null },
+): boolean {
+  const localId = resolved?.local_agent_id ?? getAgentLocalAgentId(agent)
+  if (localId != null && binding.steward_local_agent_id === localId) return true
+  const syncId = resolved?.sync_index_id ?? getAgentBridgeSyncIndexId(agent)
+  if (syncId != null && binding.steward_sync_index_id === syncId) return true
+  return false
+}
+
+export function resolveHumanWatchStewardLabel(
+  binding: { steward_name?: string | null; steward_local_agent_id: number | null },
+  allAgents: Array<{
+    name: string
+    config?: unknown
+    node_id?: string | null
+    source?: string
+    framework?: string | null
+  }>,
+  clientId: string,
+): string {
+  const stored = String(binding.steward_name || '').trim()
+  if (stored) return stored
+  if (binding.steward_local_agent_id == null) return '—'
+  const steward = allAgents.find(
+    (a) =>
+      getAgentClientId(a) === clientId &&
+      getAgentLocalAgentId(a) === binding.steward_local_agent_id,
+  )
+  if (steward) return getAgentDisplayName(steward)
+  return `#${binding.steward_local_agent_id}`
 }
 
 export function getAgentClientLabel(

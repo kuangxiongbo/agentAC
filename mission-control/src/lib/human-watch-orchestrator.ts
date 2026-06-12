@@ -10,7 +10,7 @@ import {
 import type { HumanWatchBindingRow } from './human-watch-bindings'
 import {
   listAllEnabledHumanWatchBindings,
-  listEnabledBindingsForWorkerSession,
+  listEnabledBindingsForTranscriptUpdate,
 } from './human-watch-bindings'
 import { isHumanWatchEnabledForTenant } from './human-watch-policy'
 import { evaluateHumanWatchRules, type HumanWatchRuleConfig } from './human-watch-rules'
@@ -33,11 +33,8 @@ import {
 import type { LocalSessionTranscriptKind, TranscriptMessage } from './session-transcript'
 import { getBridgeAgentIndexByLocalId } from './sync-agent-index'
 import type { SessionRealtimePayload } from './session-realtime-events'
-import {
-  buildDefaultBindingRulesOverride,
-  DEFAULT_INTERVENTION_PROMPT,
-  MAX_INTERVENTIONS_PER_HOUR_DEFAULT,
-} from './human-watch-defaults'
+import { MAX_INTERVENTIONS_PER_HOUR_DEFAULT } from './human-watch-defaults'
+import { resolveHumanWatchRulesForBinding } from './human-watch-global-rules'
 
 const EVAL_DEBOUNCE_MS = 2_000
 const POLL_INTERVAL_MS = 60_000
@@ -81,42 +78,6 @@ const state = globalState.__humanWatchOrchestrator ?? {
   stewardConfigCache: new Map<string, { config: StewardRuntimeConfig; at: number }>(),
 }
 globalState.__humanWatchOrchestrator = state
-
-function parseRulesOverride(binding: HumanWatchBindingRow): HumanWatchRuleConfig & {
-  prompt_template?: string
-  grace_after_prompt_seconds?: number
-  max_interventions_per_hour?: number
-} {
-  let override: Record<string, unknown> = {}
-  if (binding.rules_override) {
-    try {
-      override = JSON.parse(binding.rules_override) as Record<string, unknown>
-    } catch {
-      override = {}
-    }
-  }
-  const defaults = buildDefaultBindingRulesOverride()
-  return {
-    ...(defaults as HumanWatchRuleConfig & {
-      prompt_template?: string
-      grace_after_prompt_seconds?: number
-      max_interventions_per_hour?: number
-    }),
-    ...(override as HumanWatchRuleConfig),
-    prompt_template:
-      typeof override.prompt_template === 'string'
-        ? override.prompt_template
-        : (defaults.prompt_template as string | undefined),
-    grace_after_prompt_seconds:
-      typeof override.grace_after_prompt_seconds === 'number'
-        ? override.grace_after_prompt_seconds
-        : (defaults.grace_after_prompt_seconds as number),
-    max_interventions_per_hour:
-      typeof override.max_interventions_per_hour === 'number'
-        ? override.max_interventions_per_hour
-        : (defaults.max_interventions_per_hour as number),
-  }
-}
 
 function resolveSessionKindForBinding(
   binding: HumanWatchBindingRow,
@@ -174,30 +135,30 @@ async function getStewardConfigForBinding(
       clientId: binding.client_id,
       localAgentId: stewardId,
     })
-    const config = parseStewardConfigFromAgent(detail.agent)
+    const config = { ...parseStewardConfigFromAgent(detail.agent), llm_enabled: true }
     if (detail.agent) {
       state.stewardConfigCache.set(cacheKey, { config, at: now })
     }
     return config
   } catch (err) {
     logger.debug({ err, bindingId: binding.id }, '[HumanWatch] Failed to load steward config')
-    return cached?.config ?? {}
+    return cached?.config ?? { llm_enabled: true }
   }
 }
 
+/** 值守仅通过判官 LLM 生成跟进话术；无值守或判官失败时不代发固定模板。 */
 async function resolveInterventionPrompt(
   binding: HumanWatchBindingRow,
-  ruleConfig: ReturnType<typeof parseRulesOverride>,
   messages: TranscriptMessage[],
   deps: EvaluateDeps,
-): Promise<string> {
-  const template = (ruleConfig.prompt_template || DEFAULT_INTERVENTION_PROMPT).trim()
+): Promise<{ prompt: string } | { skipReason: 'steward_missing' | 'steward_judge_empty' | 'steward_judge_failed'; errorMessage?: string }> {
   const stewardId = binding.steward_local_agent_id
-  if (!stewardId) return template
+  if (!stewardId) {
+    return { skipReason: 'steward_missing' }
+  }
 
   try {
     const stewardConfig = await getStewardConfigForBinding(binding, deps)
-    if (!stewardConfig.llm_enabled) return template
 
     const summary = buildWorkerSummaryForJudge(messages, stewardConfig.context)
     const judgePrompt = buildStewardJudgePrompt(summary, stewardConfig)
@@ -207,12 +168,13 @@ async function resolveInterventionPrompt(
       prompt: judgePrompt,
     })
     const reply = String(judge.reply || '').trim()
-    if (reply) return reply
+    if (reply) return { prompt: reply }
+    return { skipReason: 'steward_judge_empty' }
   } catch (err) {
-    logger.warn({ err, bindingId: binding.id }, '[HumanWatch] Steward judge failed; using template')
+    const message = err instanceof Error ? err.message : 'Steward judge failed'
+    logger.warn({ err, bindingId: binding.id }, '[HumanWatch] Steward judge failed')
+    return { skipReason: 'steward_judge_failed', errorMessage: message }
   }
-
-  return template
 }
 
 export async function evaluateHumanWatchBinding(
@@ -247,9 +209,18 @@ export async function evaluateHumanWatchBinding(
   state.inFlight.add(flightKey)
 
   try {
-    const ruleConfig = parseRulesOverride(binding)
+    const ruleConfig = resolveHumanWatchRulesForBinding(binding)
     const sessionKind = resolveSessionKindForBinding(binding, options.sessionKind)
     if (!sessionKind) {
+      logHumanWatchIntervention({
+        ...auditBase(binding),
+        eventType: 'intervention_skipped',
+        decision: 'skipped',
+        workerSessionId: sessionId,
+        skipReason: 'no_session_kind',
+        errorMessage:
+          'Worker framework 无法映射到 codex-cli/claude-code；请确认边缘智能体 framework 与当前会话类型一致',
+      })
       logger.debug({ bindingId: binding.id }, '[HumanWatch] No session kind for binding')
       return
     }
@@ -341,7 +312,20 @@ export async function evaluateHumanWatchBinding(
       return
     }
 
-    const prompt = await resolveInterventionPrompt(binding, ruleConfig, page.messages, deps)
+    const resolved = await resolveInterventionPrompt(binding, page.messages, deps)
+    if ('skipReason' in resolved) {
+      logHumanWatchIntervention({
+        ...auditBase(binding),
+        eventType: 'intervention_skipped',
+        decision: 'skipped',
+        rulesHit: evaluation.rulesHit,
+        fingerprint: evaluation.fingerprint,
+        skipReason: resolved.skipReason,
+        errorMessage: resolved.errorMessage ?? null,
+      })
+      return
+    }
+    const prompt = resolved.prompt
 
     logHumanWatchIntervention({
       ...auditBase(binding),
@@ -413,7 +397,7 @@ function handleTranscriptEvent(payload: SessionRealtimePayload) {
   if (!sessionId) return
 
   const workspaceId = payload.workspace_id ?? 1
-  const bindings = listEnabledBindingsForWorkerSession(workspaceId, sessionId)
+  const bindings = listEnabledBindingsForTranscriptUpdate(workspaceId, sessionId)
   if (bindings.length === 0) return
 
   for (const binding of bindings) {
@@ -477,6 +461,8 @@ export function initHumanWatchOrchestrator() {
       void pollLlmSweepBindings()
     }, POLL_INTERVAL_MS)
   }
+
+  void pollActiveBindings()
 
   logger.info('[HumanWatch] Orchestrator started (transcript events + 60s poll + LLM sweep)')
 }

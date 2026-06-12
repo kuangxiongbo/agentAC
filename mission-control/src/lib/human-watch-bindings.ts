@@ -11,7 +11,6 @@ import {
 import { isBridgeClientOnline, requestBridgeClientAgentDetail } from './bridge-server'
 import { isHumanWatchAgent, normalizeHumanWatchFramework } from './human-watch-helpers'
 import type { HumanWatchBindingMode } from './human-watch-types'
-import { buildDefaultBindingRulesOverride } from './human-watch-defaults'
 
 export interface HumanWatchBindingRow {
   id: number
@@ -57,6 +56,10 @@ export interface UpdateHumanWatchBindingInput {
   mode?: HumanWatchBindingMode
   rulesOverride?: Record<string, unknown> | null
   workerSessionId?: string | null
+  workerSyncIndexId?: number | null
+  workerLocalAgentId?: number | null
+  stewardSyncIndexId?: number | null
+  stewardLocalAgentId?: number | null
 }
 
 function dbOr(database?: Database.Database): Database.Database {
@@ -84,6 +87,38 @@ export function listEnabledBindingsForWorkerSession(
        ORDER BY updated_at DESC`,
     )
     .all(workspaceId, sessionId) as HumanWatchBindingRow[]
+}
+
+/**
+ * Resolve bindings for a transcript update: exact worker_session_id match, then
+ * bridge index session_key for the same worker (fixes stale binding session ids).
+ */
+export function listEnabledBindingsForTranscriptUpdate(
+  workspaceId: number,
+  sessionId: string,
+  database?: Database.Database,
+): HumanWatchBindingRow[] {
+  const sid = String(sessionId || '').trim()
+  if (!sid) return []
+
+  const exact = listEnabledBindingsForWorkerSession(workspaceId, sid, database)
+  if (exact.length > 0) return exact
+
+  const all = listAllEnabledHumanWatchBindings(workspaceId, database)
+  const matched: HumanWatchBindingRow[] = []
+  const seen = new Set<number>()
+  for (const binding of all) {
+    if (seen.has(binding.id)) continue
+    const localId = binding.worker_local_agent_id
+    if (localId == null) continue
+    const indexRow = getBridgeAgentIndexByLocalId(binding.client_id, localId)
+    const indexSession = String(indexRow?.session_key || '').trim()
+    if (indexSession && indexSession === sid) {
+      matched.push(binding)
+      seen.add(binding.id)
+    }
+  }
+  return matched
 }
 
 export function listAllEnabledHumanWatchBindings(
@@ -345,9 +380,8 @@ export async function createHumanWatchBinding(
   const now = Math.floor(Date.now() / 1000)
   const enabled = input.enabled !== false ? 1 : 0
   const mode = input.mode || 'auto_send'
-  const rulesPayload =
-    input.rulesOverride != null ? input.rulesOverride : buildDefaultBindingRulesOverride()
-  const rulesOverride = JSON.stringify(rulesPayload)
+  const rulesOverride =
+    input.rulesOverride != null ? JSON.stringify(input.rulesOverride) : null
 
   try {
     const result = db
@@ -421,4 +455,167 @@ export function updateHumanWatchBinding(
   ).run(enabled, mode, workerSessionId, rulesOverride, now, id, workspaceId)
 
   return getHumanWatchBinding(id, workspaceId, db)
+}
+
+/** Reassign worker/steward or patch flags; validates agents when endpoints change. */
+export async function patchHumanWatchBinding(
+  id: number,
+  workspaceId: number,
+  patch: UpdateHumanWatchBindingInput,
+  database?: Database.Database,
+): Promise<HumanWatchBindingRow | { error: string; status: number } | null> {
+  const db = dbOr(database)
+  const existing = getHumanWatchBinding(id, workspaceId, db)
+  if (!existing) return null
+
+  const reassignWorker =
+    patch.workerLocalAgentId != null ||
+    patch.workerSyncIndexId != null
+  const reassignSteward =
+    patch.stewardLocalAgentId != null ||
+    patch.stewardSyncIndexId != null
+
+  if (reassignWorker || reassignSteward) {
+    const validated = await validateHumanWatchBindingAgents({
+      clientId: existing.client_id,
+      workerSyncIndexId:
+        patch.workerSyncIndexId !== undefined
+          ? patch.workerSyncIndexId
+          : existing.worker_sync_index_id,
+      workerLocalAgentId:
+        patch.workerLocalAgentId !== undefined
+          ? patch.workerLocalAgentId
+          : existing.worker_local_agent_id,
+      stewardSyncIndexId:
+        patch.stewardSyncIndexId !== undefined
+          ? patch.stewardSyncIndexId
+          : existing.steward_sync_index_id,
+      stewardLocalAgentId:
+        patch.stewardLocalAgentId !== undefined
+          ? patch.stewardLocalAgentId
+          : existing.steward_local_agent_id,
+    })
+    if (!validated.ok) return validated
+
+    const now = Math.floor(Date.now() / 1000)
+    const enabled = patch.enabled != null ? (patch.enabled ? 1 : 0) : existing.enabled
+    const mode = patch.mode ?? existing.mode
+    const workerSessionId =
+      patch.workerSessionId !== undefined
+        ? patch.workerSessionId
+        : validated.worker.sessionKey ?? existing.worker_session_id
+    const rulesOverride =
+      patch.rulesOverride !== undefined
+        ? patch.rulesOverride
+          ? JSON.stringify(patch.rulesOverride)
+          : null
+        : existing.rules_override
+
+    db.prepare(
+      `UPDATE human_watch_bindings SET
+        worker_sync_index_id = ?, worker_local_agent_id = ?, worker_name = ?,
+        steward_sync_index_id = ?, steward_local_agent_id = ?, steward_name = ?,
+        worker_session_id = ?, enabled = ?, mode = ?, rules_override = ?, updated_at = ?
+       WHERE id = ? AND workspace_id = ?`,
+    ).run(
+      validated.worker.syncIndexId,
+      validated.worker.localAgentId,
+      validated.worker.name,
+      validated.steward.syncIndexId,
+      validated.steward.localAgentId,
+      validated.steward.name,
+      workerSessionId,
+      enabled,
+      mode,
+      rulesOverride,
+      now,
+      id,
+      workspaceId,
+    )
+
+    return getHumanWatchBinding(id, workspaceId, db)
+  }
+
+  const updated = updateHumanWatchBinding(id, workspaceId, patch, db)
+  return updated
+}
+
+export function deleteHumanWatchBinding(
+  id: number,
+  workspaceId: number,
+  database?: Database.Database,
+): boolean {
+  const db = dbOr(database)
+  const result = db
+    .prepare(`DELETE FROM human_watch_bindings WHERE id = ? AND workspace_id = ?`)
+    .run(id, workspaceId)
+  return result.changes > 0
+}
+
+export function deleteHumanWatchBindingsForSteward(
+  workspaceId: number,
+  clientId: string,
+  stewardLocalAgentId: number,
+  database?: Database.Database,
+): number {
+  const db = dbOr(database)
+  const result = db
+    .prepare(
+      `DELETE FROM human_watch_bindings
+       WHERE workspace_id = ? AND client_id = ? AND steward_local_agent_id = ?`,
+    )
+    .run(workspaceId, clientId, stewardLocalAgentId)
+  return result.changes
+}
+
+export function deleteHumanWatchBindingsForWorker(
+  workspaceId: number,
+  clientId: string,
+  workerLocalAgentId: number,
+  database?: Database.Database,
+): number {
+  const db = dbOr(database)
+  const result = db
+    .prepare(
+      `DELETE FROM human_watch_bindings
+       WHERE workspace_id = ? AND client_id = ? AND worker_local_agent_id = ?`,
+    )
+    .run(workspaceId, clientId, workerLocalAgentId)
+  return result.changes
+}
+
+/** Keep binding.worker_session_id aligned with bridge index session_key after edge sync. */
+export function syncHumanWatchBindingSessionIds(
+  clientId: string,
+  workspaceId = 1,
+  database?: Database.Database,
+): number {
+  const cid = clientId.trim()
+  if (!cid) return 0
+  const db = dbOr(database)
+  const now = Math.floor(Date.now() / 1000)
+  const bindings = db
+    .prepare(
+      `SELECT id, worker_local_agent_id, worker_session_id
+       FROM human_watch_bindings
+       WHERE workspace_id = ? AND client_id = ? AND enabled = 1 AND worker_local_agent_id IS NOT NULL`,
+    )
+    .all(workspaceId, cid) as Array<{
+    id: number
+    worker_local_agent_id: number
+    worker_session_id: string | null
+  }>
+
+  const update = db.prepare(
+    `UPDATE human_watch_bindings SET worker_session_id = ?, updated_at = ? WHERE id = ?`,
+  )
+  let updated = 0
+  for (const row of bindings) {
+    const indexRow = getBridgeAgentIndexByLocalId(cid, row.worker_local_agent_id)
+    const sessionKey = String(indexRow?.session_key || '').trim()
+    if (!sessionKey || sessionKey === row.worker_session_id) continue
+    update.run(sessionKey, now, row.id)
+    updated++
+  }
+  return updated
 }

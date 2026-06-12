@@ -431,12 +431,22 @@ const MAX_PONG_SILENCE_MS = 90_000
 function startHeartbeat(): void {
   stopHeartbeat()
   state.lastPong = Date.now()
+  let lastTickAt = Date.now()
   state.pingTimer = setInterval(() => {
     if (!state.ws || state.ws.readyState !== 1) {
       stopHeartbeat()
       return
     }
-    if (Date.now() - state.lastPong > MAX_PONG_SILENCE_MS) {
+    const now = Date.now()
+    const tickGap = now - lastTickAt
+    lastTickAt = now
+    if (tickGap > PING_INTERVAL_MS * 2.5) {
+      logger.warn({ tickGap }, '[RemoteBridge] Heartbeat gap (possible sleep) — probing connection')
+      state.lastPong = now
+      safeSend(state.ws, { type: 'ping', timestamp: now })
+      return
+    }
+    if (now - state.lastPong > MAX_PONG_SILENCE_MS) {
       logger.warn('[RemoteBridge] No pong received for too long, forcing reconnect')
       state.ws.close(4000, 'Heartbeat timeout')
       return

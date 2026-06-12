@@ -14,6 +14,15 @@
       "default": false,
       "enforcement": "server",
       "enforcementPoint": "GET/POST /api/human-watch/* — requireHumanWatchEntitlement"
+    },
+    {
+      "key": "enableLocalCliElevation",
+      "type": "boolean",
+      "label": "本地 CLI 提权",
+      "description": "是否允许在聊天输入框使用「提权」按钮，临时以最高权限向边缘客户端下发 Codex/Claude 会话指令（绕过沙箱与审批）。",
+      "default": false,
+      "enforcement": "server",
+      "enforcementPoint": "POST /api/chat/messages、/api/agents/message、/api/sessions/continue — local_cli_elevated"
     }
   ]
 }

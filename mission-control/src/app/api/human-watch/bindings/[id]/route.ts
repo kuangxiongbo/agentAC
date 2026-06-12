@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { mutationLimiter } from '@/lib/rate-limit'
 import {
+  deleteHumanWatchBinding,
   getHumanWatchBinding,
-  updateHumanWatchBinding,
+  patchHumanWatchBinding,
 } from '@/lib/human-watch-bindings'
 import { requireHumanWatchEntitlement } from '@/lib/human-watch-policy'
 import type { HumanWatchBindingMode } from '@/lib/human-watch-types'
@@ -29,6 +30,7 @@ function safeParseJson(raw: string): unknown {
 /**
  * GET /api/human-watch/bindings/:id
  * PATCH /api/human-watch/bindings/:id
+ * DELETE /api/human-watch/bindings/:id
  */
 export async function GET(
   request: NextRequest,
@@ -89,11 +91,16 @@ export async function PATCH(
     return NextResponse.json({ error: 'mode must be auto_send or suggest_only' }, { status: 400 })
   }
 
-  const updated = updateHumanWatchBinding(id, auth.user.workspace_id ?? 1, {
+  const workspaceId = auth.user.workspace_id ?? 1
+  const updated = await patchHumanWatchBinding(id, workspaceId, {
     enabled: typeof body.enabled === 'boolean' ? body.enabled : undefined,
     mode: modeRaw as HumanWatchBindingMode | undefined,
     workerSessionId:
       typeof body.worker_session_id === 'string' ? body.worker_session_id : undefined,
+    workerSyncIndexId: numOrNull(body.worker_sync_index_id),
+    workerLocalAgentId: numOrNull(body.worker_local_agent_id),
+    stewardSyncIndexId: numOrNull(body.steward_sync_index_id),
+    stewardLocalAgentId: numOrNull(body.steward_local_agent_id),
     rulesOverride:
       body.rules_override === null
         ? null
@@ -106,5 +113,56 @@ export async function PATCH(
     return NextResponse.json({ error: 'Binding not found' }, { status: 404 })
   }
 
+  if ('error' in updated) {
+    return NextResponse.json({ error: updated.error }, { status: updated.status })
+  }
+
   return NextResponse.json({ binding: serializeBinding(updated) })
+}
+
+function numOrNull(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined
+  if (value == null || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+export async function DELETE(
+  request: NextRequest,
+  context: { params: Promise<{ id: string }> },
+) {
+  const auth = requireRole(request, 'operator')
+  if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+
+  const rateCheck = mutationLimiter(request)
+  if (rateCheck) return rateCheck
+
+  const tenantId = auth.user.tenant_id ?? 1
+  const policy = await requireHumanWatchEntitlement(
+    tenantId,
+    auth.user.id,
+    auth.user.portal_tenant_role,
+  )
+  if (!policy.ok) {
+    return NextResponse.json({ error: policy.error }, { status: policy.status })
+  }
+
+  const { id: idRaw } = await context.params
+  const id = Number(idRaw)
+  if (!Number.isFinite(id)) {
+    return NextResponse.json({ error: 'Invalid binding id' }, { status: 400 })
+  }
+
+  const workspaceId = auth.user.workspace_id ?? 1
+  const existing = getHumanWatchBinding(id, workspaceId)
+  if (!existing) {
+    return NextResponse.json({ error: 'Binding not found' }, { status: 404 })
+  }
+
+  const removed = deleteHumanWatchBinding(id, workspaceId)
+  if (!removed) {
+    return NextResponse.json({ error: 'Binding not found' }, { status: 404 })
+  }
+
+  return NextResponse.json({ success: true, deleted_id: id })
 }

@@ -5,8 +5,17 @@ import { writeAgentToConfig, enrichAgentConfigFromWorkspace, removeAgentFromConf
 import { eventBus } from '@/lib/event-bus'
 import { logger } from '@/lib/logger'
 import { runOpenClaw } from '@/lib/command'
-import { getBridgeAgentIndexById, bridgeIndexRowToAgentListItem } from '@/lib/sync-agent-index'
+import {
+  getBridgeAgentIndexById,
+  bridgeIndexRowToAgentListItem,
+  mergeBridgeIndexIntoConfig,
+} from '@/lib/sync-agent-index'
 import { isBridgeClientOnline, requestBridgeClientAgentDetail } from '@/lib/bridge-server'
+import {
+  deleteHumanWatchStewardOnEdge,
+  resolveBridgeStewardHumanWatch,
+  updateHumanWatchStewardOnEdge,
+} from '@/lib/human-watch-remote'
 
 /**
  * GET /api/agents/[id] - Get a single agent by ID or name
@@ -53,7 +62,11 @@ export async function GET(
                   name: indexRow.remote_name,
                   source: 'bridge_index',
                   node_id: indexRow.client_id,
-                  config: enrichAgentConfigFromWorkspace(config),
+                  edge_local_agent_id: indexRow.local_agent_id,
+                  bridge_client_id: indexRow.client_id,
+                  config: enrichAgentConfigFromWorkspace(
+                    mergeBridgeIndexIntoConfig(config, indexRow),
+                  ),
                   bridge_online: true,
                   remote: true,
                   detail_live: true,
@@ -130,7 +143,41 @@ export async function PUT(
     const { id } = await params
     const workspaceId = auth.user.workspace_id ?? 1;
     const body = await request.json()
-    const { role, gateway_config, write_to_gateway } = body
+    const { role, gateway_config, write_to_gateway, soul_content, name: bodyName } = body
+
+    const numericId = Number(id)
+    if (!isNaN(numericId)) {
+      const indexRow = getBridgeAgentIndexById(numericId)
+      if (indexRow && (await resolveBridgeStewardHumanWatch(indexRow))) {
+        try {
+          const configPatch =
+            gateway_config && typeof gateway_config === 'object'
+              ? (gateway_config as Record<string, unknown>)
+              : null
+          const remoteAgent = await updateHumanWatchStewardOnEdge({
+            indexRow,
+            name: typeof bodyName === 'string' ? bodyName : undefined,
+            soulContent: typeof soul_content === 'string' ? soul_content : undefined,
+            configPatch,
+          })
+          return NextResponse.json({
+            success: true,
+            agent: {
+              id: indexRow.id,
+              name: indexRow.remote_name,
+              role: indexRow.role,
+              framework: indexRow.framework,
+              config: remoteAgent?.config ?? configPatch,
+              remote: true,
+              bridge_online: true,
+            },
+          })
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : 'Failed to update steward on edge'
+          return NextResponse.json({ error: message }, { status: 503 })
+        }
+      }
+    }
 
     let agent
     if (isNaN(Number(id))) {
@@ -278,6 +325,45 @@ export async function DELETE(
       removeWorkspace = Boolean(body?.remove_workspace)
     } catch {
       // Optional body
+    }
+
+    const numericId = Number(id)
+    if (!isNaN(numericId)) {
+      const indexRow = getBridgeAgentIndexById(numericId)
+      if (indexRow && (await resolveBridgeStewardHumanWatch(indexRow))) {
+        try {
+          const result = await deleteHumanWatchStewardOnEdge({
+            workspaceId,
+            indexRow,
+          })
+          db_helpers.logActivity(
+            'agent_deleted',
+            'agent',
+            indexRow.id,
+            auth.user.username,
+            `Deleted human-watch steward: ${result.deleted}`,
+            {
+              name: result.deleted,
+              client_id: indexRow.client_id,
+              bindings_removed: result.bindingsRemoved,
+            },
+            workspaceId,
+          )
+          eventBus.broadcast('agent.deleted', {
+            id: indexRow.id,
+            name: indexRow.remote_name,
+          })
+          return NextResponse.json({
+            success: true,
+            deleted: result.deleted,
+            bindings_removed: result.bindingsRemoved,
+            remote: true,
+          })
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : 'Failed to delete steward on edge'
+          return NextResponse.json({ error: message }, { status: 503 })
+        }
+      }
     }
 
     let agent

@@ -15,6 +15,12 @@ import { getDatabase } from './db'
 import { logger } from './logger'
 import { eventBus } from './event-bus'
 import { notifySessionTranscriptUpdated } from './session-realtime'
+import {
+  buildLocalCliOperatingRules,
+  resolveLocalCliPermissionMode,
+  withLocalCliPermissionArgs,
+  type LocalCliPermissionMode,
+} from './local-cli-permission'
 
 export type LocalSessionKind = 'claude-code' | 'codex-cli' | 'cursor' | 'opencode' | 'hermes'
 
@@ -43,6 +49,8 @@ export interface LocalPromptEnqueueResult {
 
 interface LocalSessionExecutionOptions {
   workingDirectory?: string | null
+  permissionMode?: LocalCliPermissionMode | null
+  agent?: LocalRuntimeAgentRef | null
 }
 
 export interface LocalRuntimeAgentRef {
@@ -408,9 +416,13 @@ function buildAgentRoleDefinition(agent: LocalRuntimeAgentRef | null | undefined
   return result || null
 }
 
-function buildSessionRolePreamble(agent: LocalRuntimeAgentRef): string | null {
+function buildSessionRolePreamble(
+  agent: LocalRuntimeAgentRef,
+  permissionMode?: LocalCliPermissionMode,
+): string | null {
   const roleDefinition = buildAgentRoleDefinition(agent)
   if (!roleDefinition) return null
+  const mode = permissionMode ?? resolveLocalCliPermissionMode(agent)
 
   return [
     'E-Agent-Client dedicated-session setup.',
@@ -419,16 +431,16 @@ function buildSessionRolePreamble(agent: LocalRuntimeAgentRef): string | null {
     '',
     roleDefinition,
     '',
-    'Operating rules:',
-    '1. Stay within this role and its scope.',
-    '2. Keep responses aligned with the role definition unless a higher-priority system instruction overrides it.',
-    '3. If a request conflicts with the role, explain the conflict instead of silently changing identity.',
+    ...buildLocalCliOperatingRules(mode),
   ].join('\n')
 }
 
 /** Standalone bootstrap (e.g. role refresh without a user turn). */
-function buildSessionBootstrapPrompt(agent: LocalRuntimeAgentRef): string | null {
-  const preamble = buildSessionRolePreamble(agent)
+function buildSessionBootstrapPrompt(
+  agent: LocalRuntimeAgentRef,
+  permissionMode?: LocalCliPermissionMode,
+): string | null {
+  const preamble = buildSessionRolePreamble(agent, permissionMode)
   if (!preamble) return null
 
   return [
@@ -443,8 +455,9 @@ function buildSessionBootstrapPrompt(agent: LocalRuntimeAgentRef): string | null
 function buildSessionBootstrapWithUserPrompt(
   agent: LocalRuntimeAgentRef,
   userPrompt: string,
+  permissionMode?: LocalCliPermissionMode,
 ): string | null {
-  const preamble = buildSessionRolePreamble(agent)
+  const preamble = buildSessionRolePreamble(agent, permissionMode)
   if (!preamble) return null
 
   return [
@@ -728,12 +741,30 @@ function isIgnorableCodexStderr(stderr: string): boolean {
   )
 }
 
+function resolveExecutionPermissionMode(options: LocalSessionExecutionOptions): LocalCliPermissionMode {
+  return resolveLocalCliPermissionMode(options.agent, options.permissionMode)
+}
+
+function buildAgentExecutionOptions(
+  agent: LocalRuntimeAgentRef,
+  workingDirectory?: string,
+): LocalSessionExecutionOptions {
+  const permissionMode = resolveLocalCliPermissionMode(agent)
+  return {
+    workingDirectory,
+    permissionMode,
+    agent,
+  }
+}
+
 async function runCodexExecCommand(
   args: string[],
   options: LocalSessionExecutionOptions,
 ): Promise<{ stdout: string; stderr: string }> {
+  const permissionMode = resolveExecutionPermissionMode(options)
+  const finalArgs = withLocalCliPermissionArgs('codex', args, permissionMode)
   try {
-    const result = await runCommand(resolveCodexBin(), args, buildCommandOptions(options))
+    const result = await runCommand(resolveCodexBin(), finalArgs, buildCommandOptions(options))
     return { stdout: result.stdout, stderr: result.stderr }
   } catch (error: unknown) {
     const err = error as { stdout?: string; stderr?: string; message?: string }
@@ -870,7 +901,8 @@ async function bootstrapAgentSession(
   roleHash: string | null,
   workingDirectory?: string,
 ): Promise<void> {
-  const bootstrapPrompt = buildSessionBootstrapPrompt(agent)
+  const permissionMode = resolveLocalCliPermissionMode(agent)
+  const bootstrapPrompt = buildSessionBootstrapPrompt(agent, permissionMode)
   if (!bootstrapPrompt || !roleHash) {
     persistAgentSessionBinding(agent, {
       sessionKey: sessionId,
@@ -897,7 +929,7 @@ async function bootstrapAgentSession(
   })
 
   try {
-    await executeLocalSessionPrompt(kind, sessionId, bootstrapPrompt, { workingDirectory })
+    await executeLocalSessionPrompt(kind, sessionId, bootstrapPrompt, buildAgentExecutionOptions(agent, workingDirectory))
     persistAgentSessionBinding(agent, {
       sessionKey: sessionId,
       state: 'ready',
@@ -929,7 +961,13 @@ const LOCAL_RUNTIME_EXECUTORS: Record<LocalSessionKind, LocalRuntimeExecutorAdap
     frameworks: ['claude', 'claude-code', 'claude-sdk'],
     async execute(sessionId, prompt, options) {
       ensureValidSessionId(sessionId)
-      const result = await runCommand('claude', ['--print', '--resume', sessionId, prompt], buildCommandOptions(options))
+      const permissionMode = resolveExecutionPermissionMode(options)
+      const args = withLocalCliPermissionArgs(
+        'claude',
+        ['--print', '--resume', sessionId, prompt],
+        permissionMode,
+      )
+      const result = await runCommand('claude', args, buildCommandOptions(options))
       return {
         sessionId,
         reply: (result.stdout || '').trim() || (result.stderr || '').trim(),
@@ -938,10 +976,16 @@ const LOCAL_RUNTIME_EXECUTORS: Record<LocalSessionKind, LocalRuntimeExecutorAdap
     async start(prompt, options) {
       const sessionId = randomUUID()
       const commandOptions = buildCommandOptions(options)
+      const permissionMode = resolveExecutionPermissionMode(options)
+      const args = withLocalCliPermissionArgs(
+        'claude',
+        ['--print', '--session-id', sessionId, prompt],
+        permissionMode,
+      )
       try {
         const result = await runCommand(
           'claude',
-          ['--print', '--session-id', sessionId, prompt],
+          args,
           commandOptions,
         )
         scheduleClaudeSessionIndexRefresh()
@@ -1241,6 +1285,9 @@ async function executeBoundLocalAgentPromptCore(
     if (!isAgentStillRegistered(freshAgent)) {
       return EMPTY_EXECUTION_RESULT
     }
+    const permissionMode = resolveLocalCliPermissionMode(freshAgent)
+    const agentExecOptions = (cwd?: string) =>
+      buildAgentExecutionOptions(freshAgent, cwd ?? workingDirectory)
     let activeSessionKey = getExistingAgentSessionKey(freshAgent)
     const roleHash = computeAgentRoleHash(freshAgent)
     const parsedConfig = getParsedLocalAgentSessionConfig(freshAgent)
@@ -1301,13 +1348,13 @@ async function executeBoundLocalAgentPromptCore(
             })
             shouldReprovisionAfterReset = true
           } else {
-            const combinedBootstrap = buildSessionBootstrapWithUserPrompt(freshAgent, prompt)
+            const combinedBootstrap = buildSessionBootstrapWithUserPrompt(freshAgent, prompt, permissionMode)
             if (combinedBootstrap) {
               const bootstrapResult = await executeLocalSessionPrompt(
                 kind,
                 activeSessionKey,
                 combinedBootstrap,
-                { workingDirectory: executionWorkingDirectory },
+                agentExecOptions(executionWorkingDirectory),
               )
               persistAgentSessionBinding(freshAgent, {
                 sessionKey: bootstrapResult.sessionId || activeSessionKey,
@@ -1357,7 +1404,7 @@ async function executeBoundLocalAgentPromptCore(
           kind,
           reboundSessionKey,
           prompt,
-          { workingDirectory: reboundCwd },
+          agentExecOptions(reboundCwd),
         )
         persistAgentSessionBinding(reboundAgent, {
           sessionKey: result.sessionId || reboundSessionKey,
@@ -1422,13 +1469,13 @@ async function executeBoundLocalAgentPromptCore(
     })
 
     try {
-      const needsRoleBootstrap = Boolean(buildSessionRolePreamble(freshAgent))
+      const needsRoleBootstrap = Boolean(buildSessionRolePreamble(freshAgent, permissionMode))
       const startupPrompt = needsRoleBootstrap
-        ? (buildSessionBootstrapWithUserPrompt(freshAgent, prompt) || prompt)
+        ? (buildSessionBootstrapWithUserPrompt(freshAgent, prompt, permissionMode) || prompt)
         : prompt
       const provisionWorkingDirectory = resolveCwd(null)
       const result = await adapter.start(startupPrompt, {
-        workingDirectory: provisionWorkingDirectory,
+        ...buildAgentExecutionOptions(freshAgent, provisionWorkingDirectory),
         agentName: asTrimmedString(freshAgent.name),
         excludeAgentId: freshAgent.id ?? null,
       })
@@ -1505,7 +1552,8 @@ export async function provisionAgentDedicatedSession(
     workspacePath: freshAgent.workspace_path,
     config: freshAgent.config,
   })
-  const bootstrapPrompt = buildSessionBootstrapPrompt(freshAgent)
+  const permissionMode = resolveLocalCliPermissionMode(freshAgent)
+  const bootstrapPrompt = buildSessionBootstrapPrompt(freshAgent, permissionMode)
     || [
       'E-Agent-Client dedicated-session setup.',
       'Reply with exactly: READY',
@@ -1525,7 +1573,7 @@ export async function provisionAgentDedicatedSession(
 
     try {
       const result = await adapter.start!(bootstrapPrompt, {
-        workingDirectory,
+        ...buildAgentExecutionOptions(freshAgent, workingDirectory),
         agentName: asTrimmedString(freshAgent.name),
         excludeAgentId: freshAgent.id ?? null,
       })
@@ -1648,7 +1696,12 @@ export async function executeBoundLocalAgentPrompt(
     })
 
   if (overrideSessionKey) {
-    return executeLocalSessionPrompt(kind, overrideSessionKey, prompt, { workingDirectory })
+    return executeLocalSessionPrompt(
+      kind,
+      overrideSessionKey,
+      prompt,
+      buildAgentExecutionOptions(agentInput, workingDirectory),
+    )
   }
 
   const executionKey = getSerializedAgentExecutionKey(agentInput, kind)
@@ -1742,7 +1795,12 @@ export function enqueueBoundLocalAgentPrompt(
     ? resolveLocalExecutionWorkingDirectory(kind, overrideSessionKey, freshAgent, workingDirectory)
     : workingDirectory
   const operation = overrideSessionKey
-    ? () => executeLocalSessionPrompt(kind, overrideSessionKey, prompt, { workingDirectory: executionCwd })
+    ? () => executeLocalSessionPrompt(
+      kind,
+      overrideSessionKey,
+      prompt,
+      buildAgentExecutionOptions(freshAgent, executionCwd),
+    )
     : () => executeBoundLocalAgentPromptCore(freshAgent, prompt, kind, workingDirectory)
 
   scheduleSerializedLocalPrompt(executionKey, kind, sessionKeyHint, async () => {

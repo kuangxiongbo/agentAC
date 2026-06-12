@@ -13,6 +13,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Edge 托盘 runtime zip（与 client 同版本）；缺失则自动 sync
+if [[ ! -f public/edge-runtime/manifest.json ]] || [[ ! -f public/edge-runtime/client-runtime-"$(node -p "require('./package.json').version")"-darwin-aarch64.zip ]]; then
+  printf '[docker-buildx] syncing edge runtime bundle…\n'
+  bash scripts/sync-edge-runtime-bundle.sh
+fi
+
 BUILDER_NAME="${MC_DOCKER_BUILDX_BUILDER:-mc-multiarch}"
 PLATFORM="${MC_DOCKER_PLATFORM:-linux/amd64,linux/arm64}"
 IMAGE="${MC_IMAGE:-}"
@@ -88,9 +94,11 @@ fi
 
 BUILD_ARGS=(
   build
+  --network=host
   --platform "$PLATFORM"
   -f Dockerfile
   --build-arg "MC_VERSION=$VERSION"
+  --build-arg "APT_MIRROR=mirrors.aliyun.com"
   "${TAG_ARGS[@]}"
   --provenance=false
   --sbom=false

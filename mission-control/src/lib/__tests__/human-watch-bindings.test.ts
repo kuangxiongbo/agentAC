@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
 import { runMigrations } from '@/lib/migrations'
 import {
+  deleteHumanWatchBinding,
+  deleteHumanWatchBindingsForSteward,
   getHumanWatchBinding,
   listHumanWatchBindings,
   updateHumanWatchBinding,
@@ -46,5 +48,16 @@ describe('human-watch-bindings', () => {
     expect(updated?.enabled).toBe(0)
     expect(updated?.mode).toBe('suggest_only')
     expect(updated?.rules_override).toContain('idle_timeout_seconds')
+  })
+
+  it('deletes a binding by id', () => {
+    expect(deleteHumanWatchBinding(1, 1, db)).toBe(true)
+    expect(listHumanWatchBindings({ workspaceId: 1, clientId: 'mac-1' }, db)).toHaveLength(0)
+  })
+
+  it('deletes all bindings for a steward', () => {
+    const removed = deleteHumanWatchBindingsForSteward(1, 'mac-1', 9, db)
+    expect(removed).toBe(1)
+    expect(getHumanWatchBinding(1, 1, db)).toBeNull()
   })
 })

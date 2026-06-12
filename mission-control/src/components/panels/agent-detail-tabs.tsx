@@ -1080,19 +1080,11 @@ export function CreateAgentModal({
     () => runtimeManagedParents.find((agent) => agent.framework === formData.framework),
     [runtimeManagedParents, formData.framework]
   )
-  const parentCandidates = useMemo(
-    () => existingAgents
-      .filter(
-        (agent) =>
-          !agent.hidden &&
-          agent.id !== Number(formData.id) &&
-          agent.framework === formData.framework &&
-          !isRuntimeManagedAgent(agent) &&
-          agent.role !== 'main-agent',
-      )
-      .sort((a, b) => a.name.localeCompare(b.name)),
-    [existingAgents, formData.framework, formData.id]
-  )
+  const mainRuntimeLabel = useMemo(() => {
+    if (selectedMainAgent) return getAgentDisplayName(selectedMainAgent)
+    const meta = getMainAgentRuntimeMeta(formData.framework)
+    return meta?.label || formData.framework
+  }, [selectedMainAgent, formData.framework])
 
   useEffect(() => {
     if (detectedRuntimeOptions.length === 0) return
@@ -1491,25 +1483,13 @@ export function CreateAgentModal({
                   />
                 </div>
                 <div>
-                   <label className="block text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1.5">{t('parentAgent')}</label>
-                   <select
-                     value={formData.parent_id || ''}
-                     onChange={(e) => setFormData(prev => ({ ...prev, parent_id: e.target.value || '' }))}
-                     className="w-full bg-surface-1 text-foreground border border-border rounded-lg px-3 py-2.5 outline-none focus:ring-2 focus:ring-primary/20"
-                   >
-                     {parentCandidates.length === 0 ? (
-                       <option value="">{selectedMainAgent ? selectedMainAgent.name : 'No parent available'}</option>
-                     ) : (
-                       parentCandidates.map(a => (
-                         <option key={a.id} value={a.id}>
-                           {getAgentDisplayName(a)}
-                         </option>
-                       ))
-                     )}
-                   </select>
-                   <p className="mt-1 text-[10px] text-muted-foreground/60">
-                     Child agents are created under the selected main runtime family.
-                   </p>
+                  <label className="block text-xs font-bold text-muted-foreground uppercase tracking-widest mb-1.5">
+                    {t('mainRuntimeFamily')}
+                  </label>
+                  <div className="w-full rounded-lg border border-border bg-surface-1/80 px-3 py-2.5 text-sm text-foreground">
+                    {mainRuntimeLabel}
+                  </div>
+                  <p className="mt-1 text-[10px] text-muted-foreground/60">{t('mainRuntimeFamilyHint')}</p>
                 </div>
               </div>
             </div>
@@ -1647,7 +1627,7 @@ export function CreateAgentModal({
 
                     <div className="grid grid-cols-2 gap-y-4 gap-x-8 pt-5 border-t border-border/40 text-xs">
                       <ReviewItem label={t('idLabel')} value={formData.id} mono />
-                      <ReviewItem label={t('parentAgent')} value={existingAgents.find(a => a.id === Number(formData.parent_id))?.name || selectedMainAgent?.name || 'Top Level'} />
+                      <ReviewItem label={t('mainRuntimeFamily')} value={mainRuntimeLabel} />
                       <ReviewItem label={t('model')} value={MODEL_TIER_LABELS[formData.modelTier]} />
                       <ReviewItem label={t('templateLabel')} value={selectedTemplateData?.label || t('custom')} />
                       {formData.workspace_path && (

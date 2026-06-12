@@ -148,7 +148,7 @@ export async function resolveEffectiveLicense(
       allowed: true,
       licensed: true,
       source: 'default',
-      entitlements: mergeEntitlements({ enableHumanWatch: true }),
+      entitlements: mergeEntitlements({ enableHumanWatch: true, enableLocalCliElevation: true }),
       expiresAt: null,
       requiresSubscription: false,
       appId: LICENSE_SCHEMA_SETTINGS.appId || LICENSE_APP_ID,

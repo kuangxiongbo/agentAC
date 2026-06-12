@@ -99,7 +99,6 @@ const navItemTranslationKeys: Record<string, string> = {
   activity: 'activity',
   logs: 'logs',
   'cost-tracker': 'costTracker',
-  'human-watch': 'humanWatch',
   nodes: 'nodes',
   'exec-approvals': 'approvals',
   office: 'office',
@@ -154,7 +153,7 @@ const gatewayOnlyPanels = new Set([
   'gateways', 'gateway-config', 'channels', 'nodes', 'exec-approvals',
   ...getPluginNavItems().filter(pi => pi.gatewayOnly).map(pi => pi.id),
 ])
-const centralOnlyPanels = new Set(['human-watch'])
+const centralOnlyPanels = new Set<string>([])
 const adminOnlyPanels = new Set<string>([])
 
 export function NavRail() {

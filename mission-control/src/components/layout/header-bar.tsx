@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { ThemeSelector } from '@/components/ui/theme-selector'
 import { LanguageSwitcher } from '@/components/ui/language-switcher'
 import { DigitalClock } from '@/components/ui/digital-clock'
+import { EdgeDownloadHeaderButton, EdgeDownloadTooltipLink } from '@/components/edge/edge-download-link'
 import { getNavigationMetrics, navigationMetricEventName } from '@/lib/navigation-metrics'
 
 interface SearchResult {
@@ -379,6 +380,8 @@ export function HeaderBar() {
             <SearchIcon />
           </Button>
 
+          <EdgeDownloadHeaderButton />
+
           <Button
             variant="ghost"
             size="icon-sm"
@@ -538,9 +541,22 @@ function ModeBadge({
 
   if (isLocal && !isServiceMode) {
     return (
-      <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-2xs bg-void-cyan/10 border border-void-cyan/25">
-        <span className="w-1.5 h-1.5 rounded-full bg-void-cyan" />
-        <span className="font-medium text-void-cyan">{th('local')}</span>
+      <div
+        className="relative"
+        onMouseEnter={() => setShowTooltip(true)}
+        onMouseLeave={() => setShowTooltip(false)}
+      >
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-2xs bg-void-cyan/10 border border-void-cyan/25">
+          <span className="w-1.5 h-1.5 rounded-full bg-void-cyan" />
+          <span className="font-medium text-void-cyan">{th('local')}</span>
+        </div>
+        {showTooltip && (
+          <div className="absolute top-full left-0 mt-1.5 z-50 w-56 rounded-lg border border-border bg-card/95 backdrop-blur-md p-3 shadow-xl text-xs">
+            <div className="font-medium text-foreground mb-2">{th('local')}</div>
+            <p className="text-muted-foreground text-[11px] leading-relaxed">{th('downloadEdgeClientHint')}</p>
+            <EdgeDownloadTooltipLink />
+          </div>
+        )}
       </div>
     )
   }
@@ -629,6 +645,7 @@ function ModeBadge({
                 <div className="text-muted-foreground">{th('noClientsConnected')}</div>
               )}
             </div>
+            <EdgeDownloadTooltipLink />
           </div>
         )}
       </div>
@@ -723,6 +740,7 @@ function ModeBadge({
               {th('clickToReconnect')}
             </div>
           )}
+          <EdgeDownloadTooltipLink />
         </div>
       )}
     </div>

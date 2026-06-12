@@ -9,11 +9,21 @@ export interface HumanWatchTranscriptLine {
 
 export interface HumanWatchRuleConfig {
   enabled?: boolean
+  /** 通用空闲阈值（秒）；无 L2/L3 信号时使用 */
   idle_timeout_seconds?: number
+  /** 已检测到确认/工具受阻时使用的更短空闲阈值 */
+  idle_timeout_with_stuck_seconds?: number
   stuck_signals?: Array<'pending_tool' | 'confirmation_text'>
+  /** 强确认话术（最近 2 条 assistant 内匹配） */
   confirmation_patterns?: string[]
+  /** 弱话术（仅最后一条 assistant，降低误触） */
+  confirmation_patterns_weak?: string[]
   require_combination?: boolean
+  /** 要求 transcript 最后一条为 assistant（用户尚未回复） */
+  require_last_message_from_assistant?: boolean
   exclude_if_tool_active_within_seconds?: number
+  /** 无时间戳时：强信号或 pending_tool 可视为已空闲 */
+  match_when_stuck_without_timestamps?: boolean
 }
 
 export interface HumanWatchRuleEvaluation {
@@ -23,52 +33,134 @@ export interface HumanWatchRuleEvaluation {
   reason?: string
 }
 
-const DEFAULT_CONFIRMATION_PATTERNS = [
+/** 高置信：确认、只读、无法执行、等待用户 */
+const DEFAULT_STRONG_CONFIRMATION_PATTERNS = [
   'please confirm',
   'waiting for your',
   'which option',
+  'waiting for you',
   '请确认',
   '请选择',
   '等待确认',
+  '需要你确认',
+  '你确认',
+  '确认后',
+  '请回复',
+  '是否继续',
+  '要不要',
+  '只读',
+  'read-only',
+  'read only',
+  '不能创建',
+  '无法创建',
+  '不能直接',
+  'cannot create',
+  'permission denied',
+  '受阻',
+  'blocked',
+  'stalled',
 ]
+
+/** 弱信号：仅匹配最后一条 assistant，避免技术长文误触 */
+const DEFAULT_WEAK_CONFIRMATION_PATTERNS = ['继续吗', '请告诉我', '下一步怎么做']
 
 export const DEFAULT_HUMAN_WATCH_RULE_CONFIG: HumanWatchRuleConfig = {
   enabled: true,
-  idle_timeout_seconds: 90,
+  idle_timeout_seconds: 50,
+  idle_timeout_with_stuck_seconds: 30,
   stuck_signals: ['pending_tool', 'confirmation_text'],
-  confirmation_patterns: DEFAULT_CONFIRMATION_PATTERNS,
+  confirmation_patterns: DEFAULT_STRONG_CONFIRMATION_PATTERNS,
+  confirmation_patterns_weak: DEFAULT_WEAK_CONFIRMATION_PATTERNS,
   require_combination: true,
-  exclude_if_tool_active_within_seconds: 120,
+  require_last_message_from_assistant: true,
+  exclude_if_tool_active_within_seconds: 45,
+  match_when_stuck_without_timestamps: true,
 }
 
 function normalizeContent(line: HumanWatchTranscriptLine): string {
   return String(line.content || '').trim().toLowerCase()
 }
 
+function normalizeRole(role: string): string {
+  return String(role || '').trim().toLowerCase()
+}
+
+function lastNonSystemMessage(
+  lines: HumanWatchTranscriptLine[],
+): HumanWatchTranscriptLine | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const role = normalizeRole(lines[i]!.role)
+    if (role === 'assistant' || role === 'user') return lines[i]!
+  }
+  return null
+}
+
 function hasPendingToolSignal(lines: HumanWatchTranscriptLine[]): boolean {
-  return lines.some((line) => {
-    const role = String(line.role || '').toLowerCase()
+  const tail = lines.slice(-8)
+  return tail.some((line) => {
+    const role = normalizeRole(line.role)
     const content = normalizeContent(line)
     return role === 'tool' || content.includes('tool_call') || content.includes('pending_tool')
   })
 }
 
-function hasConfirmationText(
-  lines: HumanWatchTranscriptLine[],
-  patterns: string[],
-): boolean {
-  const assistantLines = lines.filter((line) => String(line.role || '').toLowerCase() === 'assistant')
-  if (assistantLines.length === 0) return false
-  const last = normalizeContent(assistantLines[assistantLines.length - 1]!)
-  return patterns.some((pattern) => last.includes(pattern.toLowerCase()))
+function lineMatchesPatterns(content: string, patterns: string[]): boolean {
+  return patterns.some((pattern) => content.includes(pattern.toLowerCase()))
 }
 
-function lastActivityAt(lines: HumanWatchTranscriptLine[], nowSec: number): number {
+export function detectConfirmationSignals(
+  lines: HumanWatchTranscriptLine[],
+  config: Pick<
+    HumanWatchRuleConfig,
+    'confirmation_patterns' | 'confirmation_patterns_weak' | 'require_last_message_from_assistant'
+  > = {},
+): { strong: boolean; weak: boolean; strongOnly: boolean } {
+  const requireLastAssistant = config.require_last_message_from_assistant !== false
+  const strongPatterns = config.confirmation_patterns?.length
+    ? config.confirmation_patterns
+    : DEFAULT_STRONG_CONFIRMATION_PATTERNS
+  const weakPatterns = config.confirmation_patterns_weak?.length
+    ? config.confirmation_patterns_weak
+    : DEFAULT_WEAK_CONFIRMATION_PATTERNS
+
+  const assistantLines = lines.filter((line) => normalizeRole(line.role) === 'assistant')
+  if (assistantLines.length === 0) {
+    return { strong: false, weak: false, strongOnly: false }
+  }
+
+  if (requireLastAssistant) {
+    const last = lastNonSystemMessage(lines)
+    if (!last || normalizeRole(last.role) !== 'assistant') {
+      return { strong: false, weak: false, strongOnly: false }
+    }
+  }
+
+  const recentStrong = assistantLines.slice(-2)
+  const strong = recentStrong.some((line) =>
+    lineMatchesPatterns(normalizeContent(line), strongPatterns),
+  )
+
+  const lastAssistant = assistantLines[assistantLines.length - 1]!
+  const weak = lineMatchesPatterns(normalizeContent(lastAssistant), weakPatterns)
+
+  return { strong, weak, strongOnly: strong && !weak }
+}
+
+function hasConfirmationText(
+  lines: HumanWatchTranscriptLine[],
+  config: HumanWatchRuleConfig,
+): boolean {
+  const { strong, weak } = detectConfirmationSignals(lines, config)
+  return strong || weak
+}
+
+/** Last message activity epoch seconds; 0 if transcript lines lack timestamps. */
+function lastActivityAt(lines: HumanWatchTranscriptLine[]): number {
   let latest = 0
   for (const line of lines) {
     if (line.createdAt && line.createdAt > latest) latest = line.createdAt
   }
-  return latest || nowSec
+  return latest
 }
 
 function recentToolActivity(
@@ -78,7 +170,7 @@ function recentToolActivity(
 ): boolean {
   const cutoff = nowSec - withinSeconds
   return lines.some((line) => {
-    const role = String(line.role || '').toLowerCase()
+    const role = normalizeRole(line.role)
     if (role !== 'tool') return false
     return (line.createdAt ?? nowSec) >= cutoff
   })
@@ -105,14 +197,17 @@ export function evaluateHumanWatchRules(
     }
   }
 
-  const idleTimeout = config.idle_timeout_seconds ?? DEFAULT_HUMAN_WATCH_RULE_CONFIG.idle_timeout_seconds!
-  const patterns = config.confirmation_patterns?.length
-    ? config.confirmation_patterns
-    : DEFAULT_CONFIRMATION_PATTERNS
+  const baseIdleTimeout =
+    config.idle_timeout_seconds ?? DEFAULT_HUMAN_WATCH_RULE_CONFIG.idle_timeout_seconds!
+  const stuckIdleTimeout =
+    config.idle_timeout_with_stuck_seconds ??
+    DEFAULT_HUMAN_WATCH_RULE_CONFIG.idle_timeout_with_stuck_seconds ??
+    baseIdleTimeout
   const stuckSignals = config.stuck_signals ?? DEFAULT_HUMAN_WATCH_RULE_CONFIG.stuck_signals!
   const requireCombination = config.require_combination !== false
   const toolWindow = config.exclude_if_tool_active_within_seconds
     ?? DEFAULT_HUMAN_WATCH_RULE_CONFIG.exclude_if_tool_active_within_seconds!
+  const matchWithoutTimestamps = config.match_when_stuck_without_timestamps !== false
 
   if (recentToolActivity(lines, nowSec, toolWindow)) {
     return {
@@ -123,18 +218,50 @@ export function evaluateHumanWatchRules(
     }
   }
 
-  const lastAt = lastActivityAt(lines, nowSec)
-  const idle = nowSec - lastAt >= idleTimeout
-  if (idle) rulesHit.idle_timeout = true
+  const last = lastNonSystemMessage(lines)
+  if (config.require_last_message_from_assistant !== false) {
+    if (!last || normalizeRole(last.role) !== 'assistant') {
+      return {
+        matched: false,
+        rulesHit,
+        fingerprint: buildHumanWatchFingerprint(rulesHit),
+        reason: 'awaiting_user_reply',
+      }
+    }
+  }
 
   if (stuckSignals.includes('pending_tool') && hasPendingToolSignal(lines)) {
     rulesHit.pending_tool = true
   }
-  if (stuckSignals.includes('confirmation_text') && hasConfirmationText(lines, patterns)) {
+
+  const confirmSignals = detectConfirmationSignals(lines, config)
+  if (stuckSignals.includes('confirmation_text') && (confirmSignals.strong || confirmSignals.weak)) {
     rulesHit.confirmation_text = true
+    if (confirmSignals.strong) rulesHit.confirmation_strong = true
+    if (confirmSignals.weak) rulesHit.confirmation_weak = true
   }
 
   const l2or3 = Boolean(rulesHit.pending_tool || rulesHit.confirmation_text)
+  const highConfidenceStuck = Boolean(
+    rulesHit.pending_tool || confirmSignals.strong,
+  )
+  const effectiveIdleTimeout = l2or3 ? Math.min(baseIdleTimeout, stuckIdleTimeout) : baseIdleTimeout
+
+  const lastAt = lastActivityAt(lines)
+  let idle = false
+  if (lastAt > 0) {
+    idle = nowSec - lastAt >= effectiveIdleTimeout
+  } else if (
+    lines.length > 0 &&
+    l2or3 &&
+    matchWithoutTimestamps &&
+    highConfidenceStuck
+  ) {
+    idle = true
+    rulesHit.idle_unknown_timestamps = true
+  }
+  if (idle) rulesHit.idle_timeout = true
+
   const matched = requireCombination ? Boolean(rulesHit.idle_timeout && l2or3) : Boolean(rulesHit.idle_timeout || l2or3)
 
   return {

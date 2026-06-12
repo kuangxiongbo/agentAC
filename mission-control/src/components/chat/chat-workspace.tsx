@@ -13,6 +13,7 @@ import {
 import { ConversationList } from './conversation-list'
 import { MessageList } from './message-list'
 import { ChatInput } from './chat-input'
+import { LocalCliElevationButton } from './local-cli-elevation-button'
 import { Button } from '@/components/ui/button'
 import {
   SessionMessage,
@@ -191,7 +192,11 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
   }, [isOverlay, onClose])
 
   // Send message handler with optimistic updates
-  const handleSend = async (content: string, attachments?: ChatAttachment[]) => {
+  const handleSend = async (
+    content: string,
+    attachments?: ChatAttachment[],
+    options?: { localCliElevated?: boolean },
+  ) => {
     if (!activeConversation) return
 
     const mentionMatch = content.match(/^@(\w+)\s/)
@@ -232,6 +237,7 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
           message_type: 'text',
           attachments,
           forward: true,
+          ...(options?.localCliElevated ? { local_cli_elevated: true } : {}),
         }),
       })
 
@@ -703,6 +709,7 @@ function SessionConversationView({
   const stickToBottomRef = useRef(true)
   const [showNewTranscript, setShowNewTranscript] = useState(false)
   const [continuePrompt, setContinuePrompt] = useState('')
+  const [continueElevated, setContinueElevated] = useState(false)
   const [continueBusy, setContinueBusy] = useState(false)
   const [awaitingReplySeconds, setAwaitingReplySeconds] = useState(0)
   const [continueError, setContinueError] = useState<string | null>(null)
@@ -1037,6 +1044,8 @@ function SessionConversationView({
     setPendingUserMessage(optimisticUser)
     transcriptBaselineRef.current = messages.length
     setContinuePrompt('')
+    const elevatedForTurn = continueElevated
+    setContinueElevated(false)
     stickToBottomRef.current = true
     setContinueBusy(true)
     setContinueError(null)
@@ -1056,6 +1065,7 @@ function SessionConversationView({
             message_type: 'text',
             forward: true,
             sessionKey: session.sessionKey || undefined,
+            ...(elevatedForTurn ? { local_cli_elevated: true } : {}),
           }),
         })
         const data = await res.json().catch(() => ({}))
@@ -1083,6 +1093,7 @@ function SessionConversationView({
             prompt,
             ...(session.nodeId ? { client_id: session.nodeId } : {}),
             ...(session.workingDir ? { working_dir: session.workingDir } : {}),
+            ...(elevatedForTurn ? { local_cli_elevated: true } : {}),
           }),
         })
         const data = await res.json().catch(() => ({}))
@@ -1495,6 +1506,14 @@ function SessionConversationView({
             disabled={needsEdgeClientForContinue || continueBusy || backgroundPromptBusy}
             className="h-7 flex-1 rounded border border-border/40 bg-surface-1 px-2 font-mono-tight text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-50"
           />
+          {!isGatewaySession && (
+            <LocalCliElevationButton
+              elevated={continueElevated}
+              onElevatedChange={setContinueElevated}
+              disabled={needsEdgeClientForContinue || continueBusy || backgroundPromptBusy}
+              size="sm"
+            />
+          )}
           <Button
             onClick={handleContinueSession}
             size="sm"

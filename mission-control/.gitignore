@@ -34,6 +34,12 @@ deploy/1panel.env
 .data/
 aegis/
 
+# Edge runtime zip（体积大；manifest.json 可提交，构建前运行 scripts/sync-edge-runtime-bundle.sh）
+public/edge-runtime/*.zip
+
+# Edge 托盘 .dmg（体积大；manifest.json 可提交，构建前运行 scripts/sync-edge-tray-bundle.sh）
+public/edge-tray/*.dmg
+
 # Playwright
 test-results/
 playwright-report/

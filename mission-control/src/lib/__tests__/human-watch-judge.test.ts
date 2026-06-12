@@ -37,6 +37,14 @@ describe('human-watch-judge', () => {
     expect(summary).toContain('ASSISTANT:')
   })
 
+  it('forces llm_enabled for human-watch steward agents', () => {
+    const config = parseStewardConfigFromAgent({
+      role: 'human-watch',
+      config: JSON.stringify({ agent_kind: 'human_watch', steward: { llm_enabled: false } }),
+    })
+    expect(config.llm_enabled).toBe(true)
+  })
+
   it('substitutes summary into judge prompt template', () => {
     const prompt = buildStewardJudgePrompt('line-1', { judge_prompt_template: 'Go: {summary}' })
     expect(prompt).toBe('Go: line-1')

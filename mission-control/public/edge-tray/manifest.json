@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "center_version": "2.0.1",
+  "tray_version": "0.1.0",
+  "published_at": "2026-06-08T06:45:58Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "url": "/edge-tray/e-agent-edge-2.0.1-darwin-aarch64.dmg",
+      "sha256": "0425f8cf7f3e94abe85a07e8f84f9cc0145a271933b2d69bc6281e439825a1fe",
+      "filename": "E-Agent-Edge.dmg"
+    }
+  }
+}

@@ -1105,7 +1105,9 @@ function AgentDetailModalPhase3({
               <AgentAvatar name={agent.name} size="md" />
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <h3 className="text-lg font-semibold text-foreground leading-tight truncate">{agentState.name}</h3>
+                  <h3 className="text-lg font-semibold text-foreground leading-tight truncate">
+                    {getAgentDisplayName(agentState)}
+                  </h3>
                   <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border ${statusBadgeStyles[agentState.status]}`}>
                     <span className={`w-1.5 h-1.5 rounded-full ${statusColors[agentState.status]}`} />
                     {t(agentState.status as 'idle' | 'busy' | 'offline' | 'error')}

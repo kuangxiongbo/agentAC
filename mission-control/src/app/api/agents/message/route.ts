@@ -13,6 +13,22 @@ import {
   enqueueBoundLocalAgentPrompt,
   getLocalSessionKindForFramework,
 } from '@/lib/local-session-executor'
+import { isBridgeClientOnline, requestBridgeClientAgentMessage } from '@/lib/bridge-server'
+import { getBridgeAgentIndexByRecipient } from '@/lib/sync-agent-index'
+import { assertLocalCliElevationAllowed } from '@/lib/local-cli-elevation-auth'
+import { elevatedFlagToPermissionMode, isLocalCliElevatedFlag } from '@/lib/parse-local-cli-elevated'
+
+/** Edge agent first message may bootstrap Codex/Claude session (up to 5 min). */
+export const maxDuration = 300
+
+function bridgeMessageHttpStatus(error: string): number {
+  if (/not found/i.test(error)) return 404
+  if (/no session key/i.test(error)) return 400
+  if (/dedicated session/i.test(error)) return 409
+  if (/not connected|socket unavailable/i.test(error)) return 503
+  if (/timed out/i.test(error)) return 504
+  return 500
+}
 
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'operator')
@@ -24,8 +40,25 @@ export async function POST(request: NextRequest) {
   try {
     const result = await validateBody(request, createMessageSchema)
     if ('error' in result) return result.error
-    const { to, message } = result.data
+    const { to, message, local_cli_elevated: localCliElevatedRaw } = result.data
     const from = auth.user.display_name || auth.user.username || 'system'
+    const localCliElevated = isLocalCliElevatedFlag(localCliElevatedRaw)
+
+    const elevationGate = await assertLocalCliElevationAllowed({
+      user: auth.user,
+      elevated: localCliElevated,
+    })
+    if (!elevationGate.ok) {
+      return NextResponse.json(
+        {
+          error: elevationGate.error,
+          code: elevationGate.code,
+          subscriptionsUrl: elevationGate.subscriptionsUrl,
+        },
+        { status: elevationGate.status },
+      )
+    }
+    const permissionMode = elevatedFlagToPermissionMode(localCliElevated)
 
     // Scan message for injection — this gets forwarded directly to an agent
     const injectionReport = scanForInjection(message, { context: 'prompt' })
@@ -50,9 +83,72 @@ export async function POST(request: NextRequest) {
     const agent = db
       .prepare('SELECT * FROM agents WHERE name = ? AND workspace_id = ?')
       .get(to, workspaceId) as any
+
     if (!agent) {
-      return NextResponse.json({ error: 'Recipient agent not found' }, { status: 404 })
+      const indexRow = getBridgeAgentIndexByRecipient(to)
+      if (!indexRow) {
+        return NextResponse.json({ error: 'Recipient agent not found' }, { status: 404 })
+      }
+      if (!isBridgeClientOnline(indexRow.client_id)) {
+        return NextResponse.json(
+          {
+            error: `边缘客户端未连接（${indexRow.client_id}），无法向该智能体发消息。请保持本地客户端运行并已连上 Bridge。`,
+            code: 'bridge_offline',
+            client_id: indexRow.client_id,
+          },
+          { status: 503 },
+        )
+      }
+
+      try {
+        const remote = await requestBridgeClientAgentMessage({
+          clientId: indexRow.client_id,
+          localAgentId: indexRow.local_agent_id,
+          message,
+          from,
+          localCliElevated,
+        })
+        if (!remote.success) {
+          return NextResponse.json(
+            { error: 'Failed to deliver message to edge agent' },
+            { status: 500 },
+          )
+        }
+
+        db_helpers.logActivity(
+          'agent_message',
+          'bridge_agent',
+          indexRow.id,
+          from,
+          `Sent message to ${indexRow.remote_name} via ${indexRow.client_id}`,
+          {
+            to: indexRow.remote_name,
+            client_id: indexRow.client_id,
+            local_agent_id: indexRow.local_agent_id,
+          },
+          workspaceId,
+        )
+
+        return NextResponse.json({
+          success: true,
+          source: 'bridge',
+          accepted: remote.accepted,
+          delivered: remote.delivered,
+          agent_id: remote.agent_id ?? indexRow.local_agent_id,
+          bridge_index_id: indexRow.id,
+          client_id: indexRow.client_id,
+          ...(remote.session_key ? { session_key: remote.session_key } : {}),
+          ...(remote.session_kind ? { session_kind: remote.session_kind } : {}),
+          ...(remote.queued_prompt ? { queued_prompt: remote.queued_prompt } : {}),
+          ...(remote.reply_preview ? { reply_preview: remote.reply_preview } : {}),
+        })
+      } catch (bridgeErr) {
+        const errMsg = bridgeErr instanceof Error ? bridgeErr.message : String(bridgeErr)
+        logger.warn({ err: bridgeErr, to, clientId: indexRow.client_id }, 'Bridge agent message failed')
+        return NextResponse.json({ error: errMsg }, { status: bridgeMessageHttpStatus(errMsg) })
+      }
     }
+
     const localSessionKind = getLocalSessionKindForFramework(agent.framework)
     if (!agent.session_key && !localSessionKind) {
       return NextResponse.json(
@@ -74,7 +170,7 @@ export async function POST(request: NextRequest) {
 
     if (localSessionKind) {
       queuedPrompt = `Message from ${from}: ${message}`
-      const queued = enqueueBoundLocalAgentPrompt(agent, queuedPrompt)
+      const queued = enqueueBoundLocalAgentPrompt(agent, queuedPrompt, { permissionMode })
       localSessionKey = queued.sessionKey
       queuedSessionKind = queued.kind
     } else {

@@ -28,6 +28,7 @@ export type EventType =
   | 'agent.created'
   | 'agent.deleted'
   | 'agent.synced'
+  | 'human_watch.bindings_synced'
   | 'agent.status_changed'
   | 'audit.security'
   | 'security.event'

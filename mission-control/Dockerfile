@@ -4,6 +4,15 @@ FROM node:22.22.0-slim AS base
 RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 WORKDIR /app
 
+# 国内 / 代理环境下 deb.debian.org 易 502，构建前切换镜像源（可通过 APT_MIRROR 覆盖）
+ARG APT_MIRROR=mirrors.aliyun.com
+RUN set -eux; \
+  if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+    sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+  elif [ -f /etc/apt/sources.list ]; then \
+    sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list; \
+  fi
+
 FROM base AS deps
 # Copy only dependency manifests first for better layer caching
 COPY package.json ./
@@ -44,6 +53,8 @@ RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
+# Edge 托盘 runtime：构建前执行 scripts/sync-edge-runtime-bundle.sh，将 zip 放入 public/edge-runtime/
+# Edge 托盘 .dmg：构建前执行 scripts/sync-edge-tray-bundle.sh，将 dmg 放入 public/edge-tray/
 # Copy schema.sql needed by migration 001_init at runtime
 COPY --from=build /app/src/lib/schema.sql ./src/lib/schema.sql
 # Create data directory with correct ownership for SQLite

@@ -29,14 +29,17 @@ describe.sequential('human-watch-orchestrator', () => {
     dbRef.current = db
     runMigrations(db)
     const { setHumanWatchEnabledForTenant } = await import('@/lib/human-watch-policy')
-    setHumanWatchEnabledForTenant(1, true, db)
+    const { setHumanWatchGlobalRules } = await import('@/lib/human-watch-global-rules')
+    const tenant = db.prepare(`SELECT id FROM tenants LIMIT 1`).get() as { id: number }
+    setHumanWatchEnabledForTenant(tenant.id, true, db)
+    setHumanWatchGlobalRules(tenant.id, { grace_after_prompt_seconds: 0 }, db)
     db.prepare(
       `INSERT INTO human_watch_bindings (
         id, workspace_id, tenant_id, client_id,
         worker_local_agent_id, worker_name,
         steward_local_agent_id, steward_name,
         worker_session_id, enabled, mode, rules_override
-      ) VALUES (1, 1, 1, 'mac-1', 10, 'worker', 9, 'steward', 'sess-worker-1', 1, 'auto_send', '{"grace_after_prompt_seconds":0}')`,
+      ) VALUES (1, 1, ${tenant.id}, 'mac-1', 10, 'worker', 9, 'steward', 'sess-worker-1', 1, 'auto_send', NULL)`,
     ).run()
     db.prepare(
       `INSERT INTO sync_agent_index (
@@ -48,8 +51,14 @@ describe.sequential('human-watch-orchestrator', () => {
     sendContinue.mockReset()
     fetchAgentDetail.mockReset()
     runJudge.mockReset()
-    fetchAgentDetail.mockResolvedValue({ agent: null, source: 'test' })
-    runJudge.mockResolvedValue({ reply: 'Please continue.', sessionId: 'judge-sess', source: 'test' })
+    fetchAgentDetail.mockResolvedValue({
+      agent: {
+        role: 'human-watch',
+        config: JSON.stringify({ agent_kind: 'human_watch', steward: { llm_enabled: true } }),
+      },
+      source: 'test',
+    })
+    runJudge.mockResolvedValue({ reply: 'Please continue with option A.', sessionId: 'judge-sess', source: 'test' })
   })
 
   const defaultDeps = () => ({
@@ -212,7 +221,7 @@ describe.sequential('human-watch-orchestrator', () => {
     expect(sweep.llm_sweep).toBe(1)
   })
 
-  it('uses steward judge reply when llm_enabled', async () => {
+  it('always uses steward judge reply for auto_send', async () => {
     const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
     const stale = new Date(Date.now() - 120_000).toISOString()
     fetchTranscript.mockResolvedValue({
@@ -223,12 +232,6 @@ describe.sequential('human-watch-orchestrator', () => {
           timestamp: stale,
         },
       ],
-    })
-    fetchAgentDetail.mockResolvedValue({
-      agent: {
-        config: JSON.stringify({ steward: { llm_enabled: true } }),
-      },
-      source: 'test',
     })
     runJudge.mockResolvedValue({ reply: 'Pick option A and continue.', sessionId: 'judge-1', source: 'test' })
     sendContinue.mockResolvedValue({ accepted: true })
@@ -243,5 +246,35 @@ describe.sequential('human-watch-orchestrator', () => {
     expect(sendContinue).toHaveBeenCalledWith(
       expect.objectContaining({ prompt: 'Pick option A and continue.' }),
     )
+  })
+
+  it('skips send when steward judge returns empty reply', async () => {
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    const stale = new Date(Date.now() - 120_000).toISOString()
+    fetchTranscript.mockResolvedValue({
+      messages: [
+        {
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'Please confirm which option you prefer.' }],
+          timestamp: stale,
+        },
+      ],
+    })
+    runJudge.mockResolvedValue({ reply: '', sessionId: 'judge-1', source: 'test' })
+
+    await evaluateHumanWatchBinding(
+      db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any,
+      { sessionId: 'sess-worker-1', sessionKind: 'claude-code' },
+      defaultDeps(),
+    )
+
+    expect(sendContinue).not.toHaveBeenCalled()
+    const skipped = db
+      .prepare(
+        `SELECT skip_reason FROM human_watch_interventions
+         WHERE event_type = 'intervention_skipped' AND skip_reason = 'steward_judge_empty'`,
+      )
+      .get() as { skip_reason: string }
+    expect(skipped.skip_reason).toBe('steward_judge_empty')
   })
 })

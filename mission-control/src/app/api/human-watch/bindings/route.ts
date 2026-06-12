@@ -7,7 +7,6 @@ import {
 } from '@/lib/human-watch-bindings'
 import { requireHumanWatchEntitlement } from '@/lib/human-watch-policy'
 import type { HumanWatchBindingMode } from '@/lib/human-watch-types'
-import { buildDefaultBindingRulesOverride } from '@/lib/human-watch-defaults'
 
 export const dynamic = 'force-dynamic'
 
@@ -118,7 +117,7 @@ export async function POST(request: NextRequest) {
     rulesOverride:
       body.rules_override && typeof body.rules_override === 'object'
         ? (body.rules_override as Record<string, unknown>)
-        : buildDefaultBindingRulesOverride(),
+        : undefined,
   })
 
   if ('error' in created) {

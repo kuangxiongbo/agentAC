@@ -1,3 +1,4 @@
+import { getAgentDisplayName } from './agent-card-helpers'
 import { getDatabase } from './db'
 import { eventBus } from './event-bus'
 
@@ -8,6 +9,7 @@ export interface BridgeAgentIndexInput {
   status: string
   framework?: string | null
   parent_id?: number | null
+  session_key?: string | null
 }
 
 export interface SyncAgentIndexRow {
@@ -21,6 +23,7 @@ export interface SyncAgentIndexRow {
   status: string
   framework: string | null
   parent_local_id: number | null
+  session_key: string | null
   updated_at: number
 }
 
@@ -40,8 +43,8 @@ export function replaceBridgeAgentIndex(
   const insert = db.prepare(`
     INSERT INTO sync_agent_index (
       client_id, client_name, local_agent_id, original_name, remote_name,
-      role, status, framework, parent_local_id, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      role, status, framework, parent_local_id, session_key, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(client_id, local_agent_id) DO UPDATE SET
       client_name = excluded.client_name,
       original_name = excluded.original_name,
@@ -50,6 +53,7 @@ export function replaceBridgeAgentIndex(
       status = excluded.status,
       framework = excluded.framework,
       parent_local_id = excluded.parent_local_id,
+      session_key = excluded.session_key,
       updated_at = excluded.updated_at
   `)
 
@@ -74,6 +78,7 @@ export function replaceBridgeAgentIndex(
         agent.status || 'idle',
         agent.framework || null,
         agent.parent_id ?? null,
+        agent.session_key?.trim() || null,
         now,
       )
       upserted++
@@ -91,6 +96,17 @@ export function replaceBridgeAgentIndex(
   })()
 
   eventBus.broadcast('agent.synced', { clientId, source: 'bridge_index', count: upserted })
+
+  void import('./human-watch-bindings')
+    .then((mod) => mod.syncHumanWatchBindingSessionIds(clientId))
+    .then((synced) => {
+      if (synced > 0) {
+        eventBus.broadcast('human_watch.bindings_synced', { clientId, count: synced })
+      }
+    })
+    .catch(() => {
+      /* ignore */
+    })
 
   return { upserted, removed: 0 }
 }
@@ -128,6 +144,22 @@ export function getBridgeAgentIndexByRemoteName(
   return db
     .prepare(`SELECT * FROM sync_agent_index WHERE client_id = ? AND remote_name = ? LIMIT 1`)
     .get(clientId, remoteName) as SyncAgentIndexRow | undefined
+}
+
+/** Resolve orchestration/command recipient to a Bridge index row (remote_name or original_name). */
+export function getBridgeAgentIndexByRecipient(recipient: string): SyncAgentIndexRow | undefined {
+  const trimmed = String(recipient || '').trim()
+  if (!trimmed) return undefined
+  const db = getDatabase()
+  const byRemote = db
+    .prepare(`SELECT * FROM sync_agent_index WHERE remote_name = ? LIMIT 1`)
+    .get(trimmed) as SyncAgentIndexRow | undefined
+  if (byRemote) return byRemote
+  return db
+    .prepare(
+      `SELECT * FROM sync_agent_index WHERE original_name = ? COLLATE NOCASE ORDER BY updated_at DESC LIMIT 1`,
+    )
+    .get(trimmed) as SyncAgentIndexRow | undefined
 }
 
 export function getBridgeAgentIndexByLocalId(
@@ -171,6 +203,19 @@ export function getBridgeAgentIndexById(indexId: number): SyncAgentIndexRow | un
   return db
     .prepare(`SELECT * FROM sync_agent_index WHERE id = ?`)
     .get(indexId) as SyncAgentIndexRow | undefined
+}
+
+export function deleteBridgeAgentIndexByLocalId(
+  clientId: string,
+  localAgentId: number,
+): boolean {
+  const db = getDatabase()
+  const result = db
+    .prepare(
+      `DELETE FROM sync_agent_index WHERE client_id = ? AND local_agent_id = ?`,
+    )
+    .run(clientId, localAgentId)
+  return result.changes > 0
 }
 
 export function clientAgentInventoryKey(
@@ -232,10 +277,35 @@ export function mergeDbAgentsWithBridgeIndex<T extends { source?: string; node_i
   return merged
 }
 
+/** Keep bridge index ids on agent.config after live edge detail fetch. */
+export function mergeBridgeIndexIntoConfig(
+  config: Record<string, unknown>,
+  row: Pick<
+    SyncAgentIndexRow,
+    'local_agent_id' | 'client_id' | 'client_name' | 'original_name'
+  >,
+): Record<string, unknown> {
+  return {
+    ...config,
+    local_agent_id: row.local_agent_id,
+    bridge_client_id: row.client_id,
+    original_name: row.original_name,
+    node_label: row.client_name,
+  }
+}
+
 export function bridgeIndexRowToAgentListItem(row: SyncAgentIndexRow, bridgeOnline = false) {
+  const config = mergeBridgeIndexIntoConfig({}, row)
+  const display_name = getAgentDisplayName({
+    name: row.remote_name,
+    config,
+    source: 'bridge_index',
+    node_id: row.client_id,
+  })
   return {
     id: row.id,
     name: row.remote_name,
+    display_name,
     role: row.role,
     status: row.status,
     framework: row.framework,
@@ -247,12 +317,10 @@ export function bridgeIndexRowToAgentListItem(row: SyncAgentIndexRow, bridgeOnli
     last_seen: row.updated_at,
     updated_at: row.updated_at,
     created_at: row.updated_at,
-    config: {
-      original_name: row.original_name,
-      local_agent_id: row.local_agent_id,
-      bridge_client_id: row.client_id,
-      node_label: row.client_name,
-    },
+    session_key: row.session_key || undefined,
+    edge_local_agent_id: row.local_agent_id,
+    bridge_client_id: row.client_id,
+    config,
     bridge_online: bridgeOnline,
     remote: true,
     detail_cached: false,

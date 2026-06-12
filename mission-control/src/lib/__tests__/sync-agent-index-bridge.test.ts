@@ -67,4 +67,27 @@ describe('sync-agent-index bridge hybrid', () => {
     expect(mergedOffline).toHaveLength(1)
     expect(mergedOffline[0]).toMatchObject({ source: 'client', status: 'idle' })
   })
+
+  it('resolves bridge recipient by remote_name or original_name', async () => {
+    const { replaceBridgeAgentIndex, listBridgeAgentIndex, getBridgeAgentIndexByRecipient } =
+      await import('@/lib/sync-agent-index')
+
+    replaceBridgeAgentIndex('mac001', 'Mac', [
+      {
+        id: 7,
+        name: '程序+人工值守测试',
+        role: 'coder',
+        status: 'idle',
+        framework: 'codex',
+        session_key: 'codex-thread-abc',
+      },
+    ])
+
+    const row = listBridgeAgentIndex('mac001')[0]
+    expect(row?.session_key).toBe('codex-thread-abc')
+
+    expect(getBridgeAgentIndexByRecipient('mac001-程序+人工值守测试')?.local_agent_id).toBe(7)
+    expect(getBridgeAgentIndexByRecipient('程序+人工值守测试')?.local_agent_id).toBe(7)
+    expect(getBridgeAgentIndexByRecipient('missing')).toBeUndefined()
+  })
 })

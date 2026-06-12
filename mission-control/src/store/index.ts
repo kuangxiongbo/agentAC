@@ -146,6 +146,8 @@ export interface Agent {
   hidden?: number
   config?: JsonValue
   node_id?: string
+  edge_local_agent_id?: number
+  bridge_client_id?: string
   framework?: string
   parent_id?: number
   taskStats?: {

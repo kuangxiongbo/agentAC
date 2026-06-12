@@ -182,7 +182,7 @@ export function HumanWatchCreateStewardModal({
         {error ? <p className="text-sm text-rose-400">{error}</p> : null}
         {successHint ? <p className="text-sm text-emerald-400">{successHint}</p> : null}
 
-        <HumanWatchRulesConfig compact />
+        <HumanWatchRulesConfig compact variant="summary" />
 
         <label className="block text-xs text-muted-foreground">
           {t('clientId')}

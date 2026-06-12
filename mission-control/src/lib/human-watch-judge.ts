@@ -18,11 +18,34 @@ export interface StewardRuntimeConfig {
   context?: StewardContextConfig
 }
 
-const DEFAULT_JUDGE_TEMPLATE = `You are the human-watch judge for a worker agent session.
-Read the worker transcript summary and output ONLY the short user message to send to the worker (one short paragraph). No preamble.
+const DEFAULT_JUDGE_TEMPLATE = `你是人工值守判官。阅读下方 Worker 会话摘要，判断 Worker 在等什么确认或卡在哪。
+只输出一条可直接发给 Worker 的用户消息（明确选项、确认或指令），不要解释、不要前缀。
 
-Worker transcript summary:
+Worker 会话摘要：
 {summary}`
+
+function isHumanWatchStewardAgentRecord(agent: Record<string, unknown>): boolean {
+  const role = String(agent.role || '').trim()
+  if (role === 'human-watch') return true
+  let config: Record<string, unknown> = {}
+  const raw = agent.config
+  if (typeof raw === 'string') {
+    try {
+      config = JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      config = {}
+    }
+  } else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    config = raw as Record<string, unknown>
+  }
+  return String(config.agent_kind || '').trim() === 'human_watch'
+}
+
+/** 值守智能体仅通过大模型判官介入；规则只负责触发判官。 */
+export function stewardRequiresLlmJudge(agent: Record<string, unknown> | null | undefined): boolean {
+  if (!agent || typeof agent !== 'object') return false
+  return isHumanWatchStewardAgentRecord(agent)
+}
 
 export function parseStewardConfigFromAgent(agent: Record<string, unknown> | null | undefined): StewardRuntimeConfig {
   if (!agent || typeof agent !== 'object') return {}
@@ -46,8 +69,10 @@ export function parseStewardConfigFromAgent(agent: Record<string, unknown> | nul
       ? (steward.context as StewardContextConfig)
       : {}
 
+  const forceLlm = isHumanWatchStewardAgentRecord(agent)
+
   return {
-    llm_enabled: steward.llm_enabled === true,
+    llm_enabled: forceLlm || steward.llm_enabled === true,
     llm_sweep_enabled: steward.llm_sweep_enabled === true,
     llm_sweep_interval_minutes:
       typeof steward.llm_sweep_interval_minutes === 'number'

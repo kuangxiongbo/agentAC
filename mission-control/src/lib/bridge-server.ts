@@ -24,6 +24,46 @@ const bridgePendingRequests: Map<string, PendingBridgeRequest> =
 ;(global as any)._mc_bridge_server_sockets = bridgeServerSockets
 ;(global as any)._mc_bridge_pending_requests = bridgePendingRequests
 
+/** Server proactively pings edge clients to keep TCP/WebSocket warm. */
+const BRIDGE_KEEPALIVE_SWEEP_MS = 30_000
+
+let bridgeKeepaliveTimer: ReturnType<typeof setInterval> | null = null
+
+function isLiveEdgeConnection(client: BridgeServerClientState): boolean {
+  if (client.kind === 'ui' || client.status !== 'connected') return false
+  const ws = bridgeServerSockets.get(client.connectionId)
+  return Boolean(ws && ws.readyState === WebSocket.OPEN)
+}
+
+function pingEdgeClients() {
+  for (const [connectionId, client] of bridgeServerClients.entries()) {
+    if (!isLiveEdgeConnection(client)) continue
+    const ws = bridgeServerSockets.get(connectionId)
+    if (!ws) continue
+    try {
+      ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }))
+    } catch (err) {
+      logger.warn({ clientId: client.clientId, err }, '[BridgeServer] Keepalive ping failed — closing socket')
+      try {
+        ws.close(4002, 'Keepalive ping failed')
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+function startBridgeKeepalive() {
+  if (bridgeKeepaliveTimer) return
+  bridgeKeepaliveTimer = setInterval(pingEdgeClients, BRIDGE_KEEPALIVE_SWEEP_MS)
+}
+
+function stopBridgeKeepalive() {
+  if (!bridgeKeepaliveTimer) return
+  clearInterval(bridgeKeepaliveTimer)
+  bridgeKeepaliveTimer = null
+}
+
 type BridgeClientKind = 'edge' | 'ui' | 'unknown'
 
 interface BridgeServerClientState {
@@ -46,7 +86,10 @@ type BridgePendingKind =
   | 'agents_by_session'
   | 'agent_session_update'
   | 'steward_create'
+  | 'steward_update'
+  | 'steward_delete'
   | 'steward_judge'
+  | 'agent_message'
 
 interface PendingBridgeRequest {
   requestId: string
@@ -62,7 +105,7 @@ interface PendingBridgeRequest {
 
 function findConnectedEdgeBridge(clientId: string): { connectionId: string; ws: WebSocket } {
   const target = Array.from(bridgeServerClients.values())
-    .filter((client) => client.clientId === clientId && client.kind === 'edge' && client.status === 'connected')
+    .filter((client) => client.clientId === clientId && client.kind === 'edge' && isLiveEdgeConnection(client))
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0]
 
   if (!target) {
@@ -176,10 +219,43 @@ function resolvePendingRequest(msg: any) {
     return true
   }
 
+  if (pending.kind === 'steward_update') {
+    pending.resolve({
+      agent: msg?.agent && typeof msg.agent === 'object' ? msg.agent : null,
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
+    return true
+  }
+
+  if (pending.kind === 'steward_delete') {
+    pending.resolve({
+      deleted: Boolean(msg?.deleted),
+      name: typeof msg?.name === 'string' ? msg.name : '',
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
+    return true
+  }
+
   if (pending.kind === 'steward_judge') {
     pending.resolve({
       reply: typeof msg?.reply === 'string' ? msg.reply : '',
       sessionId: typeof msg?.sessionId === 'string' ? msg.sessionId : '',
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
+    return true
+  }
+
+  if (pending.kind === 'agent_message') {
+    pending.resolve({
+      success: msg?.success === true,
+      accepted: Boolean(msg?.accepted),
+      delivered: Boolean(msg?.delivered),
+      agent_id: typeof msg?.agent_id === 'number' ? msg.agent_id : null,
+      agent_name: typeof msg?.agent_name === 'string' ? msg.agent_name : '',
+      session_key: typeof msg?.session_key === 'string' ? msg.session_key : undefined,
+      session_kind: typeof msg?.session_kind === 'string' ? msg.session_kind : undefined,
+      queued_prompt: typeof msg?.queued_prompt === 'string' ? msg.queued_prompt : undefined,
+      reply_preview: typeof msg?.reply_preview === 'string' ? msg.reply_preview : undefined,
       source: typeof msg?.source === 'string' ? msg.source : 'bridge',
     })
     return true
@@ -222,6 +298,8 @@ export function initBridgeServer(port: number = 5002) {
 
     wss.on('connection', (ws: WebSocket) => {
       logger.info('[BridgeServer] New connection established')
+      const socket = (ws as any)?._socket as { setKeepAlive?: (enable: boolean, initialDelay?: number) => void } | undefined
+      socket?.setKeepAlive?.(true, 30_000)
       const connectionId = registerConnection(ws)
       let clientId = 'unknown'
       let clientLabel = 'unknown'
@@ -357,7 +435,10 @@ export function initBridgeServer(port: number = 5002) {
             case 'agents_by_session_response':
             case 'agent_session_update_response':
             case 'steward_create_response':
+            case 'steward_update_response':
+            case 'steward_delete_response':
             case 'steward_judge_response':
+            case 'agent_message_response':
               touchConnection(connectionId)
               resolvePendingRequest(msg)
               break
@@ -390,6 +471,8 @@ export function initBridgeServer(port: number = 5002) {
       logger.error({ err }, '[BridgeServer] WebSocket server error')
     })
 
+    startBridgeKeepalive()
+
   } catch (err) {
     logger.error({ err }, '[BridgeServer] Failed to start bridge server')
   }
@@ -405,6 +488,10 @@ function normalizeBridgeAgentList(agents: any[]): BridgeAgentIndexInput[] {
       status: String(agent.status || 'idle'),
       framework: typeof agent.framework === 'string' ? agent.framework : null,
       parent_id: agent.parent_id == null ? null : Number(agent.parent_id),
+      session_key:
+        typeof agent.session_key === 'string' && agent.session_key.trim()
+          ? agent.session_key.trim()
+          : null,
     }))
     .filter((agent) => agent.name && Number.isFinite(agent.id))
 }
@@ -471,11 +558,7 @@ async function registerRemoteAgents(clientId: string, clientLabel: string, agent
 
 export function isBridgeClientOnline(clientId: string): boolean {
   return Array.from(bridgeServerClients.values()).some(
-    (client) =>
-      client.kind !== 'ui' &&
-      client.clientId === clientId &&
-      client.status === 'connected' &&
-      bridgeServerSockets.has(client.connectionId),
+    (client) => client.clientId === clientId && isLiveEdgeConnection(client),
   )
 }
 
@@ -488,12 +571,13 @@ export function getBridgeServerStatus(): BridgeServerStatusSnapshot {
     running: Boolean(wss),
     port: bridgeServerMeta.port,
     startedAt: bridgeServerMeta.startedAt,
-    connectedClients: clients.filter((client) => client.status === 'connected').length,
+    connectedClients: clients.filter((client) => isLiveEdgeConnection(client)).length,
     clients,
   }
 }
 
 export function stopBridgeServer() {
+  stopBridgeKeepalive()
   if (wss) {
     for (const pending of bridgePendingRequests.values()) {
       clearTimeout(pending.timeout)
@@ -578,6 +662,7 @@ export async function requestBridgeClientSessionContinue(input: {
   sessionId: string
   prompt: string
   workingDirectory?: string | null
+  localCliElevated?: boolean
   timeoutMs?: number
 }): Promise<{ reply: string; sessionId: string | null; source: string }> {
   const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
@@ -611,6 +696,7 @@ export async function requestBridgeClientSessionContinue(input: {
           sessionId: input.sessionId,
           prompt: input.prompt,
           ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
+          ...(input.localCliElevated ? { localCliElevated: true } : {}),
         },
       }))
     } catch (error) {
@@ -786,6 +872,104 @@ export async function requestBridgeClientStewardCreate(input: {
   })
 }
 
+export async function requestBridgeClientStewardUpdate(input: {
+  clientId: string
+  localAgentId: number
+  name?: string | null
+  soulContent?: string | null
+  configPatch?: Record<string, unknown> | null
+  timeoutMs?: number
+}): Promise<{ agent: Record<string, unknown> | null; source: string }> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(5000, input.timeoutMs || 60000)
+
+  return await new Promise<{ agent: Record<string, unknown> | null; source: string }>(
+    (resolve, reject) => {
+      const timeout = setTimeout(() => {
+        bridgePendingRequests.delete(requestId)
+        reject(new Error(`Timed out waiting for steward update on client ${input.clientId}`))
+      }, timeoutMs)
+
+      bridgePendingRequests.set(requestId, {
+        requestId,
+        clientId: input.clientId,
+        connectionId,
+        timeout,
+        kind: 'steward_update',
+        resolve: resolve as (value: unknown) => void,
+        reject,
+      })
+
+      try {
+        ws.send(
+          JSON.stringify({
+            type: 'steward_update_request',
+            requestId,
+            localAgentId: input.localAgentId,
+            steward: {
+              name: input.name ?? undefined,
+              soul_content: input.soulContent ?? undefined,
+              config_patch: input.configPatch ?? undefined,
+            },
+          }),
+        )
+      } catch (error) {
+        clearTimeout(timeout)
+        bridgePendingRequests.delete(requestId)
+        reject(
+          error instanceof Error ? error : new Error('Failed to send steward update request'),
+        )
+      }
+    },
+  )
+}
+
+export async function requestBridgeClientStewardDelete(input: {
+  clientId: string
+  localAgentId: number
+  timeoutMs?: number
+}): Promise<{ deleted: boolean; name: string; source: string }> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(5000, input.timeoutMs || 60000)
+
+  return await new Promise<{ deleted: boolean; name: string; source: string }>(
+    (resolve, reject) => {
+      const timeout = setTimeout(() => {
+        bridgePendingRequests.delete(requestId)
+        reject(new Error(`Timed out waiting for steward delete on client ${input.clientId}`))
+      }, timeoutMs)
+
+      bridgePendingRequests.set(requestId, {
+        requestId,
+        clientId: input.clientId,
+        connectionId,
+        timeout,
+        kind: 'steward_delete',
+        resolve: resolve as (value: unknown) => void,
+        reject,
+      })
+
+      try {
+        ws.send(
+          JSON.stringify({
+            type: 'steward_delete_request',
+            requestId,
+            localAgentId: input.localAgentId,
+          }),
+        )
+      } catch (error) {
+        clearTimeout(timeout)
+        bridgePendingRequests.delete(requestId)
+        reject(
+          error instanceof Error ? error : new Error('Failed to send steward delete request'),
+        )
+      }
+    },
+  )
+}
+
 export async function requestBridgeClientStewardJudge(input: {
   clientId: string
   localAgentId: number
@@ -823,6 +1007,66 @@ export async function requestBridgeClientStewardJudge(input: {
       clearTimeout(timeout)
       bridgePendingRequests.delete(requestId)
       reject(error instanceof Error ? error : new Error('Failed to send steward judge request'))
+    }
+  })
+}
+
+export type BridgeAgentMessageResult = {
+  success: boolean
+  accepted: boolean
+  delivered: boolean
+  agent_id: number | null
+  agent_name: string
+  session_key?: string
+  session_kind?: string
+  queued_prompt?: string
+  reply_preview?: string
+  source: string
+}
+
+export async function requestBridgeClientAgentMessage(input: {
+  clientId: string
+  localAgentId: number
+  message: string
+  from: string
+  localCliElevated?: boolean
+  timeoutMs?: number
+}): Promise<BridgeAgentMessageResult> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(5000, input.timeoutMs || 300_000)
+
+  return await new Promise<BridgeAgentMessageResult>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      bridgePendingRequests.delete(requestId)
+      reject(new Error(`Timed out waiting for agent message on client ${input.clientId}`))
+    }, timeoutMs)
+
+    bridgePendingRequests.set(requestId, {
+      requestId,
+      clientId: input.clientId,
+      connectionId,
+      timeout,
+      kind: 'agent_message',
+      resolve: resolve as (value: unknown) => void,
+      reject,
+    })
+
+    try {
+      ws.send(
+        JSON.stringify({
+          type: 'agent_message_request',
+          requestId,
+          localAgentId: input.localAgentId,
+          message: input.message,
+          from: input.from,
+          ...(input.localCliElevated ? { localCliElevated: true } : {}),
+        }),
+      )
+    } catch (error) {
+      clearTimeout(timeout)
+      bridgePendingRequests.delete(requestId)
+      reject(error instanceof Error ? error : new Error('Failed to send agent message request'))
     }
   })
 }

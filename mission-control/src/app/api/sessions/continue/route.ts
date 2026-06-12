@@ -9,6 +9,8 @@ import {
   isLocalSessionKind,
   type LocalSessionKind,
 } from '@/lib/local-session-executor'
+import { assertLocalCliElevationAllowed } from '@/lib/local-cli-elevation-auth'
+import { elevatedFlagToPermissionMode, isLocalCliElevatedFlag } from '@/lib/parse-local-cli-elevated'
 
 const BRIDGE_CONTINUE_KINDS = new Set<BridgeSessionContinueKind>([
   'claude-code',
@@ -49,6 +51,23 @@ export async function POST(request: NextRequest) {
     const prompt = sanitizePrompt(body?.prompt)
     const clientId = typeof body?.client_id === 'string' ? body.client_id.trim() : ''
     const workingDir = typeof body?.working_dir === 'string' ? body.working_dir.trim() : ''
+    const localCliElevated = isLocalCliElevatedFlag(body?.local_cli_elevated)
+
+    const elevationGate = await assertLocalCliElevationAllowed({
+      user: auth.user,
+      elevated: localCliElevated,
+    })
+    if (!elevationGate.ok) {
+      return NextResponse.json(
+        {
+          error: elevationGate.error,
+          code: elevationGate.code,
+          subscriptionsUrl: elevationGate.subscriptionsUrl,
+        },
+        { status: elevationGate.status },
+      )
+    }
+    const permissionMode = elevatedFlagToPermissionMode(localCliElevated)
 
     if (!sessionId || !/^[a-zA-Z0-9._:-]+$/.test(sessionId)) {
       return NextResponse.json({ error: 'Invalid session id' }, { status: 400 })
@@ -75,6 +94,7 @@ export async function POST(request: NextRequest) {
           sessionId,
           prompt,
           workingDirectory: workingDir || null,
+          localCliElevated,
           timeoutMs: 180000,
         })
         const resolvedSessionId = remote.sessionId || sessionId
@@ -102,6 +122,7 @@ export async function POST(request: NextRequest) {
     if (isLocalSessionKind(kind)) {
       enqueueLocalSessionPrompt(kind as LocalSessionKind, sessionId, prompt, {
         workingDirectory: workingDir || null,
+        permissionMode,
       })
       return NextResponse.json({ ok: true, accepted: true, sessionId })
     }

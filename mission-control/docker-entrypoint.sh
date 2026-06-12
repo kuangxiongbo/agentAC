@@ -52,5 +52,13 @@ fi
 # Next.js image optimizer writes under .next/cache (requires writable tmpfs/volume in read_only images)
 mkdir -p /app/.next/cache/images 2>/dev/null || true
 
+if [ -f /app/public/edge-runtime/manifest.json ]; then
+  printf '[entrypoint] Edge runtime manifest bundled (public/edge-runtime/manifest.json)\n'
+fi
+
+if [ -f /app/public/edge-tray/manifest.json ]; then
+  printf '[entrypoint] Edge tray manifest bundled (public/edge-tray/manifest.json)\n'
+fi
+
 printf '[entrypoint] Starting server\n'
 exec node server.js

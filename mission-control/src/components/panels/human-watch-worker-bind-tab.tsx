@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslations } from 'next-intl'
+import { useNavigateToPanel } from '@/lib/navigation'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import type { Agent } from '@/store'
@@ -9,13 +10,18 @@ import {
   getAgentClientId,
   getAgentDisplayName,
   getAgentLocalAgentId,
+  humanWatchBindingMatchesWorker,
+  resolveHumanWatchStewardLabel,
 } from '@/lib/agent-card-helpers'
 import { isHumanWatchAgent, normalizeHumanWatchFramework } from '@/lib/human-watch-helpers'
 import { HumanWatchRulesConfig } from '@/components/panels/human-watch-rules-config'
+import { HumanWatchBindingControls } from '@/components/panels/human-watch-binding-controls'
+import { useAgentEdgeIdentity } from '@/components/panels/use-agent-edge-identity'
 
 interface BindingRow {
   id: number
   client_id: string
+  worker_sync_index_id: number | null
   worker_local_agent_id: number | null
   steward_local_agent_id: number | null
   steward_name: string | null
@@ -33,8 +39,17 @@ export function HumanWatchWorkerBindTab({
 }) {
   const t = useTranslations('humanWatch')
   const ta = useTranslations('agentSquadPhase3')
-  const clientId = getAgentClientId(agent) || ''
-  const workerLocalId = getAgentLocalAgentId(agent)
+  const navigateToPanel = useNavigateToPanel()
+  const { identity, resolving } = useAgentEdgeIdentity(agent)
+  const clientId = identity?.clientId || getAgentClientId(agent) || ''
+  const workerResolved = useMemo(
+    () =>
+      identity
+        ? { local_agent_id: identity.localAgentId, sync_index_id: identity.syncIndexId }
+        : undefined,
+    [identity?.localAgentId, identity?.syncIndexId],
+  )
+  const workerLocalId = identity?.localAgentId ?? getAgentLocalAgentId(agent)
   const workerFramework = normalizeHumanWatchFramework(agent.framework)
 
   const [policyEnabled, setPolicyEnabled] = useState<boolean | null>(null)
@@ -47,7 +62,8 @@ export function HumanWatchWorkerBindTab({
 
   const stewardsForClient = useMemo(() => {
     return allAgents.filter((a) => {
-      if (getAgentClientId(a) !== clientId) return false
+      const stewardClient = getAgentClientId(a)
+      if (stewardClient !== clientId) return false
       if (!isHumanWatchAgent(a)) return false
       const sf = normalizeHumanWatchFramework(a.framework)
       return !workerFramework || !sf || sf === workerFramework
@@ -55,9 +71,15 @@ export function HumanWatchWorkerBindTab({
   }, [allAgents, clientId, workerFramework])
 
   const currentBinding = useMemo(() => {
-    if (workerLocalId == null) return null
-    return bindings.find((b) => b.worker_local_agent_id === workerLocalId) ?? null
-  }, [bindings, workerLocalId])
+    return (
+      bindings.find((b) => humanWatchBindingMatchesWorker(b, agent, workerResolved)) ?? null
+    )
+  }, [bindings, agent, workerResolved])
+
+  const stewardLabel = useMemo(() => {
+    if (!currentBinding) return null
+    return resolveHumanWatchStewardLabel(currentBinding, allAgents, clientId)
+  }, [currentBinding, allAgents, clientId])
 
   const load = useCallback(async () => {
     if (!clientId) {
@@ -76,42 +98,59 @@ export function HumanWatchWorkerBindTab({
       if (policyRes.ok) setPolicyEnabled(Boolean(policy.available ?? policy.enabled))
       const rows = Array.isArray(bindingsData.bindings) ? bindingsData.bindings : []
       setBindings(rows)
-      const existing = workerLocalId != null
-        ? rows.find((b: BindingRow) => b.worker_local_agent_id === workerLocalId)
-        : null
+      const existing =
+        rows.find((b: BindingRow) => humanWatchBindingMatchesWorker(b, agent, workerResolved)) ??
+        null
       if (existing?.steward_local_agent_id) {
         setStewardLocalId(String(existing.steward_local_agent_id))
+      } else {
+        setStewardLocalId('')
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : t('loadFailed'))
     } finally {
       setLoading(false)
     }
-  }, [clientId, workerLocalId, t])
+  }, [clientId, agent, workerResolved, t])
 
   useEffect(() => {
-    void load()
-  }, [load])
+    if (!resolving) void load()
+  }, [load, resolving])
+
+  const effectiveWorkerLocalId =
+    workerLocalId ?? currentBinding?.worker_local_agent_id ?? null
 
   const saveBinding = async () => {
-    if (!clientId || workerLocalId == null || !stewardLocalId) return
+    if (!clientId || effectiveWorkerLocalId == null || !stewardLocalId) return
     setBusy(true)
     setMessage(null)
     setError(null)
     try {
-      const res = await fetch('/api/human-watch/bindings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_id: clientId,
-          worker_local_agent_id: workerLocalId,
-          steward_local_agent_id: Number(stewardLocalId),
-          mode: 'auto_send',
-        }),
-      })
+      const payload = {
+        client_id: clientId,
+        worker_local_agent_id: effectiveWorkerLocalId,
+        steward_local_agent_id: Number(stewardLocalId),
+        mode: 'auto_send',
+      }
+
+      const res = currentBinding
+        ? await fetch(`/api/human-watch/bindings/${currentBinding.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              steward_local_agent_id: Number(stewardLocalId),
+              mode: 'auto_send',
+            }),
+          })
+        : await fetch('/api/human-watch/bindings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || t('createBindingFailed'))
-      setMessage(t('createBindingSuccess'))
+      setMessage(currentBinding ? t('updateBindingSuccess') : t('createBindingSuccess'))
       await load()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : t('createBindingFailed'))
@@ -120,14 +159,36 @@ export function HumanWatchWorkerBindTab({
     }
   }
 
-  if (!clientId || workerLocalId == null) {
+  const unbind = async () => {
+    if (!currentBinding) return
+    if (!window.confirm(t('unbindConfirm'))) return
+    setBusy(true)
+    setError(null)
+    setMessage(null)
+    try {
+      const res = await fetch(`/api/human-watch/bindings/${currentBinding.id}`, {
+        method: 'DELETE',
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || t('unbindFailed'))
+      setMessage(t('unbindSuccess'))
+      setStewardLocalId('')
+      await load()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : t('unbindFailed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (resolving || loading) {
+    return <Loader variant="inline" label={t('loading')} />
+  }
+
+  if (!clientId || (workerLocalId == null && !currentBinding)) {
     return (
       <p className="text-sm text-muted-foreground p-4">{ta('humanWatchBindNeedEdge')}</p>
     )
-  }
-
-  if (loading) {
-    return <Loader variant="inline" label={t('loading')} />
   }
 
   return (
@@ -141,17 +202,39 @@ export function HumanWatchWorkerBindTab({
       {error ? <p className="text-sm text-rose-400">{error}</p> : null}
       {message ? <p className="text-sm text-emerald-400">{message}</p> : null}
 
-      {currentBinding ? (
-        <p className="text-sm text-muted-foreground">
-          {ta('humanWatchCurrentBinding', {
-            steward: currentBinding.steward_name || String(currentBinding.steward_local_agent_id),
-          })}
-        </p>
+      {currentBinding && stewardLabel ? (
+        <div className="rounded-lg border border-cyan-500/25 bg-cyan-500/10 px-3 py-2.5">
+          <p className="text-sm text-foreground">
+            {ta('humanWatchCurrentBinding', { steward: stewardLabel })}
+          </p>
+        </div>
       ) : (
         <p className="text-sm text-muted-foreground">{ta('humanWatchNoBinding')}</p>
       )}
 
-      <HumanWatchRulesConfig rulesOverride={currentBinding?.rules_override ?? null} compact />
+      {currentBinding ? (
+        <p className="text-xs text-muted-foreground">{ta('humanWatchRebindHint')}</p>
+      ) : null}
+
+      <p className="text-xs text-muted-foreground">
+        {t('globalRulesBindHint')}{' '}
+        <button
+          type="button"
+          className="text-cyan-400 hover:underline"
+          onClick={() => navigateToPanel('settings')}
+        >
+          {t('openSettingsGlobalRules')}
+        </button>
+      </p>
+      <HumanWatchRulesConfig compact variant="summary" />
+      {currentBinding?.id ? (
+        <HumanWatchBindingControls
+          bindingId={currentBinding.id}
+          enabled={currentBinding.enabled}
+          mode={(currentBinding.mode as 'auto_send' | 'suggest_only') || 'auto_send'}
+          onSaved={load}
+        />
+      ) : null}
 
       <label className="block text-xs text-muted-foreground">
         {t('stewardAgent')}
@@ -177,13 +260,26 @@ export function HumanWatchWorkerBindTab({
         <p className="text-xs text-muted-foreground">{ta('humanWatchNoStewardHint')}</p>
       ) : null}
 
-      <Button
-        size="sm"
-        disabled={busy || policyEnabled === false || !stewardLocalId}
-        onClick={() => void saveBinding()}
-      >
-        {currentBinding ? ta('humanWatchUpdateBinding') : t('createBinding')}
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          disabled={busy || policyEnabled === false || !stewardLocalId}
+          onClick={() => void saveBinding()}
+        >
+          {currentBinding ? ta('humanWatchUpdateBinding') : t('createBinding')}
+        </Button>
+        {currentBinding ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-rose-300"
+            disabled={busy || policyEnabled === false}
+            onClick={() => void unbind()}
+          >
+            {t('unbind')}
+          </Button>
+        ) : null}
+      </div>
     </div>
   )
 }

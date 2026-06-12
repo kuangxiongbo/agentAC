@@ -26,6 +26,8 @@
     "test:all": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:e2e",
     "quality:gate": "pnpm test:all",
     "docker:multiarch": "bash scripts/docker-buildx-multiarch.sh",
+    "sync:edge-runtime": "bash scripts/sync-edge-runtime-bundle.sh",
+    "sync:edge-tray": "bash scripts/sync-edge-tray-bundle.sh",
     "postinstall": "node -e \"try{require('better-sqlite3')}catch(e){if(e.code==='ERR_DLOPEN_FAILED'||/NODE_MODULE_VERSION/.test(e.message)){console.error('\\n⚠  better-sqlite3 compiled for wrong Node version. Run: pnpm rebuild better-sqlite3\\n');process.exit(1)}}\""
   },
   "dependencies": {
