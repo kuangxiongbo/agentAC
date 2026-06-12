@@ -98,7 +98,7 @@ BUILD_ARGS=(
   --platform "$PLATFORM"
   -f Dockerfile
   --build-arg "MC_VERSION=$VERSION"
-  --build-arg "APT_MIRROR=mirrors.aliyun.com"
+  --build-arg "APT_MIRROR=${MC_APT_MIRROR:-mirrors.aliyun.com}"
   "${TAG_ARGS[@]}"
   --provenance=false
   --sbom=false
