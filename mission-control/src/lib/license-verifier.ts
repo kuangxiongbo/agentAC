@@ -69,7 +69,7 @@ function mergeVerifiedEntitlements(overrides?: Record<string, unknown> | null): 
 
 export type VerifyResult = {
   licensed: boolean
-  reason?: 'unsubscribed' | 'expired' | 'error' | 'app_instance_mismatch'
+  reason?: 'unsubscribed' | 'expired' | 'error' | 'app_instance_mismatch' | 'user_not_found' | 'no_tenant'
   entitlements: MissionControlEntitlements
   expiresAt?: string | null
 }
@@ -91,7 +91,11 @@ function resolveUserCenterApiUrl(): string {
   return (fromDb || fromEnv).replace(/\/$/, '')
 }
 
-export function verifyLicense(zitadelSub: string, tenantId?: string): Promise<VerifyResult> {
+export function verifyLicense(
+  zitadelSub: string,
+  tenantId?: string,
+  options?: { forceRefresh?: boolean },
+): Promise<VerifyResult> {
   const userCenterApiUrl = resolveUserCenterApiUrl()
   const userCenterInternalSecret = String(process.env.USER_CENTER_INTERNAL_SECRET || '').trim()
 
@@ -106,7 +110,7 @@ export function verifyLicense(zitadelSub: string, tenantId?: string): Promise<Ve
   const cacheKey = tenantId || zitadelSub
   pruneCache()
   const cached = cache.get(cacheKey)
-  if (cached && cached.expiresAt > Date.now()) {
+  if (!options?.forceRefresh && cached && cached.expiresAt > Date.now()) {
     return Promise.resolve(cached.result)
   }
 
@@ -133,13 +137,16 @@ export function verifyLicense(zitadelSub: string, tenantId?: string): Promise<Ve
       const data = (await resp.json()) as {
         licensed?: boolean
         reason?: string
+        entitlements?: Partial<MissionControlEntitlements>
+        expiresAt?: string | null
         license?: { entitlements?: Partial<MissionControlEntitlements>; expiresAt?: string | null }
       }
+      const entitlements = data.license?.entitlements ?? data.entitlements
       const result: VerifyResult = {
         licensed: Boolean(data.licensed),
         reason: data.reason as VerifyResult['reason'],
-        entitlements: mergeVerifiedEntitlements(data.license?.entitlements),
-        expiresAt: data.license?.expiresAt ?? null,
+        entitlements: mergeVerifiedEntitlements(entitlements),
+        expiresAt: data.license?.expiresAt ?? data.expiresAt ?? null,
       }
       cache.set(cacheKey, { result, expiresAt: Date.now() + CACHE_TTL_MS })
       return result

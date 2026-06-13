@@ -55,7 +55,7 @@ export function LicenseSettingsSection() {
     setLoading(true)
     try {
       const [stRes, cfRes] = await Promise.all([
-        fetch('/api/license/status', { credentials: 'include' }),
+        fetch('/api/license/status?refresh=1', { credentials: 'include' }),
         fetch('/api/license/config', { credentials: 'include' }),
       ])
       if (stRes.ok) setStatus((await stRes.json()) as LicenseStatus)

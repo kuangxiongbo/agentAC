@@ -34,7 +34,7 @@ export type EffectiveLicenseResult = {
   allowed: boolean
   licensed: boolean
   source: 'online' | 'offline' | 'default'
-  reason?: 'unsubscribed' | 'expired' | 'error' | 'app_instance_mismatch'
+  reason?: 'unsubscribed' | 'expired' | 'error' | 'app_instance_mismatch' | 'user_not_found' | 'no_tenant'
   entitlements: MissionControlEntitlements
   expiresAt: string | null
   requiresSubscription: boolean
@@ -138,6 +138,7 @@ export async function resolveEffectiveLicense(
     tenantId?: number | null
     zitadelSub?: string | null
     portalTenantRole?: string | null
+    forceRefresh?: boolean
   },
   database?: Database.Database,
 ): Promise<EffectiveLicenseResult> {
@@ -160,7 +161,7 @@ export async function resolveEffectiveLicense(
 
   let onlineResult: Awaited<ReturnType<typeof verifyLicense>> | null = null
   if (zitadelSub) {
-    onlineResult = await verifyLicense(zitadelSub, tenantId)
+    onlineResult = await verifyLicense(zitadelSub, tenantId, { forceRefresh: input.forceRefresh })
   }
 
   const offline = loadOfflineLicense(tenantId, database)
@@ -177,7 +178,8 @@ export async function resolveEffectiveLicense(
     }
   }
 
-  if (offline) {
+  const canUseOfflineFallback = !onlineResult || onlineResult.reason === 'error'
+  if (canUseOfflineFallback && offline) {
     const checked = verifyLicFile(offline)
     if (checked.ok) {
       return {

@@ -4,7 +4,7 @@ const withNextIntl = require('next-intl/plugin')('./src/i18n/request.ts')
 const nextConfig = {
   output: 'standalone',
   outputFileTracingExcludes: {
-    '/*': ['./.data/**/*'],
+    '/*': ['./.data/**/*', './dist/**/*'],
   },
   turbopack: {},
   // Transpile ESM-only packages so they resolve correctly in all environments

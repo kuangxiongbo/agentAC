@@ -34,6 +34,7 @@ export async function GET(request: Request) {
     tenantId: user.tenant_id,
     zitadelSub: getProviderSubjectForUser(user.id),
     portalTenantRole: user.portal_tenant_role,
+    forceRefresh: true,
   })
 
   return NextResponse.json({

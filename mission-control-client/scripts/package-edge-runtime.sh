@@ -30,6 +30,7 @@ OUT_ZIP="$OUT_DIR/$ZIP_NAME"
 
 echo "==> build standalone (mission-control-client)"
 cd "$PROJECT_ROOT"
+rm -rf "$PROJECT_ROOT/dist/edge-runtime-staging-$VERSION-$PLATFORM"
 pnpm install --frozen-lockfile
 pnpm build
 
@@ -52,6 +53,11 @@ fi
 mkdir -p "$STAGING/runtime/.next"
 cp -R "$PROJECT_ROOT/.next/static" "$STAGING/runtime/.next/static"
 cp -R "$PROJECT_ROOT/public" "$STAGING/runtime/public"
+
+if [[ ! -d "$STAGING/runtime/.next/static/chunks" ]]; then
+  echo "error: missing staged .next/static/chunks; runtime would serve CSS/JS as page HTML" >&2
+  exit 1
+fi
 
 link_runtime_peer_deps() {
   local root="$1"
