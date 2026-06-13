@@ -19,9 +19,19 @@ COPY package.json ./
 COPY pnpm-lock.yaml* ./
 COPY .npmrc ./
 # better-sqlite3 requires native compilation tools
-RUN apt-get -o Acquire::Retries=5 -o Acquire::https::Verify-Peer=false -o Acquire::https::Verify-Host=false update && \
-    apt-get -o Acquire::Retries=5 -o Acquire::https::Verify-Peer=false -o Acquire::https::Verify-Host=false install -y --fix-missing python3 make g++ --no-install-recommends && \
-    rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    for attempt in 1 2 3 4 5; do \
+      apt-get clean; \
+      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/partial/*; \
+      apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::https::Verify-Peer=false -o Acquire::https::Verify-Host=false update; \
+      if apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true -o Acquire::https::Verify-Peer=false -o Acquire::https::Verify-Host=false install -y --fix-missing python3 make g++ --no-install-recommends; then \
+        break; \
+      fi; \
+      dpkg --configure -a || true; \
+      if [ "$attempt" = "5" ]; then exit 1; fi; \
+      sleep $((attempt * 5)); \
+    done; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/partial/*
 RUN if [ -f pnpm-lock.yaml ]; then \
       pnpm install --frozen-lockfile; \
     else \
