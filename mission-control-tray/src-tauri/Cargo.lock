@@ -2314,7 +2314,7 @@ dependencies = [
 
 [[package]]
 name = "mission-control-tray"
-version = "2.0.5"
+version = "2.0.6"
 dependencies = [
  "cc",
  "dirs",

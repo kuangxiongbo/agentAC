@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
 
   const home = process.env.HOME || process.env.USERPROFILE || ''
   const trayRuntime = path.join(home, '.e-agent-edge', 'runtime')
-  const version = APP_VERSION || '2.0.2'
+  const version = APP_VERSION
 
   try {
     await mkdir(path.dirname(trayRuntime), { recursive: true })

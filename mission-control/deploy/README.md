@@ -12,7 +12,7 @@
 1. **构建并推送镜像（推荐：多架构 amd64 + arm64）**  
    在 **`mission-control/`** 目录执行，需已 `docker login` 目标仓库。使用 Buildx 生成 **manifest 列表**，同一条 `MC_IMAGE` 在 x86 云机与 ARM 主机上拉取会自动匹配本机架构。  
    ```bash
-   export MC_IMAGE=your-registry/agentcenter:2.0.1
+   export MC_IMAGE=your-registry/agentcenter:2.0.6
    export MC_IMAGE_LATEST=your-registry/agentcenter:latest   # 可选
    export MC_DOCKER_PUSH=1
    bash scripts/docker-buildx-multiarch.sh
@@ -38,7 +38,7 @@
 
 3. **构建并推送**（在 **`mission-control/`** 目录）：  
    ```bash
-   export MC_IMAGE=crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/<命名空间>/<仓库名>:2.0.1
+   export MC_IMAGE=crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/<命名空间>/<仓库名>:2.0.6
    export MC_IMAGE_LATEST=crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/<命名空间>/<仓库名>:latest
    export MC_DOCKER_PUSH=1
    bash scripts/docker-buildx-multiarch.sh

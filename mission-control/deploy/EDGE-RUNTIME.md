@@ -13,7 +13,7 @@
 ```bash
 bash mission-control/scripts/docker-publish-multiarch.sh
 # 或
-MC_IMAGE=crpi-.../agentcenter:2.0.1 MC_DOCKER_PUSH=1 bash mission-control/scripts/docker-buildx-multiarch.sh
+MC_IMAGE=crpi-.../agentcenter:2.0.6 MC_DOCKER_PUSH=1 bash mission-control/scripts/docker-buildx-multiarch.sh
 ```
 
 服务器 `docker compose pull` 后会自动拉取匹配架构的层。
@@ -24,8 +24,8 @@ MC_IMAGE=crpi-.../agentcenter:2.0.1 MC_DOCKER_PUSH=1 bash mission-control/script
 # 仓库根目录
 bash mission-control/scripts/sync-edge-runtime-bundle.sh
 cd mission-control
-docker build -t crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1 .
-docker push crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.1
+docker build -t crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.6 .
+docker push crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.0.6
 ```
 
 1Panel：`docker compose pull && docker compose up -d`（改 compose 里镜像 tag 与版本一致）。
@@ -42,7 +42,7 @@ docker push crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/ag
 
 ```bash
 curl -sk https://agent.1sheng.work/api/releases/edge-runtime-manifest | head
-curl -skI https://agent.1sheng.work/edge-runtime/client-runtime-2.0.1-darwin-aarch64.zip | head
+curl -skI https://agent.1sheng.work/edge-runtime/client-runtime-2.0.6-darwin-aarch64.zip | head
 ```
 
 不应再出现 **503 manifest not configured**。
@@ -85,7 +85,7 @@ bash mission-control/scripts/sync-edge-tray-bundle.sh
 验证：
 
 ```bash
-curl -skI https://agent.1sheng.work/edge-tray/e-agent-edge-2.0.1-darwin-aarch64.dmg | head
+curl -skI https://agent.1sheng.work/edge-tray/e-agent-edge-2.0.6-darwin-aarch64.dmg | head
 ```
 
 - `public/edge-tray/manifest.json` — 可提交 Git

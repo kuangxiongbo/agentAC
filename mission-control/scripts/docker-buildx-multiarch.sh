@@ -3,8 +3,8 @@
 # Requires: Docker Buildx (docker-container driver so QEMU can build foreign arches).
 #
 # Examples:
-#   MC_IMAGE=ghcr.io/myorg/agentcenter:2.0.1 MC_DOCKER_PUSH=1 bash scripts/docker-buildx-multiarch.sh
-#   MC_IMAGE=ghcr.io/myorg/agentcenter:2.0.1 MC_IMAGE_LATEST=ghcr.io/myorg/agentcenter:latest MC_DOCKER_PUSH=1 bash scripts/docker-buildx-multiarch.sh
+#   MC_IMAGE=ghcr.io/myorg/agentcenter:2.0.6 MC_DOCKER_PUSH=1 bash scripts/docker-buildx-multiarch.sh
+#   MC_IMAGE=ghcr.io/myorg/agentcenter:2.0.6 MC_IMAGE_LATEST=ghcr.io/myorg/agentcenter:latest MC_DOCKER_PUSH=1 bash scripts/docker-buildx-multiarch.sh
 #
 # Local single-arch load (e.g. test amd64 image on disk):
 #   MC_DOCKER_PLATFORM=linux/amd64 MC_IMAGE=agentcenter:test MC_DOCKER_LOAD=1 bash scripts/docker-buildx-multiarch.sh
@@ -60,7 +60,7 @@ if [[ -z "$VERSION" ]]; then
 fi
 
 if [[ -z "$IMAGE" ]]; then
-  echo "error: 请设置 MC_IMAGE，例如 MC_IMAGE=ghcr.io/org/agentcenter:2.0.1" >&2
+  echo "error: 请设置 MC_IMAGE，例如 MC_IMAGE=ghcr.io/org/agentcenter:${VERSION}" >&2
   usage
   exit 1
 fi

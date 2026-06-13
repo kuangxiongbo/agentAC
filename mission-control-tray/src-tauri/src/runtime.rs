@@ -247,16 +247,16 @@ pub fn set_cached_manifest(manifest: RuntimeManifest) {
     }
 }
 
+pub fn clear_cached_manifest() {
+    if let Ok(mut guard) = CACHED_MANIFEST.lock() {
+        *guard = None;
+    }
+}
+
 pub fn fetch_manifest(cfg: &EdgeConfig) -> Result<RuntimeManifest, String> {
     if let Ok(guard) = CACHED_MANIFEST.lock() {
         if let Some(m) = guard.as_ref() {
             return Ok(m.clone());
-        }
-    }
-    if let Some(cached) = bootstrap::load_cached_bootstrap() {
-        if let Some(m) = cached.runtime_manifest {
-            set_cached_manifest(m.clone());
-            return Ok(m);
         }
     }
     if let Ok(m) = fetch_manifest_via_web_client(cfg) {
@@ -278,8 +278,26 @@ pub fn fetch_manifest(cfg: &EdgeConfig) -> Result<RuntimeManifest, String> {
         };
         return Err(format!("runtime 清单 HTTP {status} ({url}){hint}", url = url));
     }
-    resp.json::<RuntimeManifest>()
-        .map_err(|e| format!("runtime 清单 JSON 无效: {e}"))
+    match resp.json::<RuntimeManifest>() {
+        Ok(m) => {
+            set_cached_manifest(m.clone());
+            Ok(m)
+        }
+        Err(e) => Err(format!("runtime 清单 JSON 无效: {e}")),
+    }
+    .or_else(|err| {
+        if let Some(cached) = bootstrap::load_cached_bootstrap() {
+            if let Some(m) = cached.runtime_manifest {
+                eprintln!(
+                    "[E-Agent Edge] 在线 runtime 清单不可用（{err}），使用 bootstrap 缓存 {}",
+                    m.client_version
+                );
+                set_cached_manifest(m.clone());
+                return Ok(m);
+            }
+        }
+        Err(err)
+    })
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -306,11 +324,7 @@ pub fn download_and_install(cfg: &EdgeConfig, force: bool) -> Result<String, Str
         .get(key)
         .ok_or_else(|| format!("清单中无当前平台 {key}"))?;
 
-    let target_version = cfg
-        .runtime_version
-        .clone()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| manifest.client_version.clone());
+    let target_version = manifest.client_version.clone();
 
     if !force {
         if let Some(cur) = &installed {
@@ -629,7 +643,26 @@ fn fetch_manifest_via_web_client(cfg: &EdgeConfig) -> Result<RuntimeManifest, St
 
 pub fn ensure_runtime(cfg: &EdgeConfig) -> Result<(), String> {
     if is_runtime_usable() {
-        return Ok(());
+        match fetch_manifest(cfg) {
+            Ok(manifest) => {
+                let installed = installed_version();
+                if installed.as_deref() == Some(manifest.client_version.as_str()) {
+                    return Ok(());
+                }
+                eprintln!(
+                    "[E-Agent Edge] runtime 版本需要更新: 当前 {}，目标 {}",
+                    installed.unwrap_or_else(|| "unknown".to_string()),
+                    manifest.client_version
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[E-Agent Edge] 在线 runtime 清单不可用（{e}），继续使用已安装 runtime {}",
+                    installed_version().unwrap_or_else(|| "local".to_string())
+                );
+                return Ok(());
+            }
+        }
     }
     if resolve_server_js().is_some() {
         eprintln!(
@@ -644,11 +677,8 @@ pub fn ensure_runtime(cfg: &EdgeConfig) -> Result<(), String> {
         eprintln!("[E-Agent Edge] {msg}");
         return Ok(());
     }
-    let mut download_cfg = cfg.clone();
-    if download_cfg.runtime_version.is_none() {
-        download_cfg.runtime_version = Some(DEFAULT_CLIENT_VERSION.to_string());
-    }
-    let version = download_cfg
+    let download_cfg = cfg.clone();
+    let version = cfg
         .runtime_version
         .clone()
         .filter(|v| !v.is_empty())

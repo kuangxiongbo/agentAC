@@ -7,6 +7,7 @@ import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { LanguageSwitcherSelect } from '@/components/ui/language-switcher'
 import { resolveOidcPostLoginReturnTo, buildZitadelStartLoginUrl } from '@/lib/zitadel-sso-client'
+import { APP_VERSION } from '@/lib/version'
 
 interface GoogleCredentialResponse {
   credential?: string
@@ -100,7 +101,7 @@ export default function LoginPage() {
   /** 无 OIDC，或应急 `?local=1`：显示本地 / Google 登录（须在已知 OIDC 配置后判断，避免 SSO 就绪前误显本地表单） */
   const showLocalLogin = ssoReady && (!zitadelEnabled || localBypass)
   const unifiedSsoShell = ssoReady && zitadelEnabled && !localBypass
-  const ssoBuildLabel = (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_MC_BUILD_LABEL?.trim()) || '2.0.2'
+  const ssoBuildLabel = (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_MC_BUILD_LABEL?.trim()) || APP_VERSION
 
   useEffect(() => {
     try {

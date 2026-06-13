@@ -1,6 +1,6 @@
 {
   "$schema": "https://1sheng.io/schemas/license-entitlements/v1",
-  "appId": "mission-control",
+  "appId": "agentCenter",
   "displayName": "Agent 指挥仓",
   "version": "1.0.0",
   "requiresSubscription": true,

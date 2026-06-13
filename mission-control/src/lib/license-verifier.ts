@@ -10,7 +10,7 @@ function fallbackStage(): string {
 export const LICENSE_APP_ID =
   String(process.env.LICENSE_APP_ID || '').trim() ||
   String(LICENSE_SCHEMA_SETTINGS.appId || '').trim() ||
-  'mission-control'
+  'agentCenter'
 
 export const OIDC_INSTANCE_CLIENT_ID = String(
   process.env.ZITADEL_CLIENT_ID || process.env.OIDC_CLIENT_ID || '',

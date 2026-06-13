@@ -79,6 +79,17 @@ function assertTextIncludes(label, file, required) {
   }
 }
 
+function assertTextExcludes(label, file, forbidden) {
+  const content = readText(file);
+  for (const item of forbidden) {
+    if (content.includes(item)) {
+      fail(`${label}: contains stale source contract ${item}`);
+    } else {
+      ok(`${label}: excludes ${item}`);
+    }
+  }
+}
+
 function assertZipHasNextStaticChunks(zipFile) {
   const result = spawnSync('unzip', ['-Z1', zipFile], {
     encoding: 'utf8',
@@ -96,7 +107,10 @@ function assertZipHasNextStaticChunks(zipFile) {
 }
 
 const serverPackage = readJson(path.join(serverRoot, 'package.json'));
+const trayPackage = readJson(path.join(trayRoot, 'package.json'));
 const targetVersion = process.argv[2] || serverPackage.version;
+const trayNativeVersion = trayPackage.version;
+const licenseSchema = readJson(path.join(serverRoot, 'license-schema.json'));
 
 assertEqual('server package version', serverPackage.version, targetVersion);
 assertEqual(
@@ -104,16 +118,29 @@ assertEqual(
   readJson(path.join(clientRoot, 'package.json')).version,
   targetVersion,
 );
-assertEqual(
-  'tray package version',
-  readJson(path.join(trayRoot, 'package.json')).version,
-  targetVersion,
-);
+ok(`tray package version: ${trayNativeVersion}`);
 assertEqual(
   'tauri bundle version',
   readJson(path.join(trayRoot, 'src-tauri/tauri.conf.json')).version,
-  targetVersion,
+  trayNativeVersion,
 );
+assertEqual('license schema appId', licenseSchema.appId, 'agentCenter');
+for (const entitlement of ['enableHumanWatch', 'enableLocalCliElevation']) {
+  const found = Array.isArray(licenseSchema.entitlements)
+    && licenseSchema.entitlements.some((item) => item?.key === entitlement);
+  if (!found) {
+    fail(`license schema missing entitlement ${entitlement}`);
+  } else {
+    ok(`license schema entitlement: ${entitlement}`);
+  }
+}
+
+const trayConfigSource = readText(path.join(trayRoot, 'src-tauri/src/config.rs'));
+if (!trayConfigSource.includes(`DEFAULT_CLIENT_VERSION: &str = "${targetVersion}"`)) {
+  fail(`tray DEFAULT_CLIENT_VERSION must match ${targetVersion}`);
+} else {
+  ok(`tray DEFAULT_CLIENT_VERSION: ${targetVersion}`);
+}
 
 const runtimeManifest = readJson(path.join(serverRoot, 'public/edge-runtime/manifest.json'));
 assertEqual('edge runtime manifest client_version', runtimeManifest.client_version, targetVersion);
@@ -134,10 +161,10 @@ for (const [platform, artifact] of Object.entries(runtimeManifest.platforms || {
 
 const trayManifest = readJson(path.join(serverRoot, 'public/edge-tray/manifest.json'));
 assertEqual('edge tray manifest center_version', trayManifest.center_version, targetVersion);
-assertEqual('edge tray manifest tray_version', trayManifest.tray_version, targetVersion);
+assertEqual('edge tray manifest tray_version', trayManifest.tray_version, trayNativeVersion);
 for (const [platform, artifact] of Object.entries(trayManifest.platforms || {})) {
-  if (!artifact.url?.includes(`e-agent-edge-${targetVersion}-`)) {
-    fail(`edge tray ${platform}: url does not include target version ${targetVersion}`);
+  if (!artifact.url?.includes(`e-agent-edge-${trayNativeVersion}-`)) {
+    fail(`edge tray ${platform}: url does not include tray version ${trayNativeVersion}`);
   } else {
     ok(`edge tray ${platform}: url ${artifact.url}`);
   }
@@ -191,8 +218,84 @@ assertTextIncludes(
   path.join(serverRoot, 'src/app/api/edge/download-info/route.ts'),
   ['resolveTrayDownloadUrl', 'resolveTrayVersion', 'tray_version'],
 );
+assertTextIncludes('server tray version resolver', path.join(serverRoot, 'src/lib/edge-download.ts'), [
+  'APP_VERSION',
+  'resolveBundledTrayFromManifest',
+]);
+assertTextExcludes('server tray version resolver', path.join(serverRoot, 'src/lib/edge-download.ts'), [
+  "'2.0.2'",
+  '"2.0.2"',
+]);
+assertTextIncludes('server login build label', path.join(serverRoot, 'src/app/login/page.tsx'), [
+  'APP_VERSION',
+  'NEXT_PUBLIC_MC_BUILD_LABEL',
+]);
+assertTextExcludes('server login build label', path.join(serverRoot, 'src/app/login/page.tsx'), [
+  "'2.0.2'",
+  '"2.0.2"',
+]);
+assertTextIncludes(
+  'edge provision tray runtime api',
+  path.join(clientRoot, 'src/app/api/edge/provision-tray-runtime/route.ts'),
+  ['APP_VERSION', 'VERSION'],
+);
+assertTextExcludes(
+  'edge provision tray runtime api',
+  path.join(clientRoot, 'src/app/api/edge/provision-tray-runtime/route.ts'),
+  ["'2.0.2'", '"2.0.2"'],
+);
 assertTextIncludes('server loading/version surface', path.join(serverRoot, 'src/components/ui/loader.tsx'), [
   'APP_VERSION',
+]);
+assertTextIncludes('edge loading/version surface', path.join(clientRoot, 'src/components/ui/loader.tsx'), [
+  'APP_VERSION',
+]);
+assertTextIncludes('server nav version surface', path.join(serverRoot, 'src/components/layout/nav-rail.tsx'), [
+  'APP_VERSION',
+]);
+assertTextIncludes('edge nav version surface', path.join(clientRoot, 'src/components/layout/nav-rail.tsx'), [
+  'APP_VERSION',
+]);
+assertTextIncludes('tray runtime update logic', path.join(trayRoot, 'src-tauri/src/runtime.rs'), [
+  'fetch_manifest(cfg)',
+  'runtime 版本需要更新',
+  'let target_version = manifest.client_version.clone()',
+  'clear_cached_manifest',
+]);
+assertTextIncludes('tray supervisor runtime update loop', path.join(trayRoot, 'src-tauri/src/supervisor.rs'), [
+  'RUNTIME_UPDATE_CHECK_INTERVAL',
+  'runtime_update_target',
+  'process::stop()',
+  'runtime::ensure_runtime(&cfg)',
+]);
+assertTextIncludes('license verifier app id', path.join(serverRoot, 'src/lib/license-verifier.ts'), [
+  "'agentCenter'",
+  'app_id: LICENSE_APP_ID',
+  'client_id: LICENSE_APP_ID',
+]);
+assertTextIncludes('1Panel compose image tag', path.join(serverRoot, 'deploy/docker-compose.1panel.yml'), [
+  `agentcenter:${targetVersion}`,
+]);
+for (const deployDoc of ['deploy/README.md', 'deploy/EDGE-RUNTIME.md']) {
+  const content = readText(path.join(serverRoot, deployDoc));
+  if (content.includes('agentcenter:2.0.1')) {
+    fail(`${deployDoc}: contains stale agentcenter:2.0.1 reference`);
+  } else {
+    ok(`${deployDoc}: no stale agentcenter:2.0.1 reference`);
+  }
+}
+assertTextExcludes('docker buildx script', path.join(serverRoot, 'scripts/docker-buildx-multiarch.sh'), [
+  'agentcenter:2.0.1',
+]);
+assertTextIncludes('server mcp server info', path.join(serverRoot, 'scripts/mc-mcp-server.cjs'), [
+  `version: '${targetVersion}'`,
+]);
+assertTextIncludes('edge mcp server info', path.join(clientRoot, 'scripts/mc-mcp-server.cjs'), [
+  `version: '${targetVersion}'`,
+]);
+assertTextExcludes('edge runtime deploy doc', path.join(serverRoot, 'deploy/EDGE-RUNTIME.md'), [
+  'client-runtime-2.0.1',
+  'e-agent-edge-2.0.1',
 ]);
 
 if (failures.length > 0) {
