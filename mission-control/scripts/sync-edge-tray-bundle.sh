@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 本机打包 mission-control-tray → 同步到 mission-control/public/edge-tray/
-# 与中心服同版本配套，docker build 时打入镜像。
+# 托盘原生版本独立于中心服/runtime 版本；docker build 时打入镜像。
 #
 # 用法（仓库根目录）:
 #   bash mission-control/scripts/sync-edge-tray-bundle.sh
@@ -23,14 +23,14 @@ MC_VERSION="$(node -p "require('$MC_ROOT/package.json').version")"
 TRAY_VERSION="$(node -p "require('$TRAY_ROOT/package.json').version")"
 PLATFORM="${EDGE_TRAY_PLATFORM:-darwin-aarch64}"
 ARCH="${PLATFORM#darwin-}"
-DMG_NAME="e-agent-edge-${MC_VERSION}-${PLATFORM}.dmg"
+DMG_NAME="e-agent-edge-${TRAY_VERSION}-${PLATFORM}.dmg"
 MANIFEST="$OUT_DIR/manifest.json"
 
 find_tray_dmg() {
   local candidates=(
     "$TRAY_ROOT/src-tauri/target/release/bundle/dmg/E-Agent Edge_${TRAY_VERSION}_${ARCH}.dmg"
     "$TRAY_ROOT/src-tauri/target/release/bundle/dmg/E-Agent Edge_${TRAY_VERSION}.dmg"
-    "$REPO_ROOT/releases/dist/e-agent-edge-${MC_VERSION}-${PLATFORM}.dmg"
+    "$REPO_ROOT/releases/dist/e-agent-edge-${TRAY_VERSION}-${PLATFORM}.dmg"
     "$REPO_ROOT/releases/dist/E-Agent-Edge.dmg"
   )
   local dir="$TRAY_ROOT/src-tauri/target/release/bundle/dmg"
