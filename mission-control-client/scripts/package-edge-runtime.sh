@@ -79,6 +79,37 @@ link_runtime_peer_deps() {
 }
 link_runtime_peer_deps "$STAGING/runtime"
 
+repair_next_compiled_runtime() {
+  local root="$1"
+  local src_next="$PROJECT_ROOT/node_modules/next"
+  local dest_next="$root/node_modules/next"
+  local src_dir="$src_next/dist/compiled/next-server"
+  local dest_dir="$dest_next/dist/compiled/next-server"
+  if [[ ! -d "$src_dir" ]]; then
+    echo "error: missing source Next compiled runtime: $src_dir" >&2
+    exit 1
+  fi
+  mkdir -p "$dest_dir"
+  if command -v ditto >/dev/null 2>&1; then
+    ditto "$src_dir" "$dest_dir"
+  else
+    cp -R "$src_dir/." "$dest_dir/"
+  fi
+}
+repair_next_compiled_runtime "$STAGING/runtime"
+
+required_runtime_files=(
+  "$STAGING/runtime/node_modules/next/dist/compiled/next-server/app-route-turbo.runtime.prod.js"
+  "$STAGING/runtime/node_modules/next/dist/compiled/next-server/app-page-turbo.runtime.prod.js"
+  "$STAGING/runtime/node_modules/next/dist/compiled/next-server/pages-turbo.runtime.prod.js"
+)
+for file in "${required_runtime_files[@]}"; do
+  if [[ ! -f "$file" ]]; then
+    echo "error: missing required runtime file: $file" >&2
+    exit 1
+  fi
+done
+
 echo "$VERSION" >"$STAGING/VERSION"
 cat >"$STAGING/README.txt" <<EOF
 E-Agent Edge runtime bundle

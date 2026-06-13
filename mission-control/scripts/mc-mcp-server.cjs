@@ -786,7 +786,7 @@ for (const tool of TOOLS) {
 
 const SERVER_INFO = {
   name: 'mission-control',
-  version: '2.1.1',
+  version: '2.1.2',
 };
 
 const CAPABILITIES = {

@@ -173,6 +173,19 @@ fn fetch_bootstrap_via_web_client(
     serde_json::from_str(&body).map_err(|e| format!("Web 客户端 bootstrap JSON 无效: {e}"))
 }
 
+fn local_web_client_available(cfg: &EdgeConfig) -> bool {
+    let url = format!("http://127.0.0.1:{}/api/status?action=health", cfg.port);
+    let client = match http_client::build_http_client(cfg, Duration::from_secs(2)) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    client
+        .get(&url)
+        .send()
+        .map(|resp| resp.status().is_success())
+        .unwrap_or(false)
+}
+
 pub fn fetch_center_bootstrap(cfg: &EdgeConfig) -> Result<CenterBootstrap, String> {
     let device_id = cfg
         .device_id
@@ -181,12 +194,16 @@ pub fn fetch_center_bootstrap(cfg: &EdgeConfig) -> Result<CenterBootstrap, Strin
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let hostname = os_hostname();
 
-    match fetch_bootstrap_via_web_client(cfg, &hostname, &device_id) {
-        Ok(payload) => {
-            eprintln!("[E-Agent Edge] 已通过 Web 客户端 (5101) 连接通道获取 bootstrap");
-            return Ok(payload);
+    if local_web_client_available(cfg) {
+        match fetch_bootstrap_via_web_client(cfg, &hostname, &device_id) {
+            Ok(payload) => {
+                eprintln!("[E-Agent Edge] 已通过 Web 客户端 (5101) 连接通道获取 bootstrap");
+                return Ok(payload);
+            }
+            Err(e) => eprintln!("[E-Agent Edge] Web 通道 bootstrap 不可用: {e}"),
         }
-        Err(e) => eprintln!("[E-Agent Edge] Web 通道 bootstrap 不可用: {e}"),
+    } else {
+        eprintln!("[E-Agent Edge] 本机 Web 客户端未运行，直接连接服务中心 bootstrap");
     }
 
     let enroll = resolve_enroll_token(cfg)?;
@@ -234,8 +251,10 @@ pub fn merge_config_from_bootstrap(cfg: &mut EdgeConfig, payload: &CenterBootstr
     cfg.client_name = Some(payload.client.client_name.clone());
     cfg.enterprise_name = Some(payload.enterprise.name.clone());
     cfg.enterprise_slug = Some(payload.enterprise.slug.clone());
-    if let Some(version) = payload.runtime_manifest.as_ref().map(|m| m.client_version.clone()) {
-        cfg.runtime_version = Some(version);
+    if !runtime::has_explicit_manifest_url(cfg) {
+        if let Some(version) = payload.runtime_manifest.as_ref().map(|m| m.client_version.clone()) {
+            cfg.runtime_version = Some(version);
+        }
     }
 }
 
@@ -309,8 +328,10 @@ pub fn apply_tray_bootstrap(cfg: &EdgeConfig) -> Result<CenterBootstrap, String>
     working.enroll_token = Some(enroll);
     let _ = config::save_config(&working);
     save_cached_bootstrap(&payload)?;
-    if let Some(manifest) = &payload.runtime_manifest {
-        runtime::set_cached_manifest(manifest.clone());
+    if !runtime::has_explicit_manifest_url(&working) {
+        if let Some(manifest) = &payload.runtime_manifest {
+            runtime::set_cached_manifest(manifest.clone());
+        }
     }
     Ok(payload)
 }

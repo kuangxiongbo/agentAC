@@ -217,14 +217,18 @@ fn run_setup_pipeline(app: AppHandle, mut cfg: EdgeConfig) {
 pub fn run_if_configured(app: &AppHandle, open_console_when_done: bool) {
     let cfg = load_config();
     if !config::is_setup_complete(&cfg) {
+        eprintln!("[E-Agent Edge] 未完成配置，跳过后台启动");
         return;
     }
     if is_running() {
+        eprintln!("[E-Agent Edge] 初始化/启动流程正在运行，跳过重复启动");
         return;
     }
     if process::is_running() && process::is_healthy(&cfg) {
+        eprintln!("[E-Agent Edge] 本机 Web 客户端已健康运行，跳过启动");
         return;
     }
+    eprintln!("[E-Agent Edge] 已检测到配置，开始后台启动本机 Web 客户端");
     let app = app.clone();
     std::thread::spawn(move || {
         set_running(true);
@@ -237,13 +241,17 @@ pub fn run_if_configured(app: &AppHandle, open_console_when_done: bool) {
 
         let cfg = load_config();
         let err = (|| {
+            eprintln!("[E-Agent Edge] 启动阶段: 获取服务中心 bootstrap");
             let payload = bootstrap::apply_tray_bootstrap(&cfg)?;
+            eprintln!("[E-Agent Edge] 启动阶段: 准备 runtime");
             runtime::ensure_runtime(&cfg)?;
+            eprintln!("[E-Agent Edge] 启动阶段: 拉起本机 Web 客户端");
             process::ensure_running(&cfg, Some(&payload))?;
             Ok::<(), String>(())
         })();
 
         if let Err(e) = err {
+            eprintln!("[E-Agent Edge] 后台启动失败: {e}");
             set_status(|s| {
                 s.phase = "error".to_string();
                 s.message = "启动失败".to_string();

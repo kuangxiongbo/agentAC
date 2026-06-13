@@ -68,17 +68,16 @@ pub fn resolve_server_js() -> Option<PathBuf> {
 }
 
 pub fn installed_version() -> Option<String> {
-    if resolve_server_js().is_none() {
-        return None;
+    let server_js = resolve_server_js()?;
+    let runtime_dir = server_js.parent()?;
+    if let Some(version) = package_json_version(runtime_dir) {
+        return Some(version);
     }
-    let version_file = config::runtime_root().join("VERSION");
-    if version_file.is_file() {
-        if let Ok(s) = fs::read_to_string(version_file) {
-            let v = s.trim().to_string();
-            if !v.is_empty() {
-                return Some(v);
-            }
-        }
+    if let Some(version) = version_file_value(&runtime_dir.join("VERSION")) {
+        return Some(version);
+    }
+    if let Some(version) = version_file_value(&config::runtime_root().join("VERSION")) {
+        return Some(version);
     }
     Some("local".to_string())
 }
@@ -95,7 +94,94 @@ pub fn is_runtime_usable() -> bool {
     let Some(root) = server_js.parent() else {
         return false;
     };
-    next_module_resolvable(root) && runtime_require_hook_resolvable(root)
+    next_module_resolvable(root)
+        && runtime_require_hook_resolvable(root)
+        && runtime_static_assets_present(root)
+        && next_compiled_runtime_present(root)
+}
+
+fn version_file_value(path: &Path) -> Option<String> {
+    if !path.is_file() {
+        return None;
+    }
+    let v = fs::read_to_string(path).ok()?.trim().to_string();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+
+fn package_json_version(runtime_dir: &Path) -> Option<String> {
+    let raw = fs::read_to_string(runtime_dir.join("package.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let version = json.get("version")?.as_str()?.trim().to_string();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
+}
+
+fn runtime_static_assets_present(runtime_dir: &Path) -> bool {
+    let chunks = runtime_dir.join(".next/static/chunks");
+    if !chunks.is_dir() {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(&chunks) else {
+        return false;
+    };
+    let mut has_js = false;
+    let mut has_css = false;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        match path.extension().and_then(|s| s.to_str()) {
+            Some("js") => has_js = true,
+            Some("css") => has_css = true,
+            _ => {}
+        }
+        if has_js && has_css {
+            return true;
+        }
+    }
+    false
+}
+
+fn next_compiled_runtime_present(runtime_dir: &Path) -> bool {
+    runtime_dir
+        .join("node_modules/next/dist/compiled/next-server/app-route-turbo.runtime.prod.js")
+        .is_file()
+}
+
+fn validate_installed_runtime(target_version: &str) -> Result<PathBuf, String> {
+    let server_js = resolve_server_js().ok_or_else(|| "runtime 缺少 server.js".to_string())?;
+    let runtime_dir = server_js
+        .parent()
+        .ok_or_else(|| "无法识别 runtime 目录".to_string())?
+        .to_path_buf();
+    if !next_module_resolvable(&runtime_dir) {
+        return Err("runtime 缺少 Next 运行依赖".to_string());
+    }
+    if !runtime_require_hook_resolvable(&runtime_dir) {
+        return Err("runtime 缺少 Next require-hook 依赖".to_string());
+    }
+    if !runtime_static_assets_present(&runtime_dir) {
+        return Err("runtime 缺少 .next/static/chunks 静态资源".to_string());
+    }
+    if !next_compiled_runtime_present(&runtime_dir) {
+        return Err("runtime 缺少 Next app-route turbo 运行时".to_string());
+    }
+    if let Some(version) = package_json_version(&runtime_dir) {
+        if version != target_version {
+            return Err(format!(
+                "runtime package.json 版本不一致: 当前 {version}，目标 {target_version}"
+            ));
+        }
+    }
+    Ok(runtime_dir)
 }
 
 fn runtime_require_hook_resolvable(runtime_dir: &Path) -> bool {
@@ -222,6 +308,22 @@ fn find_pnpm_package_dir_inner(dir: &Path, pkg: &str) -> Option<PathBuf> {
     None
 }
 
+pub fn has_explicit_manifest_url(cfg: &EdgeConfig) -> bool {
+    if let Some(url) = &cfg.manifest_url {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return true;
+        }
+    }
+    if let Ok(url) = std::env::var("EDGE_RUNTIME_MANIFEST_URL") {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
 fn resolve_manifest_url(cfg: &EdgeConfig) -> String {
     if let Some(url) = &cfg.manifest_url {
         let trimmed = url.trim();
@@ -241,6 +343,36 @@ fn resolve_manifest_url(cfg: &EdgeConfig) -> String {
     )
 }
 
+fn manifest_base_url(cfg: &EdgeConfig) -> String {
+    let manifest_url = resolve_manifest_url(cfg);
+    if let Some((base, _)) = manifest_url.rsplit_once('/') {
+        return base.to_string();
+    }
+    cfg.center_url.trim_end_matches('/').to_string()
+}
+
+fn resolve_artifact_url(cfg: &EdgeConfig, artifact_url: &str) -> String {
+    let trimmed = artifact_url.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return trimmed.to_string();
+    }
+    if trimmed.starts_with('/') {
+        let manifest_url = resolve_manifest_url(cfg);
+        if let Some(rest) = manifest_url.strip_prefix("http://") {
+            if let Some((host, _)) = rest.split_once('/') {
+                return format!("http://{host}{trimmed}");
+            }
+        }
+        if let Some(rest) = manifest_url.strip_prefix("https://") {
+            if let Some((host, _)) = rest.split_once('/') {
+                return format!("https://{host}{trimmed}");
+            }
+        }
+        return format!("{}{}", cfg.center_url.trim_end_matches('/'), trimmed);
+    }
+    format!("{}/{}", manifest_base_url(cfg).trim_end_matches('/'), trimmed)
+}
+
 pub fn set_cached_manifest(manifest: RuntimeManifest) {
     if let Ok(mut guard) = CACHED_MANIFEST.lock() {
         *guard = Some(manifest);
@@ -254,14 +386,19 @@ pub fn clear_cached_manifest() {
 }
 
 pub fn fetch_manifest(cfg: &EdgeConfig) -> Result<RuntimeManifest, String> {
-    if let Ok(guard) = CACHED_MANIFEST.lock() {
-        if let Some(m) = guard.as_ref() {
-            return Ok(m.clone());
+    let explicit_manifest = has_explicit_manifest_url(cfg);
+    if !explicit_manifest {
+        if let Ok(guard) = CACHED_MANIFEST.lock() {
+            if let Some(m) = guard.as_ref() {
+                return Ok(m.clone());
+            }
         }
     }
-    if let Ok(m) = fetch_manifest_via_web_client(cfg) {
-        set_cached_manifest(m.clone());
-        return Ok(m);
+    if !explicit_manifest {
+        if let Ok(m) = fetch_manifest_via_web_client(cfg) {
+            set_cached_manifest(m.clone());
+            return Ok(m);
+        }
     }
     let url = resolve_manifest_url(cfg);
     let client = http_client::build_http_client(cfg, Duration::from_secs(60))?;
@@ -280,12 +417,15 @@ pub fn fetch_manifest(cfg: &EdgeConfig) -> Result<RuntimeManifest, String> {
     }
     match resp.json::<RuntimeManifest>() {
         Ok(m) => {
-            set_cached_manifest(m.clone());
+        set_cached_manifest(m.clone());
             Ok(m)
         }
         Err(e) => Err(format!("runtime 清单 JSON 无效: {e}")),
     }
     .or_else(|err| {
+        if explicit_manifest {
+            return Err(err);
+        }
         if let Some(cached) = bootstrap::load_cached_bootstrap() {
             if let Some(m) = cached.runtime_manifest {
                 eprintln!(
@@ -339,7 +479,11 @@ pub fn download_and_install(cfg: &EdgeConfig, force: bool) -> Result<String, Str
     let zip_path = home.join(format!("client-runtime-{target_version}-{key}.zip.download"));
     let extract_parent = home.join(format!("staging-{target_version}-{key}"));
 
-    download_file(cfg, &artifact.url, &zip_path)?;
+    if zip_path.exists() {
+        fs::remove_file(&zip_path).map_err(|e| e.to_string())?;
+    }
+    let artifact_url = resolve_artifact_url(cfg, &artifact.url);
+    download_file(cfg, &artifact_url, &zip_path)?;
     let digest = sha256_file(&zip_path)?;
     let expected = artifact.sha256.trim().to_lowercase();
     if !expected.is_empty() && digest != expected {
@@ -373,8 +517,11 @@ pub fn download_and_install(cfg: &EdgeConfig, force: bool) -> Result<String, Str
         }
     }
 
+    let installed_runtime_dir = validate_installed_runtime(&target_version)?;
+    fs::write(runtime_dest.join("VERSION"), format!("{target_version}\n"))
+        .map_err(|e| e.to_string())?;
     fs::write(
-        runtime_dest.join("VERSION"),
+        installed_runtime_dir.join("VERSION"),
         format!("{target_version}\n"),
     )
     .map_err(|e| e.to_string())?;
@@ -585,12 +732,11 @@ pub fn install_from_local_standalone(version: &str) -> Result<String, String> {
         }
 
         fs::write(dest.join("VERSION"), format!("{version}\n")).map_err(|e| e.to_string())?;
-        if !is_runtime_usable() {
-            return Err(format!(
-                "复制 standalone 后 runtime 仍不可用: {}",
-                dir.display()
-            ));
-        }
+        let installed_runtime_dir = validate_installed_runtime(version).map_err(|e| {
+            format!("复制 standalone 后 runtime 仍不可用: {} ({e})", dir.display())
+        })?;
+        fs::write(installed_runtime_dir.join("VERSION"), format!("{version}\n"))
+            .map_err(|e| e.to_string())?;
         return Ok(format!("已从本机 standalone 安装 runtime（{}）", dir.display()));
     }
     Err(
@@ -673,9 +819,11 @@ pub fn ensure_runtime(cfg: &EdgeConfig) -> Result<(), String> {
             fs::remove_dir_all(&root).map_err(|e| e.to_string())?;
         }
     }
-    if let Ok(msg) = provision_runtime_via_web_client(cfg) {
-        eprintln!("[E-Agent Edge] {msg}");
-        return Ok(());
+    if !has_explicit_manifest_url(cfg) {
+        if let Ok(msg) = provision_runtime_via_web_client(cfg) {
+            eprintln!("[E-Agent Edge] {msg}");
+            return Ok(());
+        }
     }
     let download_cfg = cfg.clone();
     let version = cfg
