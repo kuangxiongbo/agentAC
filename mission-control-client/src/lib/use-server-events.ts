@@ -43,6 +43,7 @@ export function useServerEvents() {
     addChatMessage,
     addNotification,
     addActivity,
+    upsertPermissionRequest,
   } = useAgentCenterStore()
 
   useEffect(() => {
@@ -195,6 +196,13 @@ export function useServerEvents() {
             })
           }
           break
+
+        case 'permission.requested':
+        case 'permission.decided':
+          if (event.data?.id) {
+            upsertPermissionRequest(event.data)
+          }
+          break
       }
     }
 
@@ -219,5 +227,6 @@ export function useServerEvents() {
     addChatMessage,
     addNotification,
     addActivity,
+    upsertPermissionRequest,
   ])
 }

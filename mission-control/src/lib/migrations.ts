@@ -1705,6 +1705,61 @@ const migrations: Migration[] = [
       db.exec(`CREATE INDEX IF NOT EXISTS idx_sync_clients_workspace_last_seen ON sync_clients(workspace_id, last_seen DESC)`)
     },
   },
+  {
+    id: '065_permission_requests',
+    up(db: Database.Database) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS permission_requests (
+          id TEXT PRIMARY KEY,
+          workspace_id INTEGER NOT NULL,
+          tenant_id INTEGER,
+          client_id TEXT,
+          binding_id INTEGER,
+          worker_sync_index_id INTEGER,
+          worker_local_agent_id INTEGER,
+          worker_name TEXT,
+          worker_session_id TEXT,
+          steward_sync_index_id INTEGER,
+          steward_local_agent_id INTEGER,
+          steward_name TEXT,
+          request_type TEXT NOT NULL,
+          title TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          risk TEXT NOT NULL DEFAULT 'medium',
+          status TEXT NOT NULL DEFAULT 'pending',
+          options_json TEXT NOT NULL,
+          context_json TEXT,
+          selected_option_id TEXT,
+          decision_reason TEXT,
+          decider_type TEXT,
+          decider_user_id INTEGER,
+          decider_agent_id TEXT,
+          decided_at INTEGER,
+          expires_at INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (binding_id) REFERENCES human_watch_bindings(id) ON DELETE SET NULL
+        )
+      `)
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS permission_request_decisions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          request_id TEXT NOT NULL,
+          option_id TEXT NOT NULL,
+          reason TEXT,
+          decider_type TEXT NOT NULL,
+          decider_user_id INTEGER,
+          decider_agent_id TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (request_id) REFERENCES permission_requests(id) ON DELETE CASCADE
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_permission_requests_workspace_status ON permission_requests(workspace_id, status, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_permission_requests_worker ON permission_requests(client_id, worker_local_agent_id, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_permission_requests_steward ON permission_requests(steward_local_agent_id, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_permission_decisions_request ON permission_request_decisions(request_id, created_at DESC)`)
+    },
+  },
 ]
 
 export function runMigrations(db: Database.Database) {

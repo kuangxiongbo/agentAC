@@ -1,0 +1,31 @@
+import { describe, expect, it } from 'vitest'
+import { buildCodexMcpConfigArgs, withCodexMcpConfigArgs } from '@/lib/codex-mcp-injection'
+
+describe('codex-mcp-injection', () => {
+  it('does not inject MCP config for unmanaged Codex invocations', () => {
+    expect(buildCodexMcpConfigArgs({ managedByPlatform: false })).toEqual([])
+    expect(withCodexMcpConfigArgs(['exec', 'hello'], { managedByPlatform: false })).toEqual(['exec', 'hello'])
+  })
+
+  it('injects temporary mcp_servers config for platform-managed Codex sessions', () => {
+    const args = buildCodexMcpConfigArgs({
+      managedByPlatform: true,
+      agentId: 42,
+      agentName: 'worker',
+      permissionMode: 'full',
+    })
+
+    expect(args).toContain('-c')
+    expect(args.some((arg) => arg.startsWith('mcp_servers.mission_control.command='))).toBe(true)
+    expect(args.some((arg) => arg.startsWith('mcp_servers.mission_control.args='))).toBe(true)
+    expect(args.some((arg) => arg.includes('"MC_MANAGED_SESSION":"1"'))).toBe(true)
+    expect(args.some((arg) => arg.includes('"MC_AGENT_ID":"42"'))).toBe(true)
+    expect(args.some((arg) => arg.includes('"MC_LOCAL_CLI_PERMISSION_MODE":"full"'))).toBe(true)
+
+    const finalArgs = withCodexMcpConfigArgs(['exec', 'hello'], {
+      managedByPlatform: true,
+      permissionMode: 'standard',
+    })
+    expect(finalArgs.slice(-2)).toEqual(['exec', 'hello'])
+  })
+})

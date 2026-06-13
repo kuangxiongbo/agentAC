@@ -44,6 +44,16 @@ import { runStewardJudgeOnEdge } from './human-watch-judge'
 import { isBindableSessionKind } from './agent-session-binding'
 import { deliverAgentMessage } from './deliver-agent-message'
 import { edgeUpstreamFetch, isEdgeTlsInsecure } from './edge-upstream-fetch'
+import {
+  getPermissionRequest,
+  upsertPermissionRequestSnapshot,
+  type PermissionRequestOption,
+  type PermissionRequestRisk,
+  type PermissionRequestStatus,
+  type PermissionRequestView,
+} from './permission-requests'
+import { logSecurityEvent } from './security-events'
+import { validateLocalCliElevationGrant } from './local-cli-elevation-audit'
 
 // We use the native ws library if available (Node 18+ has it natively via global WebSocket)
 // In Next.js server context, we use the 'ws' package for server-side WebSocket.
@@ -185,6 +195,39 @@ function getLocalAgentDetail(localAgentId: number): Record<string, unknown> | nu
   } catch {
     return null
   }
+}
+
+function syncPermissionRequestSnapshot(request: PermissionRequestView): void {
+  upsertPermissionRequestSnapshot({
+    id: request.id,
+    workspaceId: request.workspace_id ?? 1,
+    tenantId: request.tenant_id,
+    clientId: request.client_id,
+    bindingId: request.binding_id,
+    workerSyncIndexId: request.worker_sync_index_id,
+    workerLocalAgentId: request.worker_local_agent_id,
+    workerName: request.worker_name,
+    workerSessionId: request.worker_session_id,
+    stewardSyncIndexId: request.steward_sync_index_id,
+    stewardLocalAgentId: request.steward_local_agent_id,
+    stewardName: request.steward_name,
+    requestType: request.request_type,
+    title: request.title,
+    prompt: request.prompt,
+    risk: request.risk as PermissionRequestRisk,
+    status: request.status as PermissionRequestStatus,
+    options: request.options as PermissionRequestOption[],
+    context: request.context,
+    selectedOptionId: request.selected_option_id,
+    decisionReason: request.decision_reason,
+    deciderType: request.decider_type,
+    deciderUserId: request.decider_user_id,
+    deciderAgentId: request.decider_agent_id,
+    decidedAt: request.decided_at,
+    expiresAt: request.expires_at,
+    createdAt: request.created_at,
+    updatedAt: request.updated_at,
+  })
 }
 
 export function isRemoteBridgeConnected(): boolean {
@@ -792,8 +835,18 @@ async function handleAgentMessageRequest(message: any): Promise<void> {
     ? message.from.trim()
     : 'center'
   const localCliElevated = message?.localCliElevated === true
+  const elevationGrant = localCliElevated ? validateLocalCliElevationGrant(message?.elevationGrant) : null
 
   if (!requestId) return
+  if (localCliElevated && !elevationGrant) {
+    safeSend(state.ws, {
+      type: 'agent_message_response',
+      requestId,
+      ok: false,
+      error: 'Invalid or missing elevation grant for elevated agent message',
+    })
+    return
+  }
 
   if (!Number.isFinite(localAgentId) || localAgentId <= 0) {
     safeSend(state.ws, {
@@ -817,6 +870,17 @@ async function handleAgentMessageRequest(message: any): Promise<void> {
   }
 
   try {
+    if (elevationGrant) {
+      logSecurityEvent({
+        event_type: 'local_cli_elevation_executed',
+        severity: 'warning',
+        source: 'remote_bridge_agent_message',
+        agent_name: elevationGrant.agentName ?? String(agent.name || ''),
+        detail: JSON.stringify(elevationGrant),
+        workspace_id: elevationGrant.workspaceId,
+        tenant_id: elevationGrant.tenantId,
+      })
+    }
     const result = await deliverAgentMessage({
       agent: {
         id: localAgentId,
@@ -913,9 +977,19 @@ async function handleSessionContinueRequest(message: any): Promise<void> {
       ? session.working_dir.trim()
       : ''
   const localCliElevated = session?.localCliElevated === true
+  const elevationGrant = localCliElevated ? validateLocalCliElevationGrant(session?.elevationGrant) : null
   const permissionMode = localCliElevated ? 'full' as const : undefined
 
   if (!requestId) return
+  if (localCliElevated && !elevationGrant) {
+    safeSend(state.ws, {
+      type: 'session_continue_response',
+      requestId,
+      ok: false,
+      error: 'Invalid or missing elevation grant for elevated session continue',
+    })
+    return
+  }
 
   if (!sessionId || !isLocalSessionKind(kind)) {
     safeSend(state.ws, {
@@ -928,6 +1002,17 @@ async function handleSessionContinueRequest(message: any): Promise<void> {
   }
 
   try {
+    if (elevationGrant) {
+      logSecurityEvent({
+        event_type: 'local_cli_elevation_executed',
+        severity: 'warning',
+        source: 'remote_bridge_session_continue',
+        agent_name: elevationGrant.agentName ?? undefined,
+        detail: JSON.stringify(elevationGrant),
+        workspace_id: elevationGrant.workspaceId,
+        tenant_id: elevationGrant.tenantId,
+      })
+    }
     enqueueLocalSessionPrompt(kind as LocalSessionKind, sessionId, prompt, {
       workingDirectory: workingDirectory || null,
       permissionMode,
@@ -1127,6 +1212,15 @@ function handleMessage(raw: string): void {
       )
       break
 
+    case 'permission_request_sync':
+      try {
+        const request = msg?.request && typeof msg.request === 'object' ? msg.request as PermissionRequestView : null
+        if (request) syncPermissionRequestSnapshot(request)
+      } catch (e) {
+        logger.error({ err: e }, '[RemoteBridge] permission_request_sync handler failed')
+      }
+      break
+
     case 'projects_sync':
       handleProjectsSync(msg).catch(e =>
         logger.error({ err: e }, '[RemoteBridge] projects_sync handler failed')
@@ -1283,6 +1377,25 @@ async function connect(): Promise<void> {
       scheduleReconnect()
     }
   }
+}
+
+export function pushPermissionDecisionToUpstream(input: {
+  requestId: string
+  optionId: string
+  reason?: string | null
+  deciderAgentId?: string | null
+}): boolean {
+  const requestId = String(input.requestId || '').trim()
+  const optionId = String(input.optionId || '').trim()
+  if (!requestId || !optionId) return false
+  if (!state.ws || state.ws.readyState !== 1) return false
+  return safeSend(state.ws, {
+    type: 'permission_decision_sync',
+    requestId,
+    optionId,
+    ...(input.reason ? { reason: input.reason } : {}),
+    ...(input.deciderAgentId ? { deciderAgentId: input.deciderAgentId } : {}),
+  })
 }
 
 function scheduleReconnect(): void {

@@ -28,6 +28,8 @@ export type EventType =
   | 'agent.created'
   | 'agent.deleted'
   | 'agent.synced'
+  | 'permission.requested'
+  | 'permission.decided'
   | 'agent.status_changed'
   | 'audit.security'
   | 'security.event'

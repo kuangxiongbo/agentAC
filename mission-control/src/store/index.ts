@@ -394,6 +394,44 @@ export interface ExecApprovalRequest {
   status: 'pending' | 'approved' | 'denied' | 'expired'
 }
 
+export interface PermissionRequestOption {
+  id: string
+  label: string
+  action: 'approve' | 'deny' | 'ask_human'
+  description?: string
+}
+
+export interface PermissionRequest {
+  id: string
+  workspace_id: number
+  tenant_id: number | null
+  client_id: string | null
+  binding_id: number | null
+  worker_sync_index_id: number | null
+  worker_local_agent_id: number | null
+  worker_name: string | null
+  worker_session_id: string | null
+  steward_sync_index_id: number | null
+  steward_local_agent_id: number | null
+  steward_name: string | null
+  request_type: string
+  title: string
+  prompt: string
+  risk: 'low' | 'medium' | 'high' | 'critical'
+  status: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled'
+  options: PermissionRequestOption[]
+  context: Record<string, unknown> | null
+  selected_option_id: string | null
+  decision_reason: string | null
+  decider_type: 'human_user' | 'steward_agent' | 'system' | null
+  decider_user_id: number | null
+  decider_agent_id: string | null
+  decided_at: number | null
+  expires_at: number | null
+  created_at: number
+  updated_at: number
+}
+
 interface AgentCenterStore {
   // Dashboard Mode (local vs full gateway)
   dashboardMode: 'full' | 'local'
@@ -589,6 +627,10 @@ interface AgentCenterStore {
   setExecApprovals: (approvals: ExecApprovalRequest[]) => void
   addExecApproval: (approval: ExecApprovalRequest) => void
   updateExecApproval: (id: string, updates: Partial<ExecApprovalRequest>) => void
+  permissionRequests: PermissionRequest[]
+  setPermissionRequests: (requests: PermissionRequest[]) => void
+  upsertPermissionRequest: (request: PermissionRequest) => void
+  updatePermissionRequest: (id: string, updates: Partial<PermissionRequest>) => void
 
   // Skills (persisted across tab switches)
   skillsList: { id: string; name: string; source: string; path: string; description?: string; registry_slug?: string | null; security_status?: string | null }[] | null
@@ -924,6 +966,22 @@ export const useAgentCenterStore = create<AgentCenterStore>()(
     updateExecApproval: (id, updates) =>
       set((state) => ({
         execApprovals: state.execApprovals.map(a => a.id === id ? { ...a, ...updates } : a),
+      })),
+    permissionRequests: [],
+    setPermissionRequests: (requests) => set({ permissionRequests: requests }),
+    upsertPermissionRequest: (request) =>
+      set((state) => {
+        const existing = state.permissionRequests.findIndex((item) => item.id === request.id)
+        if (existing === -1) {
+          return { permissionRequests: [request, ...state.permissionRequests].slice(0, 200) }
+        }
+        const next = [...state.permissionRequests]
+        next[existing] = { ...next[existing], ...request }
+        return { permissionRequests: next }
+      }),
+    updatePermissionRequest: (id, updates) =>
+      set((state) => ({
+        permissionRequests: state.permissionRequests.map((item) => item.id === id ? { ...item, ...updates } : item),
       })),
 
     // Skills

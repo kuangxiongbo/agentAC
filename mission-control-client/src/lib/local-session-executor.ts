@@ -24,6 +24,7 @@ import {
   withLocalCliPermissionArgs,
   type LocalCliPermissionMode,
 } from './local-cli-permission'
+import { withCodexMcpConfigArgs } from './codex-mcp-injection'
 
 export type LocalSessionKind = 'claude-code' | 'codex-cli' | 'cursor' | 'opencode' | 'hermes'
 
@@ -54,6 +55,7 @@ interface LocalSessionExecutionOptions {
   workingDirectory?: string | null
   permissionMode?: LocalCliPermissionMode | null
   agent?: LocalRuntimeAgentRef | null
+  managedByPlatform?: boolean
 }
 
 export interface LocalRuntimeAgentRef {
@@ -476,7 +478,23 @@ function buildSessionRolePreamble(
     roleDefinition,
     '',
     ...buildLocalCliOperatingRules(mode),
+    '',
+    ...buildPlatformManagedOperatingRules(mode),
   ].join('\n')
+}
+
+function buildPlatformManagedOperatingRules(mode: LocalCliPermissionMode): string[] {
+  return [
+    'Platform-managed session rules:',
+    '1. This session was started or continued by E-Agent-Client. Treat E-Agent-Client as the execution proxy for this session only.',
+    '2. Do not ask the user to modify global Codex, shell, PATH, or MCP configuration unless the user explicitly requests environment setup.',
+    '3. If this turn is marked as elevated/full local CLI permission, proceed with command-style work directly instead of saying that a separate local approval is needed.',
+    '4. When you need human confirmation, authorization, allow/deny, continue/cancel, or a permission choice, call mc_create_permission_request and then mc_wait_permission_request. Do not rely on a free-form chat message for the decision.',
+    '5. Continue the blocked action only when the permission request returns an approved option. If it is denied, expired, or cancelled, stop that action and report the structured result.',
+    mode === 'full'
+      ? '6. Elevated mode is active for this turn; use the available CLI capability to complete the requested command work.'
+      : '6. Standard mode is active; stay within the normal local CLI constraints for this session.',
+  ]
 }
 
 /** Standalone bootstrap (e.g. role refresh without a user turn). */
@@ -827,12 +845,14 @@ function resolveExecutionPermissionMode(options: LocalSessionExecutionOptions): 
 function buildAgentExecutionOptions(
   agent: LocalRuntimeAgentRef,
   workingDirectory?: string,
+  permissionModeOverride?: LocalCliPermissionMode | null,
 ): LocalSessionExecutionOptions {
-  const permissionMode = resolveLocalCliPermissionMode(agent)
+  const permissionMode = resolveLocalCliPermissionMode(agent, permissionModeOverride)
   return {
     workingDirectory,
     permissionMode,
     agent,
+    managedByPlatform: true,
   }
 }
 
@@ -841,7 +861,13 @@ async function runCodexExecCommand(
   options: LocalSessionExecutionOptions,
 ): Promise<{ stdout: string; stderr: string }> {
   const permissionMode = resolveExecutionPermissionMode(options)
-  const finalArgs = withLocalCliPermissionArgs('codex', args, permissionMode)
+  const mcpArgs = withCodexMcpConfigArgs(args, {
+    managedByPlatform: options.managedByPlatform,
+    agentId: options.agent?.id,
+    agentName: options.agent?.name ?? null,
+    permissionMode,
+  })
+  const finalArgs = withLocalCliPermissionArgs('codex', mcpArgs, permissionMode)
   try {
     const result = await runCommand(resolveCodexBin(), finalArgs, buildCommandOptions(options))
     return { stdout: result.stdout, stderr: result.stderr }
@@ -860,18 +886,27 @@ async function runCodexExecCommand(
   }
 }
 
-function buildCommandEnv(): NodeJS.ProcessEnv {
+function buildCommandEnv(options?: LocalSessionExecutionOptions): NodeJS.ProcessEnv {
   const pathKey = process.platform === 'win32' ? 'Path' : 'PATH'
   const existing = process.env[pathKey] || ''
   const prefixes = ['/opt/homebrew/bin', '/usr/local/bin'].filter((p) => existsSync(p))
   const merged = [...prefixes, ...existing.split(path.delimiter).filter(Boolean)].join(path.delimiter)
-  return { ...process.env, [pathKey]: merged }
+  return {
+    ...process.env,
+    [pathKey]: merged,
+    ...(options?.managedByPlatform ? {
+      MC_PLATFORM_MANAGED_SESSION: '1',
+      MC_LOCAL_CLI_PERMISSION_MODE: resolveExecutionPermissionMode(options),
+      ...(options.agent?.id != null ? { MC_AGENT_ID: String(options.agent.id) } : {}),
+      ...(options.agent?.name ? { MC_AGENT_NAME: String(options.agent.name) } : {}),
+    } : {}),
+  }
 }
 
 function buildCommandOptions(options: LocalSessionExecutionOptions) {
   const commandOptions: { timeoutMs: number; cwd?: string; env?: NodeJS.ProcessEnv } = {
     timeoutMs: EXECUTION_TIMEOUT_MS,
-    env: buildCommandEnv(),
+    env: buildCommandEnv(options),
   }
   const cwd = resolveWorkingDirectory(options.workingDirectory)
   if (cwd) commandOptions.cwd = cwd
@@ -1363,6 +1398,7 @@ async function executeBoundLocalAgentPromptCore(
   prompt: string,
   kind: LocalSessionKind,
   workingDirectory: string | undefined,
+  options: LocalAgentPromptExecutionOptions = {},
 ): Promise<LocalSessionExecutionResult> {
     if (!isAgentStillRegistered(agentInput)) {
       return EMPTY_EXECUTION_RESULT
@@ -1372,9 +1408,9 @@ async function executeBoundLocalAgentPromptCore(
     if (!isAgentStillRegistered(freshAgent)) {
       return EMPTY_EXECUTION_RESULT
     }
-    const permissionMode = resolveLocalCliPermissionMode(freshAgent)
+    const permissionMode = resolveLocalCliPermissionMode(freshAgent, options.permissionMode)
     const agentExecOptions = (cwd?: string) =>
-      buildAgentExecutionOptions(freshAgent, cwd ?? workingDirectory)
+      buildAgentExecutionOptions(freshAgent, cwd ?? workingDirectory, permissionMode)
     let activeSessionKey = getExistingAgentSessionKey(freshAgent)
     const roleHash = computeAgentRoleHash(freshAgent)
     const parsedConfig = getParsedLocalAgentSessionConfig(freshAgent)
@@ -1565,7 +1601,7 @@ async function executeBoundLocalAgentPromptCore(
           ? resolveCodexWorkingDirectoryForAgent(freshAgent)
           : resolveCwd(null)
       const result = await adapter.start(startupPrompt, {
-        ...buildAgentExecutionOptions(freshAgent, provisionWorkingDirectory),
+        ...buildAgentExecutionOptions(freshAgent, provisionWorkingDirectory, permissionMode),
         agentName: asTrimmedString(freshAgent.name),
         excludeAgentId: freshAgent.id ?? null,
       })
@@ -1797,13 +1833,13 @@ export async function executeBoundLocalAgentPrompt(
       kind,
       overrideSessionKey,
       prompt,
-      buildAgentExecutionOptions(freshForCwd, workingDirectory),
+      buildAgentExecutionOptions(freshForCwd, workingDirectory, options.permissionMode),
     )
   }
 
   const executionKey = getSerializedAgentExecutionKey(agentInput, kind)
   return runSerializedAgentExecution(executionKey, () =>
-    executeBoundLocalAgentPromptCore(agentInput, prompt, kind, workingDirectory),
+    executeBoundLocalAgentPromptCore(agentInput, prompt, kind, workingDirectory, options),
   )
 }
 
@@ -1913,9 +1949,9 @@ export function enqueueBoundLocalAgentPrompt(
       kind,
       overrideSessionKey,
       prompt,
-      buildAgentExecutionOptions(freshAgent, executionCwd),
+      buildAgentExecutionOptions(freshAgent, executionCwd, options.permissionMode),
     )
-    : () => executeBoundLocalAgentPromptCore(freshAgent, prompt, kind, workingDirectory)
+    : () => executeBoundLocalAgentPromptCore(freshAgent, prompt, kind, workingDirectory, options)
 
   scheduleSerializedLocalPrompt(executionKey, kind, sessionKeyHint, async () => {
     if (!isAgentStillRegistered(freshAgent)) {

@@ -10,6 +10,7 @@ import { logSecurityEvent } from '@/lib/security-events'
 import { deliverAgentMessage } from '@/lib/deliver-agent-message'
 import { assertLocalCliElevationAllowed } from '@/lib/local-cli-elevation-auth'
 import { isLocalCliElevatedFlag } from '@/lib/parse-local-cli-elevated'
+import { createLocalCliElevationGrant, logLocalCliElevationDenied } from '@/lib/local-cli-elevation-audit'
 
 /** First message without a bound session may run Codex/Claude bootstrap. */
 export const maxDuration = 300
@@ -29,6 +30,12 @@ export async function POST(request: NextRequest) {
     const localCliElevated = isLocalCliElevatedFlag(localCliElevatedRaw)
     const elevationGate = await assertLocalCliElevationAllowed({ elevated: localCliElevated })
     if (!elevationGate.ok) {
+      logLocalCliElevationDenied({
+        targetType: 'agent_message',
+        agentName: to,
+        source: 'edge_agents_message_api',
+        reason: elevationGate.code,
+      })
       return NextResponse.json(
         {
           error: elevationGate.error,
@@ -37,6 +44,13 @@ export async function POST(request: NextRequest) {
         },
         { status: elevationGate.status }
       )
+    }
+    if (localCliElevated) {
+      createLocalCliElevationGrant({
+        targetType: 'agent_message',
+        agentName: to,
+        source: 'edge_agents_message_api',
+      })
     }
 
     const injectionReport = scanForInjection(message, { context: 'prompt' })

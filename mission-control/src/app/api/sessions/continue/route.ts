@@ -4,6 +4,7 @@ import { requestBridgeClientSessionContinue, type BridgeSessionContinueKind } fr
 import { logger } from '@/lib/logger'
 import { config } from '@/lib/config'
 import { notifySessionTranscriptUpdated } from '@/lib/session-realtime'
+import { mutationLimiter } from '@/lib/rate-limit'
 import {
   enqueueLocalSessionPrompt,
   isLocalSessionKind,
@@ -11,6 +12,7 @@ import {
 } from '@/lib/local-session-executor'
 import { assertLocalCliElevationAllowed } from '@/lib/local-cli-elevation-auth'
 import { elevatedFlagToPermissionMode, isLocalCliElevatedFlag } from '@/lib/parse-local-cli-elevated'
+import { createLocalCliElevationGrant, logLocalCliElevationDenied } from '@/lib/local-cli-elevation-audit'
 
 const BRIDGE_CONTINUE_KINDS = new Set<BridgeSessionContinueKind>([
   'claude-code',
@@ -43,6 +45,8 @@ function bridgeOfflineResponse(clientId: string, message: string) {
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const rateCheck = mutationLimiter(request)
+  if (rateCheck) return rateCheck
 
   try {
     const body = await request.json().catch(() => ({}))
@@ -58,6 +62,16 @@ export async function POST(request: NextRequest) {
       elevated: localCliElevated,
     })
     if (!elevationGate.ok) {
+      logLocalCliElevationDenied({
+        user: auth.user,
+        targetType: 'session_continue',
+        targetId: sessionId,
+        sessionKind: kind,
+        sessionId,
+        clientId,
+        source: 'sessions_continue_api',
+        reason: elevationGate.code,
+      })
       return NextResponse.json(
         {
           error: elevationGate.error,
@@ -68,6 +82,17 @@ export async function POST(request: NextRequest) {
       )
     }
     const permissionMode = elevatedFlagToPermissionMode(localCliElevated)
+    const elevationGrant = localCliElevated
+      ? createLocalCliElevationGrant({
+        user: auth.user,
+        targetType: 'session_continue',
+        targetId: sessionId,
+        sessionKind: kind,
+        sessionId,
+        clientId,
+        source: 'sessions_continue_api',
+      })
+      : null
 
     if (!sessionId || !/^[a-zA-Z0-9._:-]+$/.test(sessionId)) {
       return NextResponse.json({ error: 'Invalid session id' }, { status: 400 })
@@ -95,6 +120,7 @@ export async function POST(request: NextRequest) {
           prompt,
           workingDirectory: workingDir || null,
           localCliElevated,
+          elevationGrant,
           timeoutMs: 180000,
         })
         const resolvedSessionId = remote.sessionId || sessionId

@@ -29,6 +29,8 @@ export type EventType =
   | 'agent.deleted'
   | 'agent.synced'
   | 'human_watch.bindings_synced'
+  | 'permission.requested'
+  | 'permission.decided'
   | 'agent.status_changed'
   | 'audit.security'
   | 'security.event'

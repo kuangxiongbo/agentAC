@@ -5,8 +5,8 @@
 | 项 | 内容 |
 |----|------|
 | 文档状态 | 草案（待评审） |
-| 当前版本 | V1.3 |
-| 更新时间 | 2026-05-19 |
+| 当前版本 | V1.4 |
+| 更新时间 | 2026-06-13 |
 | 所属产品 | Mission Control（`mission-control` 中心服 + `mission-control-client` 边缘） |
 | 关联总需求 | `文档/01-PRD/PRD-通用智能体中枢平台.md` |
 | 后续文档 | 架构设计、程序设计、测试用例 — **待本 PRD 评审通过后编写** |
@@ -16,8 +16,9 @@
 用户在边缘节点（Mac）上通过 Codex / Claude 等 CLI 智能体执行长任务时，会话常因以下原因挂起，需要人工介入：
 
 1. Assistant 以问句、选项、确认话术等待用户回复。
-2. 工具调用长时间无结果或卡在权限提示（CLI 侧 MC 不可见）。
+2. 工具调用长时间无结果或卡在权限提示；权限提示必须有专门决策通道，不能只靠聊天回复。
 3. Gateway 会话存在 `exec.approval` 审批，与聊天代发是不同通道。
+4. Worker Agent 弹出确认选项时，值守 Agent 只能“回复建议”，无法把选项选择作为平台状态变更落库并唤醒 Worker。
 
 Mission Control 已具备：智能体 ↔ 本地会话绑定、`/api/sessions/transcript`、`/api/sessions/continue`、Bridge 远程读写、异步 `enqueueLocalSessionPrompt`、聊天页 transcript 轮询/SSE 等能力，但**没有**「监视 Worker 会话 → 规则判定 → 代发续聊」的产品化闭环。
 
@@ -66,7 +67,7 @@ Codex/Claude 会话文件与 CLI 在**边缘**；中心服 Docker 无法直接�
 
 ## 6. 非目标（V1）
 
-1. **不**在 V1 实现 Gateway `exec.approval` 自动审批（列为二期）。
+1. **不**在 V1 实现 Gateway `exec.approval` 自动审批（列为二期）；V1.4 仅实现平台级权限请求与决策 API，作为后续接入 Gateway/OpenClaw/Codex 审批的基础。
 2. **不**要求中心服 `centralMode` 下直接 `POST /api/agents` 创建 Agent（仍走边缘或 Bridge）。
 3. **不**用值守 Agent 的会话替代 Worker 会话做业务执行。
 4. **不**在 V1 做复杂「运行中」双套规则集；采用「未命中规则 ≈ 在活动，命中 ≈ 需介入」+ 30 分钟 LLM 扫漏。
@@ -257,6 +258,51 @@ Worker 关闭开关或解绑值守 Agent → 编排停止监视；历史审计�
 配置存储：值守规则主体在边缘 `agents.config.steward`（边缘创建时写入）；中心 bindings 可覆盖 `rules_override`。架构设计阶段定稿同步策略。
 
 ### FR-003b 代发机制（模拟人发送）
+
+### FR-009 权限请求与选项决策闭环（V1.4）
+
+当 Worker Agent 遇到“需要选择确认项”的场景，系统必须创建结构化权限请求，而不是只发一条聊天消息。
+
+**权限请求对象**
+
+- 表：`permission_requests`
+- 状态：`pending`、`approved`、`denied`、`expired`、`cancelled`
+- 风险：`low`、`medium`、`high`、`critical`
+- 选项：`options[]`，每个选项包含 `id`、`label`、`action`（`approve` / `deny` / `ask_human`）
+- 关联：`client_id`、Worker、本次 session、值守 Agent、binding、tenant/workspace
+
+**决策入口**
+
+```http
+POST /api/permission-requests/{id}/decision
+```
+
+请求体：
+
+```json
+{
+  "optionId": "approve_readonly",
+  "reason": "只允许读取当前项目目录",
+  "deciderType": "steward_agent",
+  "deciderAgentId": "steward-9"
+}
+```
+
+**规则**
+
+1. 普通消息回复只能解释或建议，不能直接改变权限状态。
+2. Worker 继续执行必须依赖 `permission_requests.status` 的状态变更。
+3. 平台必须校验请求仍为 `pending`、未过期、`optionId` 属于本请求。
+4. 值守 Agent 可审批 `low` / `medium` 风险；`high` / `critical` 风险只能拒绝或转人工，不允许自动批准。
+5. 每次决策写入 `permission_request_decisions` 审计表，并广播 `permission.decided` 事件。
+6. 后续 MCP 工具 `decide_permission_request` 必须调用同一 API，不允许另建旁路。
+
+**验收**
+
+- 创建权限请求后，人类或值守 Agent 可通过专门 API 选择选项。
+- 重复决策被拒绝。
+- 非法 `optionId` 被拒绝。
+- 高风险请求不能被值守 Agent 自动批准。
 
 1. 介入**必须**经现有发消息 API，向 **Worker** 会话写入 **user** 轮次，**不是**改 assistant 历史，**不是**值守会话代劳业务。
 2. **推荐**：`POST /api/sessions/continue` + `kind`/`id`/`prompt`/`client_id` → 边缘 `enqueueLocalSessionPrompt`（与聊天页一致）。

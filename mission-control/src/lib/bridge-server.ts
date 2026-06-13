@@ -8,6 +8,9 @@ import type { LocalSessionTranscriptKind, TranscriptMessage } from './session-tr
 import { notifySessionTranscriptUpdated } from './session-realtime'
 import { replaceBridgeAgentIndex, type BridgeAgentIndexInput } from './sync-agent-index'
 import { reconcileClientAgentInventory } from './sync-agent-inventory'
+import { decidePermissionRequest, type PermissionRequestView } from './permission-requests'
+import { forwardPermissionDecisionToExecApproval } from './permission-request-exec-bridge'
+import type { LocalCliElevationGrantContext } from './local-cli-elevation-audit'
 
 let wss: WebSocketServer | null = (global as any)._mc_bridge_server || null
 const bridgeServerMeta: { port: number | null; startedAt: number | null } =
@@ -118,6 +121,33 @@ function findConnectedEdgeBridge(clientId: string): { connectionId: string; ws: 
   }
 
   return { connectionId: target.connectionId, ws }
+}
+
+function sendPermissionRequestToEdge(request: PermissionRequestView): void {
+  const clientId = typeof request.client_id === 'string' ? request.client_id.trim() : ''
+  if (!clientId) return
+  try {
+    const { ws } = findConnectedEdgeBridge(clientId)
+    ws.send(JSON.stringify({
+      type: 'permission_request_sync',
+      request,
+      timestamp: Date.now(),
+    }))
+  } catch (err) {
+    logger.debug({ err, requestId: request.id, clientId }, '[BridgeServer] Permission request sync skipped')
+  }
+}
+
+function initPermissionBridgeSync(): void {
+  const globalState = globalThis as typeof globalThis & { __permissionBridgeSyncStarted?: boolean }
+  if (globalState.__permissionBridgeSyncStarted) return
+  globalState.__permissionBridgeSyncStarted = true
+  eventBus.on('server-event', (event) => {
+    if (event.type !== 'permission.requested' && event.type !== 'permission.decided') return
+    const request = event.data as PermissionRequestView | null
+    if (!request || typeof request.id !== 'string') return
+    sendPermissionRequestToEdge(request)
+  })
 }
 
 export interface BridgeServerStatusSnapshot {
@@ -295,6 +325,7 @@ export function initBridgeServer(port: number = 5002) {
     bridgeServerMeta.port = port
     bridgeServerMeta.startedAt = Date.now()
     logger.info({ port }, '[BridgeServer] Started WebSocket bridge server')
+    initPermissionBridgeSync()
 
     wss.on('connection', (ws: WebSocket) => {
       logger.info('[BridgeServer] New connection established')
@@ -450,6 +481,61 @@ export function initBridgeServer(port: number = 5002) {
               const edgeSessionId = typeof edgeSession?.sessionId === 'string' ? edgeSession.sessionId : ''
               if (edgeKind && edgeSessionId) {
                 notifySessionTranscriptUpdated(edgeKind, edgeSessionId, 'edge_transcript_changed')
+              }
+              break
+            }
+
+            case 'permission_decision_sync': {
+              touchConnection(connectionId)
+              const requestId = typeof msg?.requestId === 'string' ? msg.requestId : ''
+              const optionId = typeof msg?.optionId === 'string' ? msg.optionId : ''
+              if (!requestId || !optionId) {
+                ws.send(JSON.stringify({
+                  type: 'permission_decision_sync_response',
+                  requestId,
+                  ok: false,
+                  error: 'requestId and optionId are required',
+                }))
+                break
+              }
+              try {
+                const decided = decidePermissionRequest({
+                  requestId,
+                  workspaceId: 1,
+                  optionId,
+                  reason: typeof msg?.reason === 'string' ? msg.reason : null,
+                  deciderType: 'steward_agent',
+                  deciderAgentId:
+                    typeof msg?.deciderAgentId === 'string'
+                      ? msg.deciderAgentId
+                      : typeof msg?.decider_agent_id === 'string'
+                        ? msg.decider_agent_id
+                        : null,
+                })
+                const option = decided.options.find((item) => item.id === optionId)
+                let gatewayForward: Awaited<ReturnType<typeof forwardPermissionDecisionToExecApproval>> | null = null
+                if (option) {
+                  gatewayForward = await forwardPermissionDecisionToExecApproval({
+                    request: decided,
+                    option,
+                    reason: typeof msg?.reason === 'string' ? msg.reason : null,
+                  })
+                }
+                ws.send(JSON.stringify({
+                  type: 'permission_decision_sync_response',
+                  requestId,
+                  ok: true,
+                  request: decided,
+                  ...(gatewayForward ? { gatewayForward } : {}),
+                  ...(gatewayForward?.status === 'failed' ? { warning: gatewayForward.error } : {}),
+                }))
+              } catch (err) {
+                ws.send(JSON.stringify({
+                  type: 'permission_decision_sync_response',
+                  requestId,
+                  ok: false,
+                  error: err instanceof Error ? err.message : 'Failed to sync permission decision',
+                }))
               }
               break
             }
@@ -663,6 +749,7 @@ export async function requestBridgeClientSessionContinue(input: {
   prompt: string
   workingDirectory?: string | null
   localCliElevated?: boolean
+  elevationGrant?: LocalCliElevationGrantContext | null
   timeoutMs?: number
 }): Promise<{ reply: string; sessionId: string | null; source: string }> {
   const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
@@ -697,6 +784,7 @@ export async function requestBridgeClientSessionContinue(input: {
           prompt: input.prompt,
           ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
           ...(input.localCliElevated ? { localCliElevated: true } : {}),
+          ...(input.elevationGrant ? { elevationGrant: input.elevationGrant } : {}),
         },
       }))
     } catch (error) {
@@ -1030,6 +1118,7 @@ export async function requestBridgeClientAgentMessage(input: {
   message: string
   from: string
   localCliElevated?: boolean
+  elevationGrant?: LocalCliElevationGrantContext | null
   timeoutMs?: number
 }): Promise<BridgeAgentMessageResult> {
   const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
@@ -1061,6 +1150,7 @@ export async function requestBridgeClientAgentMessage(input: {
           message: input.message,
           from: input.from,
           ...(input.localCliElevated ? { localCliElevated: true } : {}),
+          ...(input.elevationGrant ? { elevationGrant: input.elevationGrant } : {}),
         }),
       )
     } catch (error) {

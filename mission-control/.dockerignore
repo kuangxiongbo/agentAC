@@ -4,6 +4,8 @@ node_modules
 .next
 .env
 *.md
+!public/project-docs/
+!public/project-docs/**
 .github
 ops
 scripts/*

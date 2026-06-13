@@ -459,6 +459,83 @@ const TOOLS = [
     },
   },
 
+  // --- Permission Requests ---
+  {
+    name: 'mc_create_permission_request',
+    description: 'Create a structured permission request when a Worker needs an external confirmation choice. Use before blocked or risky actions instead of asking in free-form chat.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Optional stable request ID for idempotency' },
+        request_type: { type: 'string', description: 'Type, e.g. local_cli_approval, handoff_approval, browser_confirmation' },
+        title: { type: 'string', description: 'Short title shown to human/steward approvers' },
+        prompt: { type: 'string', description: 'Detailed question and action context' },
+        risk: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Risk level, default medium' },
+        options: {
+          type: 'array',
+          description: 'Decision options; each item needs id, label, action approve|deny|ask_human, optional description',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              label: { type: 'string' },
+              action: { type: 'string', enum: ['approve', 'deny', 'ask_human'] },
+              description: { type: 'string' },
+            },
+            required: ['id', 'label', 'action'],
+          },
+        },
+        client_id: { type: 'string', description: 'Edge client id, when the request belongs to a specific client' },
+        worker_name: { type: 'string', description: 'Worker agent name' },
+        worker_session_id: { type: 'string', description: 'Worker session id' },
+        steward_name: { type: 'string', description: 'Preferred steward agent name' },
+        context: { type: 'object', description: 'Structured context for the approver' },
+        expires_at: { type: 'number', description: 'Unix seconds expiry time' },
+      },
+      required: ['request_type', 'title', 'prompt', 'options'],
+    },
+    handler: async (args) => api('POST', '/api/permission-requests', args),
+  },
+  {
+    name: 'mc_wait_permission_request',
+    description: 'Wait until a permission request is approved, denied, expired, or cancelled. Use after mc_create_permission_request before continuing the blocked action.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        requestId: { type: 'string', description: 'Permission request ID' },
+        timeoutMs: { type: 'number', description: 'Wait timeout in milliseconds (default server value)' },
+      },
+      required: ['requestId'],
+    },
+    handler: async ({ requestId, timeoutMs }) => {
+      let qs = '?wait=1';
+      if (timeoutMs) qs += `&timeout_ms=${encodeURIComponent(String(timeoutMs))}`;
+      return api('GET', `/api/permission-requests/${encodeURIComponent(requestId)}${qs}`);
+    },
+  },
+  {
+    name: 'mc_decide_permission_request',
+    description: 'Decide a pending E-AgentCenter permission request by optionId. Use this instead of replying in chat when a Worker needs a confirmation option selected.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        requestId: { type: 'string', description: 'Permission request ID' },
+        optionId: { type: 'string', description: 'Exact option id from the permission request' },
+        reason: { type: 'string', description: 'Short reason for the decision' },
+        deciderType: { type: 'string', enum: ['steward_agent', 'human_user', 'system'], description: 'Decision actor type (default steward_agent)' },
+        deciderAgentId: { type: 'string', description: 'Steward agent identifier, when called by an agent' },
+      },
+      required: ['requestId', 'optionId'],
+    },
+    handler: async ({ requestId, optionId, reason, deciderType, deciderAgentId }) =>
+      api('POST', `/api/permission-requests/${encodeURIComponent(requestId)}/decision`, {
+        optionId,
+        reason,
+        deciderType: deciderType || 'steward_agent',
+        deciderAgentId,
+      }),
+  },
+
   // --- Connections ---
   {
     name: 'mc_list_connections',

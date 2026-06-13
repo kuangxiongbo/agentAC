@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { requireRole } from '@/lib/auth'
 import { config } from '@/lib/config'
 import { logger } from '@/lib/logger'
+import { createPermissionRequest, getPermissionRequest } from '@/lib/permission-requests'
 import path from 'node:path'
 
 function gatewayUrl(p: string): string {
@@ -47,6 +48,7 @@ export async function GET(request: NextRequest) {
     }
 
     const data = await res.json()
+    syncExecApprovalsToPermissionRequests(data?.approvals, auth.user.workspace_id ?? 1, auth.user.tenant_id ?? 1)
     return NextResponse.json(data)
   } catch (err: any) {
     clearTimeout(timeout)
@@ -56,6 +58,52 @@ export async function GET(request: NextRequest) {
       logger.warn({ err }, 'Gateway exec-approvals unreachable')
     }
     return NextResponse.json({ approvals: [] })
+  }
+}
+
+function syncExecApprovalsToPermissionRequests(approvals: unknown, workspaceId: number, tenantId: number) {
+  if (!Array.isArray(approvals)) return
+  for (const approval of approvals) {
+    if (!approval || typeof approval !== 'object') continue
+    const item = approval as Record<string, any>
+    const id = typeof item.id === 'string' && item.id.trim() ? item.id.trim() : ''
+    if (!id) continue
+    const requestId = `exec:${id}`
+    if (getPermissionRequest(requestId, workspaceId)) continue
+    const nested = item.request && typeof item.request === 'object' ? item.request as Record<string, any> : item
+    const command = String(nested.command || item.command || item.toolName || item.name || 'Execution approval').trim()
+    try {
+      createPermissionRequest({
+        id: requestId,
+        workspaceId,
+        tenantId,
+        clientId: typeof item.client_id === 'string' ? item.client_id : null,
+        workerName: String(nested.agentId || item.agentName || '').trim() || null,
+        workerSessionId: String(nested.sessionKey || item.sessionId || '').trim() || null,
+        requestType: 'gateway_exec_approval',
+        title: 'Execution approval required',
+        prompt: command,
+        risk: ['low', 'medium', 'high', 'critical'].includes(item.risk) ? item.risk : 'medium',
+        options: [
+          { id: 'approve_once', label: 'Allow once', action: 'approve' },
+          { id: 'always_allow', label: 'Always allow', action: 'approve' },
+          { id: 'deny', label: 'Deny', action: 'deny' },
+        ],
+        context: {
+          gateway_exec_approval_id: id,
+          command,
+          cwd: nested.cwd || item.cwd || null,
+          host: nested.host || item.host || null,
+          resolvedPath: nested.resolvedPath || item.resolvedPath || null,
+        },
+        expiresAt:
+          typeof item.expiresAt === 'number'
+            ? Math.floor(item.expiresAt / (item.expiresAt > 10_000_000_000 ? 1000 : 1))
+            : null,
+      })
+    } catch (err) {
+      logger.debug({ err, approvalId: id }, 'Failed to mirror exec approval as permission request')
+    }
   }
 }
 

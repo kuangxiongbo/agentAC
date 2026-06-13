@@ -17,6 +17,7 @@ import { isBridgeClientOnline, requestBridgeClientAgentMessage } from '@/lib/bri
 import { getBridgeAgentIndexByRecipient } from '@/lib/sync-agent-index'
 import { assertLocalCliElevationAllowed } from '@/lib/local-cli-elevation-auth'
 import { elevatedFlagToPermissionMode, isLocalCliElevatedFlag } from '@/lib/parse-local-cli-elevated'
+import { createLocalCliElevationGrant, logLocalCliElevationDenied } from '@/lib/local-cli-elevation-audit'
 
 /** Edge agent first message may bootstrap Codex/Claude session (up to 5 min). */
 export const maxDuration = 300
@@ -49,6 +50,13 @@ export async function POST(request: NextRequest) {
       elevated: localCliElevated,
     })
     if (!elevationGate.ok) {
+      logLocalCliElevationDenied({
+        user: auth.user,
+        targetType: 'agent_message',
+        agentName: to,
+        source: 'agents_message_api',
+        reason: elevationGate.code,
+      })
       return NextResponse.json(
         {
           error: elevationGate.error,
@@ -59,6 +67,17 @@ export async function POST(request: NextRequest) {
       )
     }
     const permissionMode = elevatedFlagToPermissionMode(localCliElevated)
+    const createElevationGrant = (input?: { clientId?: string | null; targetId?: string | number | null }) =>
+      localCliElevated
+        ? createLocalCliElevationGrant({
+          user: auth.user,
+          targetType: 'agent_message',
+          targetId: input?.targetId ?? null,
+          agentName: to,
+          clientId: input?.clientId ?? null,
+          source: 'agents_message_api',
+        })
+        : null
 
     // Scan message for injection — this gets forwarded directly to an agent
     const injectionReport = scanForInjection(message, { context: 'prompt' })
@@ -107,6 +126,7 @@ export async function POST(request: NextRequest) {
           message,
           from,
           localCliElevated,
+          elevationGrant: createElevationGrant({ clientId: indexRow.client_id, targetId: indexRow.local_agent_id }),
         })
         if (!remote.success) {
           return NextResponse.json(
@@ -167,6 +187,7 @@ export async function POST(request: NextRequest) {
     let localSessionKey: string | null = null
     let queuedPrompt: string | null = null
     let queuedSessionKind: string | null = null
+    createElevationGrant({ targetId: agent.id })
 
     if (localSessionKind) {
       queuedPrompt = `Message from ${from}: ${message}`

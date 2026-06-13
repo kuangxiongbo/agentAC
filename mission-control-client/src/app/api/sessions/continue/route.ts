@@ -8,6 +8,8 @@ import {
 } from '@/lib/local-session-executor'
 import { elevatedFlagToPermissionMode, isLocalCliElevatedFlag } from '@/lib/parse-local-cli-elevated'
 import { assertLocalCliElevationAllowed } from '@/lib/local-cli-elevation-auth'
+import { createLocalCliElevationGrant, logLocalCliElevationDenied } from '@/lib/local-cli-elevation-audit'
+import { mutationLimiter } from '@/lib/rate-limit'
 /**
  * POST /api/sessions/continue
  * Body: { kind: 'claude-code'|'codex-cli'|'cursor'|'opencode'|'hermes', id: string, prompt: string }
@@ -15,6 +17,8 @@ import { assertLocalCliElevationAllowed } from '@/lib/local-cli-elevation-auth'
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const rateCheck = mutationLimiter(request)
+  if (rateCheck) return rateCheck
 
   let kind: LocalSessionKind | undefined
   try {
@@ -26,6 +30,14 @@ export async function POST(request: NextRequest) {
     const localCliElevated = isLocalCliElevatedFlag(body?.local_cli_elevated)
     const elevationGate = await assertLocalCliElevationAllowed({ elevated: localCliElevated })
     if (!elevationGate.ok) {
+      logLocalCliElevationDenied({
+        targetType: 'session_continue',
+        targetId: sessionId,
+        sessionKind: kind,
+        sessionId,
+        source: 'edge_sessions_continue_api',
+        reason: elevationGate.code,
+      })
       return NextResponse.json(
         {
           error: elevationGate.error,
@@ -36,6 +48,15 @@ export async function POST(request: NextRequest) {
       )
     }
     const permissionMode = elevatedFlagToPermissionMode(localCliElevated)
+    if (localCliElevated) {
+      createLocalCliElevationGrant({
+        targetType: 'session_continue',
+        targetId: sessionId,
+        sessionKind: kind,
+        sessionId,
+        source: 'edge_sessions_continue_api',
+      })
+    }
 
     if (!isLocalSessionKind(kind)) {
       return NextResponse.json({ error: 'Invalid kind' }, { status: 400 })

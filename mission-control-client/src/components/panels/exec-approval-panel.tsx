@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
-import { useAgentCenterStore, type ExecApprovalRequest } from '@/store'
+import { useAgentCenterStore, type ExecApprovalRequest, type PermissionRequest } from '@/store'
 import { useWebSocket } from '@/lib/websocket'
 import { matchesGlobPattern } from '@/lib/exec-approval-utils'
 
@@ -38,12 +38,21 @@ function timeAgo(timestamp: number): string {
 
 export function ExecApprovalPanel() {
   const t = useTranslations('execApproval')
-  const { execApprovals, updateExecApproval } = useAgentCenterStore()
+  const {
+    execApprovals,
+    updateExecApproval,
+    permissionRequests,
+    setPermissionRequests,
+    upsertPermissionRequest,
+    updatePermissionRequest,
+  } = useAgentCenterStore()
   const { sendMessage } = useWebSocket()
   const [filter, setFilter] = useState<FilterTab>('pending')
   const [view, setView] = useState<PanelView>('approvals')
+  const [permissionError, setPermissionError] = useState<string | null>(null)
 
-  const pendingCount = execApprovals.filter(a => a.status === 'pending').length
+  const pendingPermissionCount = permissionRequests.filter(a => a.status === 'pending').length
+  const pendingCount = execApprovals.filter(a => a.status === 'pending').length + pendingPermissionCount
 
   // Mark expired approvals client-side
   const now = Date.now()
@@ -61,6 +70,30 @@ export function ExecApprovalPanel() {
       return true
     })
   }, [execApprovals, filter, now])
+
+  const displayPermissionRequests = useMemo(() => {
+    return permissionRequests.filter((request) => {
+      if (filter === 'pending') return request.status === 'pending'
+      if (filter === 'resolved') return request.status !== 'pending'
+      return true
+    })
+  }, [permissionRequests, filter])
+
+  const loadPermissionRequests = useCallback(async () => {
+    try {
+      const res = await fetch('/api/permission-requests?limit=100', { cache: 'no-store' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      setPermissionRequests(Array.isArray(data.requests) ? data.requests : [])
+      setPermissionError(null)
+    } catch (err) {
+      setPermissionError(err instanceof Error ? err.message : 'Failed to load permission requests')
+    }
+  }, [setPermissionRequests])
+
+  useEffect(() => {
+    loadPermissionRequests()
+  }, [loadPermissionRequests])
 
   const handleAction = (id: string, decision: 'allow-once' | 'allow-always' | 'deny') => {
     const sent = sendMessage({
@@ -81,6 +114,33 @@ export function ExecApprovalPanel() {
 
     const newStatus = decision === 'deny' ? 'denied' : 'approved'
     updateExecApproval(id, { status: newStatus as ExecApprovalRequest['status'] })
+  }
+
+  const handlePermissionDecision = async (request: PermissionRequest, optionId: string) => {
+    const option = request.options.find((item) => item.id === optionId)
+    if (!option || request.status !== 'pending') return
+    updatePermissionRequest(request.id, {
+      status: option.action === 'approve' ? 'approved' : 'denied',
+      selected_option_id: option.id,
+    })
+    try {
+      const res = await fetch(`/api/permission-requests/${encodeURIComponent(request.id)}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          optionId,
+          deciderType: 'human_user',
+          reason: `Selected from approvals panel: ${option.label}`,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      if (data.request) upsertPermissionRequest(data.request)
+      setPermissionError(null)
+    } catch (err) {
+      setPermissionError(err instanceof Error ? err.message : 'Failed to decide permission request')
+      loadPermissionRequests()
+    }
   }
 
   return (
@@ -144,7 +204,12 @@ export function ExecApprovalPanel() {
           </div>
 
           {/* Approval list */}
-          {displayApprovals.length === 0 ? (
+          {permissionError && (
+            <div className="rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-400 mb-3">
+              {permissionError}
+            </div>
+          )}
+          {displayPermissionRequests.length === 0 && displayApprovals.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground text-sm">
               {filter === 'pending'
                 ? t('noPendingApprovals')
@@ -152,6 +217,13 @@ export function ExecApprovalPanel() {
             </div>
           ) : (
             <div className="space-y-3">
+              {displayPermissionRequests.map((request) => (
+                <PermissionRequestCard
+                  key={request.id}
+                  request={request}
+                  onDecision={handlePermissionDecision}
+                />
+              ))}
               {displayApprovals.map((approval) => (
                 <ApprovalCard
                   key={approval.id}
@@ -165,6 +237,87 @@ export function ExecApprovalPanel() {
       ) : (
         <AllowlistEditor execApprovals={execApprovals} />
       )}
+    </div>
+  )
+}
+
+function PermissionRequestCard({
+  request,
+  onDecision,
+}: {
+  request: PermissionRequest
+  onDecision: (request: PermissionRequest, optionId: string) => void
+}) {
+  const riskBorder = RISK_BORDER[request.risk]
+  const riskBadge = RISK_BADGE[request.risk]
+  const isPending = request.status === 'pending'
+  const actor = request.worker_name || request.worker_session_id || request.client_id || 'Worker'
+
+  return (
+    <div className={`rounded-lg border border-border bg-card p-4 border-l-4 ${riskBorder}`}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="font-medium text-foreground truncate">{actor}</span>
+            <span className="font-mono text-xs bg-secondary rounded px-1.5 py-0.5 text-muted-foreground">
+              {request.request_type}
+            </span>
+            <span className="text-xs rounded px-1.5 py-0.5 bg-cyan-500/15 text-cyan-300">
+              platform
+            </span>
+          </div>
+          <div className="text-sm text-foreground mt-2">{request.title}</div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${riskBadge.bg} ${riskBadge.text}`}>
+            {request.risk}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {timeAgo(request.created_at * 1000)}
+          </span>
+        </div>
+      </div>
+
+      <div className="bg-secondary rounded p-2 text-xs text-foreground mb-2 border border-border whitespace-pre-wrap">
+        {request.prompt}
+      </div>
+
+      {(request.client_id || request.worker_session_id || request.steward_name) && (
+        <div className="text-xs text-muted-foreground mb-2 space-y-0.5">
+          {request.client_id && <div>Client: <span className="font-mono text-foreground">{request.client_id}</span></div>}
+          {request.worker_session_id && <div>Session: <span className="font-mono text-foreground">{request.worker_session_id}</span></div>}
+          {request.steward_name && <div>Steward: <span className="font-mono text-foreground">{request.steward_name}</span></div>}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 mt-3">
+        {isPending ? (
+          request.options.map((option) => (
+            <Button
+              key={option.id}
+              size="sm"
+              variant={option.action === 'approve' ? undefined : 'outline'}
+              className={option.action === 'deny' ? 'border-red-500/50 text-red-300 hover:bg-red-500/10' : undefined}
+              onClick={() => onDecision(request, option.id)}
+            >
+              {option.label}
+            </Button>
+          ))
+        ) : (
+          <span
+            className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+              request.status === 'approved'
+                ? 'bg-green-500/20 text-green-400'
+                : request.status === 'denied'
+                  ? 'bg-red-500/20 text-red-400'
+                  : 'bg-secondary text-muted-foreground'
+            }`}
+          >
+            {request.status}
+            {request.selected_option_id ? ` · ${request.selected_option_id}` : ''}
+          </span>
+        )}
+      </div>
     </div>
   )
 }
