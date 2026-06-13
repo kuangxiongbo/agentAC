@@ -1,6 +1,6 @@
 {
   "name": "mission-control-manage",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Manage a running E-AgentCenter instance — health checks, diagnostics, upgrades, backups",
   "author": "Builderz Labs",
   "license": "MIT",

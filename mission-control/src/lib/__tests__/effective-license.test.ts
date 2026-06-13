@@ -34,7 +34,7 @@ describe('resolveEffectiveLicense', () => {
     const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
     const payload: LicFile['payload'] = {
       version: 1,
-      appId: 'agentCenter',
+      appId: 'mission-control',
       tenantId: '1',
       hardwareId: null,
       entitlements,

@@ -49,7 +49,7 @@ function loadRawSchema(): RawSchema {
 export const LICENSE_SCHEMA_SETTINGS: LicenseSchemaSettings = (() => {
   const raw = loadRawSchema()
   return {
-    appId: String(raw.appId || 'agentCenter').trim(),
+    appId: String(raw.appId || 'mission-control').trim(),
     displayName: String(raw.displayName || 'Agent 指挥仓').trim(),
     version: String(raw.version || '1.0.0').trim(),
     requiresSubscription: raw.requiresSubscription !== false,

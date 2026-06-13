@@ -7,7 +7,7 @@ export type ClientLicenseEntitlementMeta = {
 }
 
 export const CLIENT_LICENSE_SCHEMA = {
-  appId: String((raw as { appId?: string }).appId || 'agentCenter'),
+  appId: String((raw as { appId?: string }).appId || 'mission-control'),
   displayName: String((raw as { displayName?: string }).displayName || 'Agent 指挥仓'),
   requiresSubscription: (raw as { requiresSubscription?: boolean }).requiresSubscription !== false,
 }

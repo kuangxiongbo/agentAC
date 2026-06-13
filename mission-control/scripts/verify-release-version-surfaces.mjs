@@ -124,7 +124,7 @@ assertEqual(
   readJson(path.join(trayRoot, 'src-tauri/tauri.conf.json')).version,
   trayNativeVersion,
 );
-assertEqual('license schema appId', licenseSchema.appId, 'agentCenter');
+assertEqual('license schema appId', licenseSchema.appId, 'mission-control');
 for (const entitlement of ['enableHumanWatch', 'enableLocalCliElevation']) {
   const found = Array.isArray(licenseSchema.entitlements)
     && licenseSchema.entitlements.some((item) => item?.key === entitlement);
@@ -269,7 +269,7 @@ assertTextIncludes('tray supervisor runtime update loop', path.join(trayRoot, 's
   'runtime::ensure_runtime(&cfg)',
 ]);
 assertTextIncludes('license verifier app id', path.join(serverRoot, 'src/lib/license-verifier.ts'), [
-  "'agentCenter'",
+  "'mission-control'",
   'app_id: LICENSE_APP_ID',
   'client_id: LICENSE_APP_ID',
 ]);

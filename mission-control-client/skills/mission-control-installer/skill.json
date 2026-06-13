@@ -1,6 +1,6 @@
 {
   "name": "mission-control-installer",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Install and configure E-AgentCenter — the OpenClaw agent orchestration dashboard",
   "author": "Builderz Labs",
   "license": "MIT",
