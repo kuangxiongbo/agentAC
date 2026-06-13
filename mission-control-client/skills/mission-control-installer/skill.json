@@ -1,14 +1,20 @@
 {
   "name": "mission-control-installer",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "Install and configure E-AgentCenter — the OpenClaw agent orchestration dashboard",
   "author": "Builderz Labs",
   "license": "MIT",
-  "tools": ["exec", "fs"],
+  "tools": [
+    "exec",
+    "fs"
+  ],
   "parameters": {
     "deployment_mode": {
       "type": "string",
-      "enum": ["docker", "local"],
+      "enum": [
+        "docker",
+        "local"
+      ],
       "default": "docker",
       "description": "How to deploy E-AgentCenter"
     },
@@ -23,5 +29,10 @@
       "description": "Installation directory (defaults to ./mission-control)"
     }
   },
-  "tags": ["mission-control", "dashboard", "installer", "docker"]
+  "tags": [
+    "mission-control",
+    "dashboard",
+    "installer",
+    "docker"
+  ]
 }

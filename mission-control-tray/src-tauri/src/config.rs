@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 pub const DEFAULT_CENTER_URL: &str = "https://agent.1sheng.work";
 pub const DEFAULT_PORT: u16 = 5101;
-pub const DEFAULT_CLIENT_VERSION: &str = "2.0.6";
+pub const DEFAULT_CLIENT_VERSION: &str = "2.1.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeConfig {
