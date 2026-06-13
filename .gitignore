@@ -36,3 +36,7 @@ mission-control-backup/
 dist/
 build/
 .cache/
+
+# Handoff/private credentials
+.handoff/*.env
+*.handoff.env
