@@ -3,6 +3,7 @@ import { requireRole } from '@/lib/auth'
 import { getDatabase } from '@/lib/db'
 import { getSchedulerStatus } from '@/lib/scheduler'
 import { listSyncClients } from '@/lib/sync-clients'
+import { getBridgeServerStatus } from '@/lib/bridge-server'
 
 type SchedulerSnapshot = ReturnType<typeof getSchedulerStatus>[number]
 
@@ -72,6 +73,26 @@ export async function GET(request: NextRequest) {
     remote_tasks_total: (db.prepare('SELECT COUNT(*) as c FROM tasks WHERE remote_id IS NOT NULL').get() as { c: number } | undefined)?.c ?? 0,
   }
   const clients = listSyncClients(auth.user.workspace_id ?? 1)
+  const mergedClients = new Map(clients.map((client) => [client.client_id, client]))
+  const bridgeClients = getBridgeServerStatus().clients
+    .filter((client) => client.kind === 'edge' && client.status === 'connected')
+    .map((client) => ({
+      client_id: client.clientId,
+      client_name: client.clientLabel || client.clientId,
+      workspace_id: auth.user.workspace_id ?? 1,
+      agent_count: client.agentCount,
+      last_seen: Math.floor(client.lastSeenAt / 1000),
+      last_sync_source: 'bridge-ws',
+      status: 'connected' as const,
+    }))
+  for (const client of bridgeClients) {
+    const existing = mergedClients.get(client.client_id)
+    if (!existing || client.last_seen >= existing.last_seen || existing.status !== 'connected') {
+      mergedClients.set(client.client_id, client)
+    }
+  }
+  const effectiveClients = Array.from(mergedClients.values())
+    .sort((a, b) => b.last_seen - a.last_seen || a.client_name.localeCompare(b.client_name))
 
   return NextResponse.json({
     upstream: {
@@ -86,10 +107,11 @@ export async function GET(request: NextRequest) {
     local_counts: localAgentCounts,
     backlog: localSyncBacklog,
     clients: {
-      total: clients.length,
-      connected: clients.filter((client) => client.status === 'connected').length,
-      disconnected: clients.filter((client) => client.status === 'disconnected').length,
-      items: clients,
+      total: effectiveClients.length,
+      connected: effectiveClients.filter((client) => client.status === 'connected').length,
+      disconnected: effectiveClients.filter((client) => client.status === 'disconnected').length,
+      items: effectiveClients,
+      realtime_connected: bridgeClients.length,
     },
   })
 }
