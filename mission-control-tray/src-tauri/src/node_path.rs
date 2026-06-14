@@ -2,9 +2,13 @@
 
 use std::path::{Path, PathBuf};
 
-const MIN_NODE_MAJOR: u32 = 22;
+const REQUIRED_NODE_MAJOR: u32 = 22;
 
-/// 返回可执行的 `node` 路径（macOS 会探测 Homebrew / nvm / fnm 等，优先 22+）。
+/// 返回可执行的 `node` 路径（macOS 会探测 Homebrew / nvm / fnm 等）。
+///
+/// Edge runtime ships native modules compiled for Node 22 ABI. Newer Node majors
+/// such as 25 can start the server but fail once better-sqlite3 is loaded, so
+/// this must prefer/require Node 22 instead of the newest installed Node.
 pub fn resolve_node_binary() -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("MC_EDGE_NODE_PATH") {
         let p = p.trim();
@@ -25,7 +29,7 @@ pub fn resolve_node_binary() -> Result<PathBuf, String> {
         candidates.push(p);
     }
 
-    let mut best: Option<(u32, u32, PathBuf)> = None;
+    let mut best: Option<(u32, PathBuf)> = None;
     let mut seen = std::collections::HashSet::new();
     for path in candidates {
         let key = path.to_string_lossy().to_string();
@@ -38,32 +42,32 @@ pub fn resolve_node_binary() -> Result<PathBuf, String> {
         let Ok((major, minor)) = node_version(&path) else {
             continue;
         };
-        if major < MIN_NODE_MAJOR {
+        if major != REQUIRED_NODE_MAJOR {
             eprintln!(
-                "[E-Agent Edge] 跳过 Node {}（需要 {}+）: {}",
+                "[E-Agent Edge] 跳过 Node {}（runtime 需要 Node {}.x）: {}",
                 major,
-                MIN_NODE_MAJOR,
+                REQUIRED_NODE_MAJOR,
                 path.display()
             );
             continue;
         }
         let replace = match &best {
             None => true,
-            Some((bm, bn, _)) => (major, minor) > (*bm, *bn),
+            Some((bm, _)) => minor > *bm,
         };
         if replace {
-            best = Some((major, minor, path));
+            best = Some((minor, path));
         }
     }
 
-    if let Some((_, _, path)) = best {
+    if let Some((_, path)) = best {
         return validate_node(&path);
     }
 
     Err(format!(
-        "未找到 Node.js {}+。请安装: brew install node@22，或从 https://nodejs.org 安装 LTS，\
+        "未找到 Node.js {}.x。请安装: brew install node@22，或从 https://nodejs.org 安装 Node 22 LTS，\
          然后重试；也可设置 MC_EDGE_NODE_PATH=/你的/node 路径",
-        MIN_NODE_MAJOR
+        REQUIRED_NODE_MAJOR
     ))
 }
 
@@ -95,9 +99,9 @@ fn validate_node(path: &Path) -> Result<PathBuf, String> {
         return Err(format!("Node 路径不存在: {}", path.display()));
     }
     let (major, _) = node_version(path)?;
-    if major < MIN_NODE_MAJOR {
+    if major != REQUIRED_NODE_MAJOR {
         return Err(format!(
-            "Node 版本过低（当前 v{major}，需要 {MIN_NODE_MAJOR}+）: {}",
+            "Node 版本不匹配（当前 v{major}，runtime 需要 Node {REQUIRED_NODE_MAJOR}.x）: {}",
             path.display()
         ));
     }
@@ -134,7 +138,7 @@ fn newest_nvm_node() -> Option<PathBuf> {
         let name = entry.file_name().to_string_lossy().to_string();
         let ver = name.strip_prefix('v').unwrap_or(&name);
         let (major, minor) = parse_semver_prefix(ver)?;
-        if major < MIN_NODE_MAJOR {
+        if major != REQUIRED_NODE_MAJOR {
             continue;
         }
         let node = entry.path().join("bin/node");
@@ -193,7 +197,7 @@ pub fn augmented_path_for_subprocess() -> String {
         );
         prefixes.push(home.join(".fnm/current/bin").to_string_lossy().into_owned());
         prefixes.push(home.join(".volta/bin").to_string_lossy().into_owned());
-        if let Some(nvm) = newest_nvm_node() {
+    if let Some(nvm) = newest_nvm_node() {
             if let Some(bin) = nvm.parent() {
                 prefixes.push(bin.to_string_lossy().into_owned());
             }
