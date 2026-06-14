@@ -66,8 +66,12 @@ if [[ -z "${SRC_DMG:-}" ]] || [[ ! -f "$SRC_DMG" ]]; then
 fi
 
 APP_BUNDLE="$TRAY_ROOT/src-tauri/target/release/bundle/macos/E-Agent Edge.app"
+STAGING_ROOT=""
 STAGING_APP=""
 cleanup_staging() {
+  if [[ -n "$STAGING_ROOT" && -d "$STAGING_ROOT" ]]; then
+    rm -rf "$STAGING_ROOT"
+  fi
   if [[ -n "$STAGING_APP" && -d "$STAGING_APP" ]]; then
     rm -rf "$STAGING_APP"
   fi
@@ -79,8 +83,13 @@ repack_signed_dmg() {
   local out_dmg="$2"
   echo "==> ad-hoc codesign + repack dmg (避免 DMG 内直接打开被 Gatekeeper 拦截)"
   codesign --force --deep --sign - "$app_path"
+  local dmg_root
+  dmg_root="$(mktemp -d)"
+  ditto "$app_path" "$dmg_root/E-Agent Edge.app"
+  ln -s /Applications "$dmg_root/Applications"
   rm -f "$out_dmg"
-  hdiutil create -volname "E-Agent Edge" -srcfolder "$app_path" -ov -format UDZO "$out_dmg" >/dev/null
+  hdiutil create -volname "E-Agent Edge" -srcfolder "$dmg_root" -ov -format UDZO "$out_dmg" >/dev/null
+  rm -rf "$dmg_root"
   xattr -cr "$out_dmg" 2>/dev/null || true
 }
 
@@ -91,8 +100,9 @@ if [[ -d "$APP_BUNDLE" ]]; then
   repack_signed_dmg "$APP_BUNDLE" "$OUT_DMG"
 else
   echo "==> extract .app from source dmg then repack"
-  STAGING_APP="$(mktemp -d)/E-Agent Edge.app"
-  MOUNT_OUT="$(hdiutil attach -nobrowse -readonly "$SRC_DMG" | awk '/\/Volumes\// {print $3; exit}')"
+  STAGING_ROOT="$(mktemp -d)"
+  STAGING_APP="$STAGING_ROOT/E-Agent Edge.app"
+  MOUNT_OUT="$(hdiutil attach -nobrowse -readonly "$SRC_DMG" | awk '/\/Volumes\// {idx=index($0,"/Volumes/"); print substr($0,idx); exit}')"
   if [[ -z "$MOUNT_OUT" || ! -d "$MOUNT_OUT/E-Agent Edge.app" ]]; then
     echo "error: cannot find E-Agent Edge.app in $SRC_DMG" >&2
     exit 1
@@ -101,6 +111,14 @@ else
   hdiutil detach "$MOUNT_OUT" >/dev/null 2>&1 || true
   repack_signed_dmg "$STAGING_APP" "$OUT_DMG"
 fi
+
+VERIFY_MOUNT="$(hdiutil attach -nobrowse -readonly "$OUT_DMG" | awk '/\/Volumes\// {idx=index($0,"/Volumes/"); print substr($0,idx); exit}')"
+if [[ -z "$VERIFY_MOUNT" || ! -d "$VERIFY_MOUNT/E-Agent Edge.app" || ! -L "$VERIFY_MOUNT/Applications" ]]; then
+  [[ -n "${VERIFY_MOUNT:-}" ]] && hdiutil detach "$VERIFY_MOUNT" >/dev/null 2>&1 || true
+  echo "error: generated DMG must contain E-Agent Edge.app and an Applications symlink" >&2
+  exit 1
+fi
+hdiutil detach "$VERIFY_MOUNT" >/dev/null 2>&1 || true
 
 if command -v shasum >/dev/null 2>&1; then
   SHA256="$(shasum -a 256 "$OUT_DMG" | awk '{print $1}')"
