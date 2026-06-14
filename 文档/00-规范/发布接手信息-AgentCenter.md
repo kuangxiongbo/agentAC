@@ -121,12 +121,16 @@ x86 生产发布命令：
 
 ```bash
 cd /Users/kuangxb/Desktop/agent指挥仓/mission-control
-export MC_IMAGE=crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:$(node -p "require('./package.json').version")
-export MC_IMAGE_LATEST=crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:latest
+VERSION="$(node -p "require('./package.json').version")"
+REPO="crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter"
+export MC_IMAGE="${REPO}:${VERSION}"
+export MC_IMAGE_LATEST="${REPO}:latest"
 export MC_DOCKER_PUSH=1
 export MC_DOCKER_PLATFORM=linux/amd64
 bash scripts/docker-buildx-multiarch.sh
 ```
+
+注意：镜像标签必须使用 `"${REPO}:${VERSION}"` 和 `"${REPO}:latest"`。不要写成 `"$REPO:$VERSION"` 或 `"$REPO:latest"`，否则 zsh/bash 可能把 `:latest` 当成变量修饰，导致 latest 推到错误仓库名。
 
 推送后验证：
 
