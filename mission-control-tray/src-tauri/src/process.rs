@@ -10,6 +10,12 @@ use std::time::Duration;
 
 static CHILD: Mutex<Option<Child>> = Mutex::new(None);
 
+#[derive(Debug, serde::Deserialize)]
+struct HealthResponse {
+    #[serde(default)]
+    version: Option<String>,
+}
+
 pub fn is_running() -> bool {
     let mut guard = CHILD.lock().unwrap();
     if let Some(child) = guard.as_mut() {
@@ -52,14 +58,85 @@ fn health_probe_url(port: u16) -> String {
 
 /// 本机 Web 客户端是否已就绪（避免端口被占用但返回 Internal Server Error）。
 pub fn is_healthy(cfg: &EdgeConfig) -> bool {
+    probe_health(cfg).is_some()
+}
+
+fn probe_health(cfg: &EdgeConfig) -> Option<HealthResponse> {
     let Ok(client) = http_client::build_http_client(cfg, Duration::from_secs(3)) else {
-        return false;
+        return None;
     };
-    client
+    let resp = client
         .get(health_probe_url(cfg.port))
         .send()
-        .ok()
-        .is_some_and(|r| r.status().is_success())
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<HealthResponse>().ok()
+}
+
+fn is_current_runtime_healthy(cfg: &EdgeConfig) -> bool {
+    let Some(health) = probe_health(cfg) else {
+        return false;
+    };
+    let Some(installed) = runtime::installed_version().filter(|v| v != "local") else {
+        return true;
+    };
+    health.version.as_deref() == Some(installed.as_str())
+}
+
+fn kill_port_owner(port: u16) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("lsof")
+            .args(["-tiTCP", &format!(":{port}"), "-sTCP:LISTEN"])
+            .output()
+            .map_err(|e| format!("无法查询端口 {port} 占用进程: {e}"))?;
+        if !output.status.success() {
+            return Err(format!("无法查询端口 {port} 占用进程"));
+        }
+        let current_pid = std::process::id().to_string();
+        let pids: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|pid| !pid.is_empty() && *pid != current_pid)
+            .map(ToOwned::to_owned)
+            .collect();
+        if pids.is_empty() {
+            return Err(format!("端口 {port} 没有可清理的外部监听进程"));
+        }
+        for pid in pids {
+            let _ = Command::new("kill").arg(&pid).status();
+        }
+        for _ in 0..20 {
+            if !port_in_use(port) {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        Err(format!("已尝试清理端口 {port}，但端口仍被占用"))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(format!("端口 {port} 被旧服务占用，请先手动停止后重试"))
+    }
+}
+
+fn recover_stale_healthy_port(cfg: &EdgeConfig) -> Result<bool, String> {
+    if !port_in_use(cfg.port) || !is_healthy(cfg) || is_current_runtime_healthy(cfg) {
+        return Ok(false);
+    }
+    let installed = runtime::installed_version().unwrap_or_else(|| "unknown".to_string());
+    let running = probe_health(cfg)
+        .and_then(|h| h.version)
+        .unwrap_or_else(|| "unknown".to_string());
+    eprintln!(
+        "[E-Agent Edge] 端口 {} 正在运行旧 Web 客户端（当前 {running}，目标 {installed}），自动回收后重启",
+        cfg.port
+    );
+    kill_port_owner(cfg.port)?;
+    Ok(true)
 }
 
 fn node_server_log_hint() -> String {
@@ -108,16 +185,28 @@ fn apply_bootstrap_settings_if_needed(
 /// 确保边缘服务在跑：已配置用户启动托盘 / 安装完成后自动调用。
 pub fn ensure_running(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<(), String> {
     if is_running() {
-        wait_until_healthy(cfg, 40)?;
-        return apply_bootstrap_settings_if_needed(cfg, bootstrap);
+        if !is_current_runtime_healthy(cfg) {
+            eprintln!("[E-Agent Edge] 已跟踪的 Web 客户端版本不是当前 runtime，准备重启");
+            stop()?;
+        } else {
+            wait_until_healthy(cfg, 40)?;
+            return apply_bootstrap_settings_if_needed(cfg, bootstrap);
+        }
     }
+    let _ = recover_stale_healthy_port(cfg)?;
     if port_in_use(cfg.port) {
-        if is_healthy(cfg) {
+        if is_current_runtime_healthy(cfg) {
             eprintln!(
-                "[E-Agent Edge] 端口 {} 已有健康服务，沿用现有进程",
+                "[E-Agent Edge] 端口 {} 已有当前版本健康服务，沿用现有进程",
                 cfg.port
             );
             return apply_bootstrap_settings_if_needed(cfg, bootstrap);
+        }
+        if is_healthy(cfg) {
+            return Err(format!(
+                "端口 {} 已被旧版本 Web 客户端占用，但自动回收失败。请退出托盘后重试，或手动停止占用该端口的 node 进程。",
+                cfg.port
+            ));
         }
         return Err(format!(
             "端口 {} 已被占用但服务异常（浏览器可能显示 Internal Server Error）。请先执行: cd mission-control-client && pnpm prod:restart --stop，或在托盘菜单选择「重启边缘服务」",
@@ -127,6 +216,13 @@ pub fn ensure_running(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> 
     start(cfg, bootstrap)?;
     // 先等 5101 健康，再写入 apply-bootstrap（否则易误报「无法调用 apply-bootstrap」）
     wait_until_healthy(cfg, 40)?;
+    if !is_current_runtime_healthy(cfg) {
+        return Err(format!(
+            "本机 Web 客户端版本不匹配：运行版本 {:?}，目标版本 {:?}",
+            probe_health(cfg).and_then(|h| h.version),
+            runtime::installed_version()
+        ));
+    }
     apply_bootstrap_settings_if_needed(cfg, bootstrap)
 }
 
@@ -151,10 +247,11 @@ pub fn start(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<()
     if is_running() {
         return Ok(());
     }
+    let _ = recover_stale_healthy_port(cfg)?;
     if port_in_use(cfg.port) {
-        if is_healthy(cfg) {
+        if is_current_runtime_healthy(cfg) {
             eprintln!(
-                "[E-Agent Edge] 端口 {} 已有健康服务，跳过重复启动",
+                "[E-Agent Edge] 端口 {} 已有当前版本健康服务，跳过重复启动",
                 cfg.port
             );
             return Ok(());
@@ -236,9 +333,9 @@ pub fn start(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<()
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let child = cmd.spawn().map_err(|e| {
-        format!("启动 Node 失败（{}）: {e}", node.display())
-    })?;
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("启动 Node 失败（{}）: {e}", node.display()))?;
 
     *CHILD.lock().unwrap() = Some(child);
     Ok(())
@@ -246,7 +343,7 @@ pub fn start(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<()
 
 pub fn restart(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<(), String> {
     stop()?;
-    // 若端口仍被外部进程占用，尝试仅在我们能识别时清理
+    let _ = recover_stale_healthy_port(cfg)?;
     if port_in_use(cfg.port) && !is_healthy(cfg) {
         eprintln!(
             "[E-Agent Edge] 端口 {} 仍被占用，请手动停止旧 Web 客户端后重试",

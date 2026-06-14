@@ -39,6 +39,7 @@ import {
 const log = createClientLogger('ChatWorkspace')
 const ACTIVE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS = 5000
 const IDLE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS = 30000
+const LOCAL_CLI_ELEVATION_PREF_PREFIX = 'mc:chat:local-cli-elevated:'
 
 declare global {
   interface Window {
@@ -843,6 +844,7 @@ function SessionConversationView({
   const hasPrefChanges =
     nameDraft.trim() !== (session.displayName || '').trim() ||
     colorDraft !== (session.colorTag || '')
+  const elevationPreferenceKey = `${LOCAL_CLI_ELEVATION_PREF_PREFIX}${session.prefKey || `${session.sessionKind}:${session.sessionId}`}`
 
   const bindableAgents = useMemo(() => {
     if (isGatewaySession) return []
@@ -863,6 +865,31 @@ function SessionConversationView({
     setBackgroundPromptBusy(false)
     setBindingMessage(null)
   }, [session.prefKey, session.displayName, session.colorTag])
+
+  useEffect(() => {
+    if (isGatewaySession) {
+      setContinueElevated(false)
+      return
+    }
+    try {
+      setContinueElevated(window.localStorage.getItem(elevationPreferenceKey) === '1')
+    } catch {
+      setContinueElevated(false)
+    }
+  }, [elevationPreferenceKey, isGatewaySession])
+
+  const handleElevationChange = useCallback((next: boolean) => {
+    setContinueElevated(next)
+    try {
+      if (next) {
+        window.localStorage.setItem(elevationPreferenceKey, '1')
+      } else {
+        window.localStorage.removeItem(elevationPreferenceKey)
+      }
+    } catch {
+      // localStorage can be unavailable in hardened browser contexts; UI state still applies.
+    }
+  }, [elevationPreferenceKey])
 
   const sessionMatchesRealtimeEvent = useCallback((detail?: SessionRealtimePayload) => {
     if (shouldRefreshSelectedSession(session, detail)) return true
@@ -1170,7 +1197,6 @@ function SessionConversationView({
     transcriptBaselineRef.current = messages.length
     setContinuePrompt('')
     const elevatedForTurn = continueElevated
-    setContinueElevated(false)
     stickToBottomRef.current = true
     setContinueBusy(true)
     setContinueError(null)
@@ -1636,7 +1662,7 @@ function SessionConversationView({
           {!isGatewaySession && (
             <LocalCliElevationButton
               elevated={continueElevated}
-              onElevatedChange={setContinueElevated}
+              onElevatedChange={handleElevationChange}
               disabled={needsEdgeClientForContinue || continueBusy}
               size="sm"
             />
