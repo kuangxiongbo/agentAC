@@ -91,15 +91,16 @@ pub fn set_activation_policy_accessory(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn build_muda_tray_menu() -> Result<Menu, String> {
-    let open_local = MenuItem::with_id("open_local", "打开 Web 控制台（本机）", true, None);
+    let open_local = MenuItem::with_id("open_local", "打开控制台", true, None);
     let open_center = MenuItem::with_id("open_center", "打开服务中心", true, None);
     let connection = MenuItem::with_id("connection_setup", "连接设置…", true, None);
-    let restart = MenuItem::with_id("restart", "重启边缘服务", true, None);
-    let update_runtime = MenuItem::with_id("update", "检查并更新 Runtime", true, None);
-    let update_tray = MenuItem::with_id("check_tray_update", "检查托盘应用更新…", true, None);
+    let restart = MenuItem::with_id("restart", "重启服务", true, None);
+    let check_update = MenuItem::with_id("check_update", "检查更新…", true, None);
+    let uninstall = MenuItem::with_id("uninstall", "卸载并清除数据…", true, None);
     let quit = MenuItem::with_id("quit", "退出", true, None);
     let sep1 = PredefinedMenuItem::separator();
     let sep2 = PredefinedMenuItem::separator();
+    let sep3 = PredefinedMenuItem::separator();
 
     Menu::with_items(&[
         &open_local,
@@ -107,9 +108,10 @@ pub fn build_muda_tray_menu() -> Result<Menu, String> {
         &connection,
         &sep1,
         &restart,
-        &update_runtime,
-        &update_tray,
+        &check_update,
         &sep2,
+        &uninstall,
+        &sep3,
         &quit,
     ])
     .map_err(|e| e.to_string())
@@ -118,48 +120,22 @@ pub fn build_muda_tray_menu() -> Result<Menu, String> {
 pub fn build_tray_menu(app: &AppHandle) -> Result<tauri::menu::Menu<Wry>, String> {
     use tauri::menu::{MenuItem, PredefinedMenuItem};
 
-    let open_local_i = MenuItem::with_id(
-        app,
-        "open_local",
-        "打开 Web 控制台（本机）",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| e.to_string())?;
-    let open_center_i = MenuItem::with_id(
-        app,
-        "open_center",
-        "打开服务中心",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| e.to_string())?;
-    let connection_i = MenuItem::with_id(
-        app,
-        "connection_setup",
-        "连接设置…",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| e.to_string())?;
-    let restart_i = MenuItem::with_id(app, "restart", "重启边缘服务", true, None::<&str>)
+    let open_local_i = MenuItem::with_id(app, "open_local", "打开控制台", true, None::<&str>)
         .map_err(|e| e.to_string())?;
-    let update_runtime_i = MenuItem::with_id(
-        app,
-        "update",
-        "检查并更新 Runtime",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| e.to_string())?;
-    let update_tray_i = MenuItem::with_id(
-        app,
-        "check_tray_update",
-        "检查托盘应用更新…",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| e.to_string())?;
+    let open_center_i =
+        MenuItem::with_id(app, "open_center", "打开服务中心", true, None::<&str>)
+            .map_err(|e| e.to_string())?;
+    let connection_i =
+        MenuItem::with_id(app, "connection_setup", "连接设置…", true, None::<&str>)
+            .map_err(|e| e.to_string())?;
+    let restart_i = MenuItem::with_id(app, "restart", "重启服务", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let check_update_i =
+        MenuItem::with_id(app, "check_update", "检查更新…", true, None::<&str>)
+            .map_err(|e| e.to_string())?;
+    let uninstall_i =
+        MenuItem::with_id(app, "uninstall", "卸载并清除数据…", true, None::<&str>)
+            .map_err(|e| e.to_string())?;
     let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)
         .map_err(|e| e.to_string())?;
 
@@ -171,8 +147,9 @@ pub fn build_tray_menu(app: &AppHandle) -> Result<tauri::menu::Menu<Wry>, String
             &connection_i,
             &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
             &restart_i,
-            &update_runtime_i,
-            &update_tray_i,
+            &check_update_i,
+            &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
+            &uninstall_i,
             &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
             &quit_i,
         ],
@@ -217,13 +194,14 @@ pub fn install_clash_tray(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Stri
                 button_state: MouseButtonState::Up,
                 ..
             } => {
-                let _ = open_tray_config(app);
-            }
-            TrayIconEvent::DoubleClick {
-                button: MouseButton::Left,
-                ..
-            } => {
-                let _ = open_web_console(app);
+                // If configured, open the console directly (primary action).
+                // Fall back to setup window only when not yet configured.
+                let cfg = crate::config::load_config();
+                if crate::config::is_setup_complete(&cfg) {
+                    open_web_console(app);
+                } else {
+                    let _ = open_tray_config(app);
+                }
             }
             _ => {}
         }

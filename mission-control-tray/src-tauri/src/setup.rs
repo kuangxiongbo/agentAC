@@ -57,6 +57,10 @@ pub fn is_intentional_quit() -> bool {
     INTENTIONAL_QUIT.load(Ordering::SeqCst)
 }
 
+pub fn mark_intentional_quit() {
+    INTENTIONAL_QUIT.store(true, Ordering::SeqCst);
+}
+
 /// Dock / 关配置窗：仅隐藏窗口，5101 与菜单栏托盘继续运行。
 pub fn hide_to_background(app: &AppHandle) {
     #[cfg(target_os = "macos")]

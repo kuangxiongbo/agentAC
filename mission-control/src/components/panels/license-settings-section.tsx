@@ -49,6 +49,8 @@ export function LicenseSettingsSection() {
   const [importing, setImporting] = useState(false)
   const [importErr, setImportErr] = useState('')
   const [importOk, setImportOk] = useState(false)
+  const [pushing, setPushing] = useState(false)
+  const [pushMsg, setPushMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const loadAll = useCallback(async () => {
@@ -121,6 +123,28 @@ export function LicenseSettingsSection() {
 
   const downloadSchema = () => {
     window.location.href = '/api/license/schema-template'
+  }
+
+  const pushSchema = async () => {
+    if (!config?.licenseCenterUrl) {
+      setPushMsg({ ok: false, text: t('pushSchemaNoUrl') })
+      return
+    }
+    setPushing(true)
+    setPushMsg(null)
+    try {
+      const r = await fetch('/api/license/schema-push', {
+        method: 'POST',
+        credentials: 'include',
+      })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error((j as { error?: string }).error || t('pushSchemaFailed'))
+      setPushMsg({ ok: true, text: t('pushSchemaSuccess') })
+    } catch (e) {
+      setPushMsg({ ok: false, text: e instanceof Error ? e.message : t('pushSchemaFailed') })
+    } finally {
+      setPushing(false)
+    }
   }
 
   if (loading) {
@@ -246,12 +270,22 @@ export function LicenseSettingsSection() {
               >
                 {importing ? t('importing') : t('importLic')}
               </Button>
-              <Button size="sm" variant="ghost" className="text-2xs opacity-70" onClick={downloadSchema}>
+              <Button size="sm" variant="outline" onClick={downloadSchema}>
                 {t('downloadSchema')}
               </Button>
+              {config?.licenseCenterUrl && (
+                <Button size="sm" variant="outline" disabled={pushing} onClick={() => void pushSchema()}>
+                  {pushing ? t('pushingSchema') : t('pushSchema')}
+                </Button>
+              )}
             </div>
             {importOk && <p className="text-xs text-green-400">{t('importSuccess')}</p>}
             {importErr && <p className="text-xs text-destructive">{importErr}</p>}
+            {pushMsg && (
+              <p className={`text-xs ${pushMsg.ok ? 'text-green-400' : 'text-destructive'}`}>
+                {pushMsg.text}
+              </p>
+            )}
           </div>
 
           <p className="text-2xs text-muted-foreground/60">

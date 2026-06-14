@@ -44,6 +44,35 @@ pub fn handle_tray_menu(app: &AppHandle, id: &str) {
                 Err(e) => show_notice(&e),
             }
         }
+        "check_update" => {
+            // Check both tray app update and runtime update in one action.
+            let tray_status = tray_update::check_for_update(true);
+            if tray_status.update_available {
+                let _ = open_setup_window(app);
+                show_notice(&format!(
+                    "发现托盘应用新版本 {}，请在连接窗口点击下载更新",
+                    tray_status.latest_version.unwrap_or_default()
+                ));
+                return;
+            }
+            let cfg = load_config();
+            match runtime::download_and_install(&cfg, true) {
+                Ok(msg) => {
+                    let payload = bootstrap::load_cached_bootstrap();
+                    let _ = process::restart(&cfg, payload.as_ref());
+                    show_notice(&msg);
+                }
+                Err(e) => {
+                    // Always show the download error. Mention tray-check error only as supplemental context.
+                    if let Some(tray_err) = tray_status.error {
+                        show_notice(&format!("{e}（托盘检查也遇到问题: {tray_err}）"));
+                    } else {
+                        show_notice(&e);
+                    }
+                }
+            }
+        }
+        // Legacy id kept for compatibility with older native menu builds.
         "check_tray_update" => {
             let status = tray_update::check_for_update(true);
             if status.update_available {
@@ -60,6 +89,9 @@ pub fn handle_tray_menu(app: &AppHandle, id: &str) {
                     status.current_version
                 ));
             }
+        }
+        "uninstall" => {
+            crate::uninstall::confirm_then_purge(app);
         }
         "quit" => quit_from_tray(app),
         _ => {}

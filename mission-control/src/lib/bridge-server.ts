@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
+import type { VerifyClientCallbackAsync } from 'ws'
 import { logger } from './logger'
 import { eventBus } from './event-bus'
 import { getDatabase } from './db'
-import { config } from './config'
+import { config, BRIDGE_TOKEN } from './config'
 import type { LocalSessionTranscriptKind, TranscriptMessage } from './session-transcript'
 import { notifySessionTranscriptUpdated } from './session-realtime'
 import { replaceBridgeAgentIndex, type BridgeAgentIndexInput } from './sync-agent-index'
@@ -22,15 +23,106 @@ const bridgeServerSockets: Map<string, WebSocket> =
 const bridgePendingRequests: Map<string, PendingBridgeRequest> =
   (global as any)._mc_bridge_pending_requests || new Map()
 
+/** Lifetime counters — survive hot-reload via global. */
+interface BridgeServerMetrics {
+  totalConnections: number
+  totalDisconnections: number
+  totalMessagesReceived: number
+  totalMessagesSent: number
+  totalPendingTimeouts: number
+  totalStaleClosures: number
+  totalSendFailures: number
+}
+const bridgeServerMetrics: BridgeServerMetrics =
+  (global as any)._mc_bridge_server_metrics || {
+    totalConnections: 0,
+    totalDisconnections: 0,
+    totalMessagesReceived: 0,
+    totalMessagesSent: 0,
+    totalPendingTimeouts: 0,
+    totalStaleClosures: 0,
+    totalSendFailures: 0,
+  }
+
 ;(global as any)._mc_bridge_server_meta = bridgeServerMeta
 ;(global as any)._mc_bridge_server_clients = bridgeServerClients
 ;(global as any)._mc_bridge_server_sockets = bridgeServerSockets
 ;(global as any)._mc_bridge_pending_requests = bridgePendingRequests
+;(global as any)._mc_bridge_server_metrics = bridgeServerMetrics
 
 /** Server proactively pings edge clients to keep TCP/WebSocket warm. */
 const BRIDGE_KEEPALIVE_SWEEP_MS = 30_000
 
+/** Seconds a new connection has to send a `hello` message before being closed. */
+const HELLO_TIMEOUT_MS = 10_000
+
+/** Maximum in-flight pending requests — circuit breaker to prevent memory bloat. */
+const MAX_PENDING_REQUESTS = 50
+
+/** Maximum simultaneous WebSocket clients on the bridge port (hard system ceiling). */
+const MAX_BRIDGE_CLIENTS = 100
+
+/**
+ * License-controlled edge client limit.
+ * 0 = use MAX_BRIDGE_CLIENTS (no license restriction).
+ * Updated at runtime via setMaxEdgeClientsLimit() when the effective license is resolved.
+ */
+let _licenseMaxEdgeClients: number =
+  ((global as any)._mc_bridge_license_max_edge_clients as number | undefined) ?? 0
+;(global as any)._mc_bridge_license_max_edge_clients = _licenseMaxEdgeClients
+
+export function setMaxEdgeClientsLimit(max: number): void {
+  const clamped = Number.isFinite(max) && max >= 0 ? Math.floor(max) : 0
+  _licenseMaxEdgeClients = clamped
+  ;(global as any)._mc_bridge_license_max_edge_clients = clamped
+}
+
+/** Maximum allowed WebSocket message size in bytes (4 MB). */
+const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024
+
+/** Per-connection hello watchdog timers (cleared once hello is received). */
+const bridgeHelloTimers: Map<string, NodeJS.Timeout> =
+  (global as any)._mc_bridge_hello_timers || new Map()
+;(global as any)._mc_bridge_hello_timers = bridgeHelloTimers
+
 let bridgeKeepaliveTimer: ReturnType<typeof setInterval> | null = null
+
+function getSettingValue(key: string): string {
+  try {
+    const db = getDatabase()
+    const row = db
+      .prepare('SELECT value FROM settings WHERE key = ?')
+      .get(key) as { value?: string } | undefined
+    return String(row?.value || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Read the expected bridge token.
+ * Must match the token emitted by edge bootstrap: explicit bridge token first,
+ * then the active API key. `gateway.token` is last for legacy single-node installs.
+ */
+function getExpectedBridgeToken(): string {
+  if (BRIDGE_TOKEN) return BRIDGE_TOKEN
+  const edgeBridgeToken = (process.env.MC_EDGE_BRIDGE_TOKEN || '').trim()
+  if (edgeBridgeToken) return edgeBridgeToken
+  const apiKey = getSettingValue('security.api_key') || (process.env.API_KEY || '').trim()
+  if (apiKey) return apiKey
+  return getSettingValue('gateway.token')
+}
+
+function allowAnonymousBridge(): boolean {
+  return process.env.MC_BRIDGE_ALLOW_ANONYMOUS === '1'
+}
+
+/** Extract bearer token from Authorization header value. */
+function parseBearerToken(header: string | undefined): string {
+  if (!header) return ''
+  const m = header.match(/^Bearer\s+(.+)$/i)
+  return m ? m[1].trim() : header.trim()
+}
 
 function isLiveEdgeConnection(client: BridgeServerClientState): boolean {
   if (client.kind === 'ui' || client.status !== 'connected') return false
@@ -38,20 +130,35 @@ function isLiveEdgeConnection(client: BridgeServerClientState): boolean {
   return Boolean(ws && ws.readyState === WebSocket.OPEN)
 }
 
+/** 3 missed pings = stale (3 × 30s = 90s) */
+const BRIDGE_PONG_STALE_MS = BRIDGE_KEEPALIVE_SWEEP_MS * 3
+
 function pingEdgeClients() {
+  const now = Date.now()
   for (const [connectionId, client] of bridgeServerClients.entries()) {
     if (!isLiveEdgeConnection(client)) continue
     const ws = bridgeServerSockets.get(connectionId)
     if (!ws) continue
+
+    // Close connections that haven't responded to pings — catches TCP half-open after sleep
+    const pongSilenceMs = now - client.lastPongAt
+    if (pongSilenceMs > BRIDGE_PONG_STALE_MS) {
+      bridgeServerMetrics.totalStaleClosures++
+      logger.warn(
+        { clientId: client.clientId, clientLabel: client.clientLabel, pongSilenceMs, remoteAddress: client.remoteAddress },
+        '[BridgeServer] No pong from edge client — closing stale connection',
+      )
+      try { ws.close(4001, 'Pong timeout') } catch { /* ignore */ }
+      continue
+    }
+
     try {
-      ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }))
+      ws.send(JSON.stringify({ type: 'ping', timestamp: now }))
+      bridgeServerMetrics.totalMessagesSent++
     } catch (err) {
+      bridgeServerMetrics.totalSendFailures++
       logger.warn({ clientId: client.clientId, err }, '[BridgeServer] Keepalive ping failed — closing socket')
-      try {
-        ws.close(4002, 'Keepalive ping failed')
-      } catch {
-        /* ignore */
-      }
+      try { ws.close(4002, 'Keepalive ping failed') } catch { /* ignore */ }
     }
   }
 }
@@ -77,6 +184,7 @@ interface BridgeServerClientState {
   status: 'connecting' | 'connected'
   connectedAt: number
   lastSeenAt: number
+  lastPongAt: number
   capabilities: string[]
   agentCount: number
   remoteAddress: string | null
@@ -107,6 +215,16 @@ interface PendingBridgeRequest {
 }
 
 function findConnectedEdgeBridge(clientId: string): { connectionId: string; ws: WebSocket } {
+  // Circuit breaker: refuse new requests when the queue is full
+  if (bridgePendingRequests.size >= MAX_PENDING_REQUESTS) {
+    bridgeServerMetrics.totalPendingTimeouts++ // reuse counter — semantically same pressure
+    logger.error(
+      { pendingCount: bridgePendingRequests.size, max: MAX_PENDING_REQUESTS, clientId },
+      '[BridgeServer] Pending request limit reached — circuit breaker active',
+    )
+    throw new Error(`Bridge request queue full (${bridgePendingRequests.size}/${MAX_PENDING_REQUESTS}) — try again shortly`)
+  }
+
   const target = Array.from(bridgeServerClients.values())
     .filter((client) => client.clientId === clientId && client.kind === 'edge' && isLiveEdgeConnection(client))
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0]
@@ -150,12 +268,31 @@ function initPermissionBridgeSync(): void {
   })
 }
 
+export interface BridgeClientHealthView {
+  connectionId: string
+  clientId: string
+  clientLabel: string
+  kind: BridgeClientKind
+  status: 'connecting' | 'connected'
+  connectedAt: number
+  lastSeenAt: number
+  lastPongAt: number
+  pongSilenceMs: number
+  capabilities: string[]
+  agentCount: number
+  remoteAddress: string | null
+}
+
 export interface BridgeServerStatusSnapshot {
   running: boolean
   port: number | null
   startedAt: number | null
+  uptimeMs: number | null
   connectedClients: number
+  pendingRequests: number
   clients: BridgeServerClientState[]
+  health: BridgeClientHealthView[]
+  metrics: BridgeServerMetrics
 }
 
 function getRemoteAddress(ws: WebSocket): string | null {
@@ -166,6 +303,7 @@ function getRemoteAddress(ws: WebSocket): string | null {
 function registerConnection(ws: WebSocket): string {
   const connectionId = randomUUID()
   const now = Date.now()
+  const remoteAddress = getRemoteAddress(ws)
   bridgeServerSockets.set(connectionId, ws)
   bridgeServerClients.set(connectionId, {
     connectionId,
@@ -175,10 +313,13 @@ function registerConnection(ws: WebSocket): string {
     status: 'connecting',
     connectedAt: now,
     lastSeenAt: now,
+    lastPongAt: now,
     capabilities: [],
     agentCount: 0,
-    remoteAddress: getRemoteAddress(ws),
+    remoteAddress,
   })
+  bridgeServerMetrics.totalConnections++
+  logger.info({ connectionId, remoteAddress, totalConnections: bridgeServerMetrics.totalConnections }, '[BridgeServer] New connection')
   return connectionId
 }
 
@@ -193,12 +334,42 @@ function touchConnection(connectionId: string) {
 }
 
 function clearPendingRequestsForConnection(connectionId: string, reason: string) {
+  let count = 0
   for (const [requestId, pending] of bridgePendingRequests.entries()) {
     if (pending.connectionId !== connectionId) continue
     clearTimeout(pending.timeout)
     bridgePendingRequests.delete(requestId)
     pending.reject(new Error(reason))
+    count++
   }
+  if (count > 0) {
+    logger.warn(
+      { connectionId, reason, abortedRequests: count },
+      '[BridgeServer] Aborted pending requests due to disconnect',
+    )
+  }
+}
+
+/**
+ * Creates a timeout callback that increments the metrics counter and emits a
+ * structured warning log before rejecting the caller's promise.
+ */
+function makePendingTimeout(
+  requestId: string,
+  kind: BridgePendingKind,
+  clientId: string,
+  timeoutMs: number,
+  reject: (e: Error) => void,
+): NodeJS.Timeout {
+  return setTimeout(() => {
+    bridgePendingRequests.delete(requestId)
+    bridgeServerMetrics.totalPendingTimeouts++
+    logger.warn(
+      { requestId, kind, clientId, timeoutMs },
+      '[BridgeServer] Pending bridge request timed out',
+    )
+    reject(new Error(`Timed out waiting for ${kind} from client ${clientId}`))
+  }, timeoutMs)
 }
 
 function resolvePendingRequest(msg: any) {
@@ -317,18 +488,63 @@ function resolvePendingRequest(msg: any) {
 
 export function initBridgeServer(port: number = 5002) {
   if (wss) return
-  
+
   try {
-    // Check if the port is already in use by a previous version of the module
-    wss = new WebSocketServer({ port })
+    // ── Token-based access control ──────────────────────────────────────────
+    // verifyClient runs synchronously during the HTTP Upgrade handshake.
+    // We accept the connection only when:
+    //   a) The Authorization: Bearer <token> header matches the expected token, or
+    //   b) MC_BRIDGE_ALLOW_ANONYMOUS=1 was explicitly set for an isolated deployment.
+    // Legacy URL query-param tokens are intentionally NOT accepted here so
+    // that clients that haven't been updated yet get a clear rejection rather
+    // than silently passing an insecure path.
+    const verifyClient: VerifyClientCallbackAsync = (info, cb) => {
+      // Count non-UI connections (edge + unknown-pending). UI browser clients are excluded from the edge limit.
+      const nonUiCount = Array.from(bridgeServerClients.values()).filter((c) => c.kind !== 'ui').length
+      const effectiveMax = _licenseMaxEdgeClients > 0 ? Math.min(_licenseMaxEdgeClients, MAX_BRIDGE_CLIENTS) : MAX_BRIDGE_CLIENTS
+      if (nonUiCount >= effectiveMax) {
+        logger.warn(
+          { remoteAddress: (info.req.socket as any)?.remoteAddress, current: nonUiCount, max: effectiveMax, licenseMax: _licenseMaxEdgeClients },
+          '[BridgeServer] Rejected connection — max edge clients reached',
+        )
+        cb(false, 503, 'Too Many Connections')
+        return
+      }
+      const expected = getExpectedBridgeToken()
+      if (!expected) {
+        if (allowAnonymousBridge()) {
+          cb(true)
+          return
+        }
+        logger.error(
+          { remoteAddress: (info.req.socket as any)?.remoteAddress },
+          '[BridgeServer] Rejected connection — bridge token is not configured',
+        )
+        cb(false, 503, 'Bridge token not configured')
+        return
+      }
+      const provided = parseBearerToken(info.req.headers['authorization'] as string | undefined)
+        || (info.req.headers['x-api-key'] as string | undefined || '').trim()
+      if (provided && provided === expected) {
+        cb(true)
+      } else {
+        logger.warn(
+          { remoteAddress: (info.req.socket as any)?.remoteAddress },
+          '[BridgeServer] Rejected connection — invalid or missing token',
+        )
+        cb(false, 401, 'Unauthorized')
+      }
+    }
+
+    wss = new WebSocketServer({ port, verifyClient, maxPayload: MAX_PAYLOAD_BYTES })
     ;(global as any)._mc_bridge_server = wss
     bridgeServerMeta.port = port
     bridgeServerMeta.startedAt = Date.now()
-    logger.info({ port }, '[BridgeServer] Started WebSocket bridge server')
+    const expectedSet = Boolean(getExpectedBridgeToken())
+    logger.info({ port, authEnabled: expectedSet }, '[BridgeServer] Started WebSocket bridge server')
     initPermissionBridgeSync()
 
     wss.on('connection', (ws: WebSocket) => {
-      logger.info('[BridgeServer] New connection established')
       const socket = (ws as any)?._socket as { setKeepAlive?: (enable: boolean, initialDelay?: number) => void } | undefined
       socket?.setKeepAlive?.(true, 30_000)
       const connectionId = registerConnection(ws)
@@ -336,20 +552,40 @@ export function initBridgeServer(port: number = 5002) {
       let clientLabel = 'unknown'
       let isUiClient = false
 
+      // ── Hello handshake timeout ──────────────────────────────────────────
+      // If a connected client does not send `hello` within HELLO_TIMEOUT_MS,
+      // it is treated as a zombie (crashed, misbehaving, or probing) and closed.
+      const helloTimer = setTimeout(() => {
+        const client = bridgeServerClients.get(connectionId)
+        if (client && client.status === 'connecting') {
+          bridgeServerMetrics.totalStaleClosures++
+          logger.warn(
+            { connectionId, remoteAddress: client.remoteAddress },
+            '[BridgeServer] Hello timeout — closing zombie connection',
+          )
+          try { ws.close(4007, 'Hello timeout') } catch { /* ignore */ }
+        }
+      }, HELLO_TIMEOUT_MS)
+      bridgeHelloTimers.set(connectionId, helloTimer)
+
       // Support OpenClaw UI connecting as if this is a gateway
-      ws.send(JSON.stringify({ 
-        type: 'event', 
-        event: 'connect.challenge', 
-        payload: { nonce: Math.random().toString(36).substring(7) } 
+      ws.send(JSON.stringify({
+        type: 'event',
+        event: 'connect.challenge',
+        payload: { nonce: Math.random().toString(36).substring(7) },
       }))
 
       ws.on('message', async (data: string) => {
+        bridgeServerMetrics.totalMessagesReceived++
         try {
           const msg = JSON.parse(data.toString())
           const { type, method, payload, event } = msg
 
           // Handle OpenClaw UI Bridge Protocol (v2/v3)
           if (type === 'req' && method === 'connect') {
+            // UI client identified — clear zombie watchdog
+            const uiHelloT = bridgeHelloTimers.get(connectionId)
+            if (uiHelloT) { clearTimeout(uiHelloT); bridgeHelloTimers.delete(connectionId) }
             isUiClient = true
             clientId = msg.params?.client?.id || 'mc-ui'
             clientLabel = msg.params?.client?.name || clientId
@@ -381,7 +617,11 @@ export function initBridgeServer(port: number = 5002) {
 
           // Handle standard Bridge Protocol
           switch (type) {
-            case 'hello':
+            case 'hello': {
+              // Clear the zombie watchdog — legit client identified
+              const helloT = bridgeHelloTimers.get(connectionId)
+              if (helloT) { clearTimeout(helloT); bridgeHelloTimers.delete(connectionId) }
+
               clientId = msg.clientId || 'unknown'
               clientLabel = typeof msg.clientLabel === 'string' && msg.clientLabel.trim()
                 ? msg.clientLabel.trim()
@@ -402,10 +642,15 @@ export function initBridgeServer(port: number = 5002) {
               // Push projects to the client so they have the same context
               await pushProjectsToClient(ws)
               break
+            }
 
             case 'ping':
               touchConnection(connectionId)
               ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }))
+              break
+
+            case 'pong':
+              updateConnection(connectionId, { lastPongAt: Date.now() })
               break
 
             case 'agent_status':
@@ -545,11 +790,27 @@ export function initBridgeServer(port: number = 5002) {
         }
       })
 
-      ws.on('close', () => {
+      ws.on('close', (code: number, reason: Buffer) => {
+        const helloT = bridgeHelloTimers.get(connectionId)
+        if (helloT) { clearTimeout(helloT); bridgeHelloTimers.delete(connectionId) }
+        const client = bridgeServerClients.get(connectionId)
+        const durationMs = client ? Date.now() - client.connectedAt : 0
         bridgeServerSockets.delete(connectionId)
         clearPendingRequestsForConnection(connectionId, 'Bridge client disconnected')
         bridgeServerClients.delete(connectionId)
-        logger.info({ clientId }, '[BridgeServer] Client disconnected')
+        bridgeServerMetrics.totalDisconnections++
+        logger.info(
+          {
+            clientId,
+            clientLabel,
+            kind: client?.kind ?? 'unknown',
+            code,
+            reason: reason?.toString() || '',
+            durationMs,
+            totalDisconnections: bridgeServerMetrics.totalDisconnections,
+          },
+          '[BridgeServer] Client disconnected',
+        )
       })
     })
 
@@ -649,16 +910,36 @@ export function isBridgeClientOnline(clientId: string): boolean {
 }
 
 export function getBridgeServerStatus(): BridgeServerStatusSnapshot {
+  const now = Date.now()
   const clients = Array.from(bridgeServerClients.values())
     .filter((client) => client.kind !== 'ui')
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+
+  const health: BridgeClientHealthView[] = clients.map((client) => ({
+    connectionId: client.connectionId,
+    clientId: client.clientId,
+    clientLabel: client.clientLabel,
+    kind: client.kind,
+    status: client.status,
+    connectedAt: client.connectedAt,
+    lastSeenAt: client.lastSeenAt,
+    lastPongAt: client.lastPongAt,
+    pongSilenceMs: now - client.lastPongAt,
+    capabilities: client.capabilities,
+    agentCount: client.agentCount,
+    remoteAddress: client.remoteAddress,
+  }))
 
   return {
     running: Boolean(wss),
     port: bridgeServerMeta.port,
     startedAt: bridgeServerMeta.startedAt,
+    uptimeMs: bridgeServerMeta.startedAt ? now - bridgeServerMeta.startedAt : null,
     connectedClients: clients.filter((client) => isLiveEdgeConnection(client)).length,
+    pendingRequests: bridgePendingRequests.size,
     clients,
+    health,
+    metrics: { ...bridgeServerMetrics },
   }
 }
 
@@ -706,10 +987,7 @@ export async function requestBridgeClientSessionTranscript(input: {
     sourceMtimeMs?: number
     sourceSize?: number
   }>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      bridgePendingRequests.delete(requestId)
-      reject(new Error(`Timed out waiting for transcript from client ${input.clientId}`))
-    }, timeoutMs)
+    const timeout = makePendingTimeout(requestId, 'transcript', input.clientId, timeoutMs, reject)
 
     bridgePendingRequests.set(requestId, {
       requestId,
@@ -757,10 +1035,7 @@ export async function requestBridgeClientSessionContinue(input: {
   const timeoutMs = Math.max(5000, input.timeoutMs || 180000)
 
   return await new Promise<{ reply: string; sessionId: string | null; source: string }>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      bridgePendingRequests.delete(requestId)
-      reject(new Error(`Timed out waiting for session continue from client ${input.clientId}`))
-    }, timeoutMs)
+    const timeout = makePendingTimeout(requestId, 'continue', input.clientId, timeoutMs, reject)
 
     bridgePendingRequests.set(requestId, {
       requestId,
@@ -828,10 +1103,7 @@ export async function requestBridgeClientAgentsBySession(input: {
     }>
     source: string
   }>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      bridgePendingRequests.delete(requestId)
-      reject(new Error(`Timed out waiting for agents-by-session from client ${input.clientId}`))
-    }, timeoutMs)
+    const timeout = makePendingTimeout(requestId, 'agents_by_session', input.clientId, timeoutMs, reject)
 
     bridgePendingRequests.set(requestId, {
       requestId,
@@ -870,10 +1142,7 @@ export async function requestBridgeClientAgentSessionUpdate(input: {
   const timeoutMs = Math.max(1000, input.timeoutMs || 12000)
 
   return await new Promise<{ agent: Record<string, unknown> | null; source: string }>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      bridgePendingRequests.delete(requestId)
-      reject(new Error(`Timed out waiting for agent session update on client ${input.clientId}`))
-    }, timeoutMs)
+    const timeout = makePendingTimeout(requestId, 'agent_session_update', input.clientId, timeoutMs, reject)
 
     bridgePendingRequests.set(requestId, {
       requestId,
@@ -925,10 +1194,7 @@ export async function requestBridgeClientStewardCreate(input: {
     sessionProvisioning: boolean
     source: string
   }>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      bridgePendingRequests.delete(requestId)
-      reject(new Error(`Timed out waiting for steward create on client ${input.clientId}`))
-    }, timeoutMs)
+    const timeout = makePendingTimeout(requestId, 'steward_create', input.clientId, timeoutMs, reject)
 
     bridgePendingRequests.set(requestId, {
       requestId,
@@ -974,10 +1240,7 @@ export async function requestBridgeClientStewardUpdate(input: {
 
   return await new Promise<{ agent: Record<string, unknown> | null; source: string }>(
     (resolve, reject) => {
-      const timeout = setTimeout(() => {
-        bridgePendingRequests.delete(requestId)
-        reject(new Error(`Timed out waiting for steward update on client ${input.clientId}`))
-      }, timeoutMs)
+      const timeout = makePendingTimeout(requestId, 'steward_update', input.clientId, timeoutMs, reject)
 
       bridgePendingRequests.set(requestId, {
         requestId,
@@ -1024,10 +1287,7 @@ export async function requestBridgeClientStewardDelete(input: {
 
   return await new Promise<{ deleted: boolean; name: string; source: string }>(
     (resolve, reject) => {
-      const timeout = setTimeout(() => {
-        bridgePendingRequests.delete(requestId)
-        reject(new Error(`Timed out waiting for steward delete on client ${input.clientId}`))
-      }, timeoutMs)
+      const timeout = makePendingTimeout(requestId, 'steward_delete', input.clientId, timeoutMs, reject)
 
       bridgePendingRequests.set(requestId, {
         requestId,
@@ -1069,10 +1329,7 @@ export async function requestBridgeClientStewardJudge(input: {
   const timeoutMs = Math.max(5000, input.timeoutMs || 180000)
 
   return await new Promise<{ reply: string; sessionId: string; source: string }>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      bridgePendingRequests.delete(requestId)
-      reject(new Error(`Timed out waiting for steward judge on client ${input.clientId}`))
-    }, timeoutMs)
+    const timeout = makePendingTimeout(requestId, 'steward_judge', input.clientId, timeoutMs, reject)
 
     bridgePendingRequests.set(requestId, {
       requestId,
@@ -1126,10 +1383,7 @@ export async function requestBridgeClientAgentMessage(input: {
   const timeoutMs = Math.max(5000, input.timeoutMs || 300_000)
 
   return await new Promise<BridgeAgentMessageResult>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      bridgePendingRequests.delete(requestId)
-      reject(new Error(`Timed out waiting for agent message on client ${input.clientId}`))
-    }, timeoutMs)
+    const timeout = makePendingTimeout(requestId, 'agent_message', input.clientId, timeoutMs, reject)
 
     bridgePendingRequests.set(requestId, {
       requestId,
@@ -1171,10 +1425,7 @@ export async function requestBridgeClientAgentDetail(input: {
   const timeoutMs = Math.max(1000, input.timeoutMs || 12000)
 
   return await new Promise<{ agent: Record<string, unknown> | null; source: string }>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      bridgePendingRequests.delete(requestId)
-      reject(new Error(`Timed out waiting for agent detail from client ${input.clientId}`))
-    }, timeoutMs)
+    const timeout = makePendingTimeout(requestId, 'agent_detail', input.clientId, timeoutMs, reject)
 
     bridgePendingRequests.set(requestId, {
       requestId,

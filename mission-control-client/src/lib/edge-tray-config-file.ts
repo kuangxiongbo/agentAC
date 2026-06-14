@@ -5,10 +5,12 @@ import path from 'node:path'
 export type EdgeTrayFileConfig = {
   center_url?: string
   enroll_token?: string
+  gateway_token?: string
   client_name?: string
   port?: number
   enterprise_name?: string
   enterprise_slug?: string
+  tenant_id?: string | number
 }
 
 export function edgeTrayConfigPath(): string {
@@ -29,15 +31,19 @@ export async function readEdgeTrayConfigFile(): Promise<EdgeTrayFileConfig | nul
 export function trayFileToSettings(tray: EdgeTrayFileConfig): Record<string, string> {
   const out: Record<string, string> = {}
   const centerUrl = String(tray.center_url || '').trim()
-  const token = String(tray.enroll_token || '').trim()
+  const enrollToken = String(tray.enroll_token || '').trim()
+  const gatewayToken = String(tray.gateway_token || '').trim()
   const clientName = String(tray.client_name || '').trim()
   const enterpriseName = String(tray.enterprise_name || '').trim()
   const enterpriseSlug = String(tray.enterprise_slug || '').trim()
+  const tenantId = String(tray.tenant_id || '').trim()
 
   if (centerUrl) out['gateway.server_url'] = centerUrl
-  if (token) out['gateway.token'] = token
+  if (enrollToken) out['edge.enroll_token'] = enrollToken
+  if (gatewayToken) out['gateway.token'] = gatewayToken
   if (clientName) out['gateway.client_name'] = clientName
   if (enterpriseName) out['edge.enterprise_name'] = enterpriseName
   if (enterpriseSlug) out['edge.enterprise_slug'] = enterpriseSlug
+  if (/^\d+$/.test(tenantId)) out['edge.tenant_id'] = tenantId
   return out
 }

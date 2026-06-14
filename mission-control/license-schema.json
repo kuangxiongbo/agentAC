@@ -23,6 +23,15 @@
       "default": false,
       "enforcement": "server",
       "enforcementPoint": "POST /api/chat/messages、/api/agents/message、/api/sessions/continue — local_cli_elevated"
+    },
+    {
+      "key": "maxEdgeClients",
+      "type": "number",
+      "label": "最大边缘客户端连接数",
+      "description": "允许同时连接到指挥仓 Bridge 服务器的边缘客户端（Tray 应用）数量上限。0 表示不限制（等同系统默认上限）。",
+      "default": 0,
+      "enforcement": "server",
+      "enforcementPoint": "WebSocket bridge server — verifyClient handshake"
     }
   ]
 }

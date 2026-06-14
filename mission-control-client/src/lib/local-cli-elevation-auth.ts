@@ -28,10 +28,33 @@ function getGatewayToken(): string {
   }
 }
 
+function getEdgeEnrollToken(): string {
+  try {
+    const db = getDatabase()
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'edge.enroll_token'").get() as { value?: string } | undefined
+    return String(row?.value || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+function getEdgeTenantId(): string {
+  try {
+    const db = getDatabase()
+    const row = db.prepare("SELECT value FROM settings WHERE key = 'edge.tenant_id'").get() as { value?: string } | undefined
+    return String(row?.value || '').trim()
+  } catch {
+    return ''
+  }
+}
+
 export async function resolveLocalCliElevationEntitled(): Promise<LocalCliElevationEntitlement> {
   const upstream = getRemoteUpstreamConfig()
   const subscriptionsUrl = resolveUserCenterSubscriptionsUrl()
-  const token = getGatewayToken()
+  const gatewayToken = getGatewayToken()
+  const enrollToken = getEdgeEnrollToken()
+  const token = gatewayToken || enrollToken
+  const edgeTenantId = getEdgeTenantId()
 
   if (!upstream.baseUrl || !token) {
     return { entitled: false, subscriptionsUrl }
@@ -43,6 +66,8 @@ export async function resolveLocalCliElevationEntitled(): Promise<LocalCliElevat
       headers: {
         Authorization: `Bearer ${token}`,
         'x-api-key': token,
+        ...(enrollToken ? { 'x-edge-enroll-token': enrollToken } : {}),
+        ...(edgeTenantId ? { 'x-edge-tenant-id': edgeTenantId } : {}),
       },
       cache: 'no-store',
     })

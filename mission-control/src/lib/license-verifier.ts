@@ -23,6 +23,7 @@ export const APP_STAGE =
 export type MissionControlEntitlements = {
   enableHumanWatch: boolean
   enableLocalCliElevation: boolean
+  maxEdgeClients: number
   [key: string]: unknown
 }
 
@@ -48,6 +49,7 @@ function buildDefaultEntitlements(): MissionControlEntitlements {
   const out: Record<string, unknown> = {
     enableHumanWatch: false,
     enableLocalCliElevation: false,
+    maxEdgeClients: 0,
   }
   for (const item of LICENSE_ENTITLEMENT_META_LIST) {
     out[item.key] = item.defaultValue
@@ -64,6 +66,8 @@ function mergeVerifiedEntitlements(overrides?: Record<string, unknown> | null): 
   }
   merged.enableHumanWatch = Boolean(merged.enableHumanWatch)
   merged.enableLocalCliElevation = Boolean(merged.enableLocalCliElevation)
+  const maxEdge = typeof merged.maxEdgeClients === 'number' ? merged.maxEdgeClients : 0
+  merged.maxEdgeClients = Number.isFinite(maxEdge) && maxEdge >= 0 ? Math.floor(maxEdge) : 0
   return merged as MissionControlEntitlements
 }
 

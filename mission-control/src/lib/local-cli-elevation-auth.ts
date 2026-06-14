@@ -2,6 +2,12 @@ import type { User } from '@/lib/auth'
 import { resolveEffectiveLicense, hasEntitlement, resolveUserCenterSubscriptionsUrl } from '@/lib/effective-license'
 import { getProviderSubjectForUser } from '@/lib/license-resolve-context'
 
+export type LocalCliElevationPrincipal = Pick<User, 'id' | 'tenant_id' | 'portal_tenant_role'> | {
+  id?: null
+  tenant_id: number
+  portal_tenant_role?: string | null
+}
+
 export type LocalCliElevationGateResult =
   | { ok: true }
   | {
@@ -13,14 +19,14 @@ export type LocalCliElevationGateResult =
     }
 
 export async function assertLocalCliElevationAllowed(input: {
-  user: Pick<User, 'id' | 'tenant_id' | 'portal_tenant_role'>
+  user: LocalCliElevationPrincipal
   elevated: boolean
 }): Promise<LocalCliElevationGateResult> {
   if (!input.elevated) return { ok: true }
 
   const license = await resolveEffectiveLicense({
     tenantId: input.user.tenant_id,
-    zitadelSub: getProviderSubjectForUser(input.user.id),
+    zitadelSub: input.user.id ? getProviderSubjectForUser(input.user.id) : null,
     portalTenantRole: input.user.portal_tenant_role,
   })
 
@@ -38,11 +44,11 @@ export async function assertLocalCliElevationAllowed(input: {
 }
 
 export async function resolveLocalCliElevationEntitled(input: {
-  user: Pick<User, 'id' | 'tenant_id' | 'portal_tenant_role'>
+  user: LocalCliElevationPrincipal
 }): Promise<{ entitled: boolean; subscriptionsUrl: string }> {
   const license = await resolveEffectiveLicense({
     tenantId: input.user.tenant_id,
-    zitadelSub: getProviderSubjectForUser(input.user.id),
+    zitadelSub: input.user.id ? getProviderSubjectForUser(input.user.id) : null,
     portalTenantRole: input.user.portal_tenant_role,
   })
 

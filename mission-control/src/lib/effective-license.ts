@@ -43,7 +43,7 @@ export type EffectiveLicenseResult = {
 }
 
 function buildDefaultEntitlements(): MissionControlEntitlements {
-  const out: Record<string, unknown> = { enableHumanWatch: false }
+  const out: Record<string, unknown> = { enableHumanWatch: false, enableLocalCliElevation: false, maxEdgeClients: 0 }
   for (const item of LICENSE_ENTITLEMENT_META_LIST) {
     out[item.key] = item.defaultValue
   }
@@ -61,6 +61,8 @@ function mergeEntitlements(overrides?: Record<string, unknown> | null): MissionC
   } as MissionControlEntitlements
   merged.enableHumanWatch = Boolean(merged.enableHumanWatch)
   merged.enableLocalCliElevation = Boolean(merged.enableLocalCliElevation)
+  const maxEdge = typeof merged.maxEdgeClients === 'number' ? merged.maxEdgeClients : 0
+  merged.maxEdgeClients = Number.isFinite(maxEdge) && maxEdge >= 0 ? Math.floor(maxEdge) : 0
   return merged
 }
 
@@ -151,7 +153,7 @@ export async function resolveEffectiveLicense(
       allowed: true,
       licensed: true,
       source: 'default',
-      entitlements: mergeEntitlements({ enableHumanWatch: true, enableLocalCliElevation: true }),
+      entitlements: mergeEntitlements({ enableHumanWatch: true, enableLocalCliElevation: true, maxEdgeClients: 0 }),
       expiresAt: null,
       requiresSubscription: false,
       appId: LICENSE_SCHEMA_SETTINGS.appId || LICENSE_APP_ID,

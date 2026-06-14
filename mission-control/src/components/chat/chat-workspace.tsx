@@ -1030,11 +1030,11 @@ function SessionConversationView({
   const handleContinueSession = async () => {
     const prompt = continuePrompt.trim()
     if (!prompt || continueBusy || continueSendLockRef.current) return
-    continueSendLockRef.current = true
     if (needsEdgeClientForContinue) {
       setContinueError(t('remoteClientRequired'))
       return
     }
+    continueSendLockRef.current = true
 
     const optimisticUser: SessionTranscriptMessage = {
       role: 'user',
@@ -1489,7 +1489,7 @@ function SessionConversationView({
             value={continuePrompt}
             onChange={(e) => setContinuePrompt(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && !continueBusy && !backgroundPromptBusy) {
+              if (e.key === 'Enter' && !e.shiftKey && !continueBusy) {
                 e.preventDefault()
                 void handleContinueSession()
               }
@@ -1497,20 +1497,20 @@ function SessionConversationView({
             placeholder={
               needsEdgeClientForContinue
                 ? t('remoteClientRequired')
-                : continueBusy || backgroundPromptBusy
+                : continueBusy
                   ? t('continueSending')
                 : isGatewaySession
                   ? t('sendMessageToSession')
                   : t('sendPromptToLocalSession')
             }
-            disabled={needsEdgeClientForContinue || continueBusy || backgroundPromptBusy}
+            disabled={needsEdgeClientForContinue || continueBusy}
             className="h-7 flex-1 rounded border border-border/40 bg-surface-1 px-2 font-mono-tight text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-50"
           />
           {!isGatewaySession && (
             <LocalCliElevationButton
               elevated={continueElevated}
               onElevatedChange={setContinueElevated}
-              disabled={needsEdgeClientForContinue || continueBusy || backgroundPromptBusy}
+              disabled={needsEdgeClientForContinue || continueBusy}
               size="sm"
             />
           )}
@@ -1518,10 +1518,10 @@ function SessionConversationView({
             onClick={handleContinueSession}
             size="sm"
             variant="ghost"
-            disabled={continueBusy || backgroundPromptBusy || !continuePrompt.trim() || needsEdgeClientForContinue}
+            disabled={continueBusy || !continuePrompt.trim() || needsEdgeClientForContinue}
             className="h-7 px-3 text-xs"
           >
-            {continueBusy || backgroundPromptBusy
+            {continueBusy
               ? `${t('continueSending')}${awaitingReplySeconds > 0 ? ` (${awaitingReplySeconds}s)` : ''}`
               : t('send')}
           </Button>

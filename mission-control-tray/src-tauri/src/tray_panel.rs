@@ -178,7 +178,9 @@ fn position_top_right_fallback(
 #[tauri::command]
 pub fn hide_tray_panel(app: AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("tray-panel") {
-        w.hide().map_err(|e| e.to_string())?;
+        // Destroy the WebView entirely instead of just hiding it.
+        // show_tray_panel will recreate it on demand (open_tray_helper_window handles this).
+        w.close().map_err(|e| e.to_string())?;
     }
     Ok(())
 }

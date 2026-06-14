@@ -55,10 +55,12 @@ export function buildLocalEdgeBootstrap(input: {
   const clientId = stableClientId(deviceSeed, enrollToken, hostname)
   const enterpriseName = getSetting(db, 'edge.enterprise_name', 'E-Agent Enterprise')
   const enterpriseSlug = getSetting(db, 'edge.enterprise_slug', 'default')
+  const tenantId = getSetting(db, 'edge.tenant_id')
 
   const settings: Record<string, string> = {
     'gateway.server_url': centerUrl.replace(/\/+$/, ''),
     'gateway.token': gatewayToken || enrollToken,
+    'edge.enroll_token': enrollToken,
     'gateway.client_name': clientName,
     'device.client_id': clientId,
     'edge.enterprise_name': enterpriseName,
@@ -67,12 +69,15 @@ export function buildLocalEdgeBootstrap(input: {
     'edge.enrolled_at': String(Math.floor(Date.now() / 1000)),
     'general.server_gateway_sync': 'true',
   }
+  if (tenantId) {
+    settings['edge.tenant_id'] = tenantId
+  }
 
   return {
     payload: {
       schema: 1,
       center_url: centerUrl.replace(/\/+$/, ''),
-      enterprise: { name: enterpriseName, slug: enterpriseSlug, tenant_id: null },
+      enterprise: { name: enterpriseName, slug: enterpriseSlug, tenant_id: tenantId ? Number(tenantId) : null },
       client: { client_id: clientId, client_name: clientName, hostname },
       bridge: { server_url: centerUrl.replace(/\/+$/, ''), token: gatewayToken || enrollToken },
       runtime_manifest: null,

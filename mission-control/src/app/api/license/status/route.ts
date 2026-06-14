@@ -3,6 +3,7 @@ import { getUserFromRequest } from '@/lib/auth'
 import { resolveEffectiveLicense, resolveUserCenterSubscriptionsUrl } from '@/lib/effective-license'
 import { getProviderSubjectForUser } from '@/lib/license-resolve-context'
 import { invalidateLicenseCache } from '@/lib/license-verifier'
+import { setMaxEdgeClientsLimit } from '@/lib/bridge-server'
 
 export async function GET(request: Request) {
   const user = getUserFromRequest(request)
@@ -20,6 +21,8 @@ export async function GET(request: Request) {
     portalTenantRole: user.portal_tenant_role,
     forceRefresh: url.searchParams.get('refresh') === '1',
   })
+
+  setMaxEdgeClientsLimit(license.entitlements.maxEdgeClients as number ?? 0)
 
   return NextResponse.json({
     mode: license.source,

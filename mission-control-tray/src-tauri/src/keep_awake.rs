@@ -23,9 +23,10 @@ pub fn start_system_keep_awake() {
     }
     let pid = std::process::id();
     match Command::new("caffeinate")
-        // -i idle sleep, -m disk sleep, -s system sleep (AC), -u user active (battery)
+        // -i idle sleep, -m disk sleep, -s system sleep (AC only)
+        // Omit -u (user-active assertion) — it prevents display sleep and drains battery.
         // -w: hold assertion until tray process exits
-        .args(["-imsu", "-w", &pid.to_string()])
+        .args(["-ims", "-w", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

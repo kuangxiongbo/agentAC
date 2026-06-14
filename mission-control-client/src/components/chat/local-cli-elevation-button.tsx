@@ -22,11 +22,13 @@ export function LocalCliElevationButton({
 }: ElevationButtonProps) {
   const t = useTranslations('chat')
   const [entitled, setEntitled] = useState(false)
+  const [checkingEntitlement, setCheckingEntitlement] = useState(true)
   const [subscriptionsUrl, setSubscriptionsUrl] = useState(resolveUserCenterSubscriptionsUrl())
   const [subscribeHint, setSubscribeHint] = useState(false)
 
   useEffect(() => {
     let cancelled = false
+    setCheckingEntitlement(true)
     void fetch('/api/local-cli/elevation-entitled', { cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -39,19 +41,23 @@ export function LocalCliElevationButton({
       .catch(() => {
         if (!cancelled) setEntitled(false)
       })
+      .finally(() => {
+        if (!cancelled) setCheckingEntitlement(false)
+      })
     return () => {
       cancelled = true
     }
   }, [])
 
   const handleClick = useCallback(() => {
+    if (checkingEntitlement) return
     if (!entitled) {
       setSubscribeHint(true)
       window.setTimeout(() => setSubscribeHint(false), 6000)
       return
     }
     onElevatedChange(!elevated)
-  }, [entitled, elevated, onElevatedChange])
+  }, [checkingEntitlement, entitled, elevated, onElevatedChange])
 
   const iconSize = size === 'sm' ? 12 : 14
 
@@ -60,20 +66,24 @@ export function LocalCliElevationButton({
       <Button
         type="button"
         onClick={handleClick}
-        disabled={disabled}
+        disabled={disabled || checkingEntitlement}
         variant={elevated ? 'default' : 'ghost'}
         size="icon-sm"
         className={`rounded-lg flex-shrink-0 ${
           elevated
             ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
+            : checkingEntitlement
+              ? 'text-muted-foreground/40'
             : entitled
               ? 'text-muted-foreground hover:text-amber-300 hover:bg-amber-500/10'
               : 'text-muted-foreground/50 hover:text-muted-foreground'
         }`}
-        title={entitled ? t('localCliElevationTitle') : t('localCliElevationSubscribeTitle')}
+        title={checkingEntitlement ? t('localCliElevationCheckingTitle') : entitled ? t('localCliElevationTitle') : t('localCliElevationSubscribeTitle')}
       >
-        <svg width={iconSize} height={iconSize} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M8 1.5l1.6 3.2 3.6.5-2.6 2.5.6 3.6L8 9.8l-3.2 1.5.6-3.6-2.6-2.5 3.6-.5L8 1.5z" />
+        <svg width={iconSize} height={iconSize} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M8 1.5l4.4 1.7v3.3c0 3.1-1.8 5.9-4.4 7-2.6-1.1-4.4-3.9-4.4-7V3.2L8 1.5z" />
+          <path d="M8 5.4v3.9" />
+          <path d="M6.5 6.9h3" />
         </svg>
       </Button>
       {subscribeHint && (

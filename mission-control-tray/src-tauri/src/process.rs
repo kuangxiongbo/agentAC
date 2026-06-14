@@ -134,9 +134,10 @@ fn command_for_node_server(node: &std::path::Path) -> Command {
     #[cfg(target_os = "macos")]
     {
         if keep_awake::keep_awake_enabled() {
-            eprintln!("[E-Agent Edge] keep-awake: node wrapped in caffeinate -imsu");
+            eprintln!("[E-Agent Edge] keep-awake: node wrapped in caffeinate -ims");
             let mut cmd = Command::new("caffeinate");
-            cmd.arg("-imsu").arg(node).arg("server.js");
+            // -i idle sleep, -m disk sleep, -s system sleep (AC only); omit -u (user-active = battery drain)
+            cmd.arg("-ims").arg(node).arg("server.js");
             return cmd;
         }
     }

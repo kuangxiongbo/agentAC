@@ -81,6 +81,10 @@ export const REMOTE_RECONNECT_MS = Math.max(
   1000,
   parseInt(process.env.MC_REMOTE_RECONNECT_MS || '5000', 10) || 5000
 )
+// MC_BRIDGE_TOKEN → token edge clients must present when connecting to bridge port 5002.
+//                   Falls back to gateway.token DB setting if unset.
+//                   Leave empty only for isolated single-node deployments with no external access.
+export const BRIDGE_TOKEN = (process.env.MC_BRIDGE_TOKEN || '').trim()
 
 export const config = {
   claudeHome:

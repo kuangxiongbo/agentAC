@@ -66,5 +66,8 @@ describe('edge bootstrap tenant scoping', () => {
       tenant_id: 2,
     })
     expect(result.payload.settings['edge.tenant_id']).toBe('2')
+    expect(result.payload.settings['edge.enroll_token']).toBe(token)
+    expect(result.payload.settings['gateway.token']).toBe('bridge-token')
+    expect(result.payload.settings['gateway.token']).not.toBe(token)
   })
 })

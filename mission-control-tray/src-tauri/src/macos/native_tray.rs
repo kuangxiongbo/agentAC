@@ -2,6 +2,7 @@
 
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use muda::{ContextMenu, Menu};
@@ -15,6 +16,10 @@ use tauri::AppHandle;
 const MENU_BAR_PNG: &[u8] = include_bytes!("../../icons/tray-icon.png");
 
 static STATUS_ITEM_PTR: AtomicPtr<NSStatusItem> = AtomicPtr::new(ptr::null_mut());
+
+// Cache the raw NSImage pointer to avoid re-decoding PNG on every refresh.
+// NSImage is ObjC reference-counted; we retain it for the app lifetime.
+static CACHED_IMAGE_PTR: AtomicPtr<NSImage> = AtomicPtr::new(ptr::null_mut());
 
 pub struct NativeMenuBarTray;
 
@@ -97,16 +102,29 @@ fn refresh_on_main_thread() {
     button.setNeedsDisplay();
 }
 
-fn set_button_icon(
-    button: &objc2_app_kit::NSStatusBarButton,
-    mtm: MainThreadMarker,
-) -> Result<(), String> {
-    let nsdata = NSData::from_vec(MENU_BAR_PNG.to_vec());
+fn get_or_create_image() -> Result<*mut NSImage, String> {
+    let cached = CACHED_IMAGE_PTR.load(Ordering::Acquire);
+    if !cached.is_null() {
+        return Ok(cached);
+    }
+    let nsdata = NSData::with_bytes(MENU_BAR_PNG);
     let allocated = NSImage::alloc();
     let img = NSImage::initWithData(allocated, &nsdata).ok_or("NSImage 解码失败")?;
     img.setSize(NSSize::new(18.0, 18.0));
     img.setTemplate(false);
-    button.setImage(Some(&img));
+    let raw = Retained::into_raw(img);
+    // Store for lifetime of process; intentional leak.
+    CACHED_IMAGE_PTR.store(raw, Ordering::Release);
+    Ok(raw)
+}
+
+fn set_button_icon(
+    button: &objc2_app_kit::NSStatusBarButton,
+    mtm: MainThreadMarker,
+) -> Result<(), String> {
+    let raw = get_or_create_image()?;
+    let img = unsafe { &*raw };
+    button.setImage(Some(img));
     let _ = mtm;
     Ok(())
 }

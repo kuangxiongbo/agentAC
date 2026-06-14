@@ -32,6 +32,8 @@ export async function GET(request: NextRequest) {
   const clientName = getSetting(db, 'gateway.client_name', 'LocalClient')
   const deviceClientId = getSetting(db, 'device.client_id')
   const enterpriseName = getSetting(db, 'edge.enterprise_name')
+  const enterpriseSlug = getSetting(db, 'edge.enterprise_slug')
+  const tenantId = getSetting(db, 'edge.tenant_id')
   const port = parseInt(process.env.PORT || '5101', 10) || 5101
 
   return NextResponse.json({
@@ -41,6 +43,8 @@ export async function GET(request: NextRequest) {
     client_name: clientName,
     device_client_id: deviceClientId,
     enterprise_name: enterpriseName,
+    enterprise_slug: enterpriseSlug,
+    tenant_id: tenantId ? Number(tenantId) : null,
     port,
     source: 'mission-control-client',
   })

@@ -9,6 +9,7 @@ mod setup;
 mod supervisor;
 mod tray_update;
 mod tray_panel;
+mod uninstall;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -70,6 +71,7 @@ pub fn run() {
             tray_update::open_tray_update_download,
             tray_panel::hide_tray_panel,
             tray_panel::show_tray_panel,
+            uninstall::uninstall_edge,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -205,14 +207,8 @@ fn apply_macos_tray_fallback(app: &tauri::AppHandle) {
 fn create_tray_icon(app: &tauri::App) -> Result<TrayIcon, String> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 
-    let open_local_i = MenuItem::with_id(
-        app,
-        "open_local",
-        "打开 Web 控制台（本机）",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| e.to_string())?;
+    let open_local_i = MenuItem::with_id(app, "open_local", "打开控制台", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
     let connection_i = MenuItem::with_id(
         app,
         "connection_setup",
@@ -221,6 +217,9 @@ fn create_tray_icon(app: &tauri::App) -> Result<TrayIcon, String> {
         None::<&str>,
     )
     .map_err(|e| e.to_string())?;
+    let uninstall_i =
+        MenuItem::with_id(app, "uninstall", "卸载并清除数据…", true, None::<&str>)
+            .map_err(|e| e.to_string())?;
     let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)
         .map_err(|e| e.to_string())?;
     let menu = Menu::with_items(
@@ -228,6 +227,8 @@ fn create_tray_icon(app: &tauri::App) -> Result<TrayIcon, String> {
         &[
             &open_local_i,
             &connection_i,
+            &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
+            &uninstall_i,
             &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
             &quit_i,
         ],
@@ -246,6 +247,9 @@ fn create_tray_icon(app: &tauri::App) -> Result<TrayIcon, String> {
             "connection_setup" => {
                 let _ = setup::open_connection_setup(app.clone());
             }
+            "uninstall" => {
+                crate::uninstall::confirm_then_purge(app);
+            }
             "quit" => quit_from_tray(app),
             _ => {}
         })
@@ -259,7 +263,13 @@ fn create_tray_icon(app: &tauri::App) -> Result<TrayIcon, String> {
             ..
         } = event
         {
-            let _ = open_tray_config(tray.app_handle());
+            let app = tray.app_handle();
+            let cfg = load_config();
+            if config::is_setup_complete(&cfg) {
+                open_web_console(app);
+            } else {
+                let _ = open_tray_config(app);
+            }
         }
     });
 

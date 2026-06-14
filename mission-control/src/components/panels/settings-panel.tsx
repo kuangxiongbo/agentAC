@@ -766,6 +766,7 @@ export function SettingsPanel() {
             handleEdit={handleEdit}
             showFeedback={showFeedback}
           />
+          <BridgeHealthSection />
         </div>
       )}
 
@@ -1581,6 +1582,255 @@ function UpstreamSyncSection({ settings, edits, handleEdit, showFeedback }: any)
     </div>
   )
 }
+type BridgeHealth = {
+  health: 'ok' | 'degraded' | 'down'
+  timestamp: number
+  upstream: {
+    enabled: boolean
+    connected: boolean
+    url: string
+    reconnectAttempts: number
+    connectedAt: number | null
+    connectedDurationMs: number | null
+    pongSilenceMs: number
+    totalReconnects: number
+    lastError: string | null
+    lastErrorAt: number | null
+    metrics: { sent: number; received: number }
+  }
+  downstream: {
+    running: boolean
+    port: number | null
+    uptimeMs: number | null
+    connectedClients: number
+    pendingRequests: number
+    metrics: {
+      totalConnections: number
+      totalDisconnections: number
+      totalMessagesReceived: number
+      totalMessagesSent: number
+      totalPendingTimeouts: number
+      totalStaleClosures: number
+      totalSendFailures: number
+    }
+    clients: Array<{
+      clientId: string
+      clientLabel: string
+      kind: string
+      status: string
+      connectedAt: number
+      lastSeenAt: number
+      pongSilenceMs: number
+      pongHealth: 'ok' | 'warn' | 'stale'
+      agentCount: number
+    }>
+  }
+}
+
+function fmtMs(ms: number | null | undefined): string {
+  if (ms == null) return '-'
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1000)}s`
+  return `${Math.floor(ms / 3_600_000)}h ${Math.floor((ms % 3_600_000) / 60_000)}m`
+}
+
+function fmtTimestamp(ts: number | null | undefined): string {
+  if (!ts) return '-'
+  return new Date(ts).toLocaleTimeString()
+}
+
+function BridgeHealthSection() {
+  const t = useTranslations('settings')
+  const [data, setData] = useState<BridgeHealth | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [reconnecting, setReconnecting] = useState(false)
+
+  const fetchHealth = useCallback(async () => {
+    try {
+      const res = await fetch('/api/bridge/health', { cache: 'no-store' })
+      if (res.ok) setData(await res.json())
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    fetchHealth()
+    const id = setInterval(fetchHealth, 10_000)
+    return () => clearInterval(id)
+  }, [fetchHealth])
+
+  const handleReconnect = async () => {
+    setReconnecting(true)
+    try {
+      await fetch('/api/server-bridge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reconnect' }),
+      })
+      setTimeout(fetchHealth, 1500)
+    } catch {}
+    setReconnecting(false)
+  }
+
+  const healthColor = {
+    ok: 'text-green-400',
+    degraded: 'text-amber-400',
+    down: 'text-red-400',
+  }
+  const healthDot = {
+    ok: 'bg-green-500',
+    degraded: 'bg-amber-500 animate-pulse',
+    down: 'bg-red-500 animate-pulse',
+  }
+  const pongHealthColor = {
+    ok: 'text-green-400',
+    warn: 'text-amber-400',
+    stale: 'text-red-400',
+  }
+
+  return (
+    <div className="bg-card border border-border rounded-lg p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium text-foreground">Bridge 实时健康</h3>
+        <div className="flex items-center gap-2">
+          {data && (
+            <span className={`flex items-center gap-1.5 text-xs font-medium ${healthColor[data.health]}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${healthDot[data.health]}`} />
+              {data.health.toUpperCase()}
+            </span>
+          )}
+          <Button onClick={fetchHealth} variant="ghost" size="xs" className="h-6 text-2xs" disabled={loading}>
+            刷新
+          </Button>
+        </div>
+      </div>
+
+      {data && (
+        <div className="space-y-4 text-xs">
+          {/* Upstream (outbound WS to parent server) */}
+          {data.upstream.enabled && (
+            <div className="rounded-lg border border-border/60 bg-muted/20 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-foreground/80">上行连接 (本地 → 服务端)</span>
+                <div className="flex items-center gap-2">
+                  <span className={data.upstream.connected ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
+                    {data.upstream.connected ? '已连接' : `断开 (重连 ${data.upstream.reconnectAttempts} 次)`}
+                  </span>
+                  {!data.upstream.connected && (
+                    <Button onClick={handleReconnect} variant="outline" size="xs" className="h-5 text-2xs" disabled={reconnecting}>
+                      {reconnecting ? '重连中...' : '立即重连'}
+                    </Button>
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-muted-foreground">
+                <div className="flex justify-between gap-2">
+                  <span>Pong 静默</span>
+                  <span className={data.upstream.pongSilenceMs > 60_000 ? 'text-amber-400' : 'text-foreground/80'}>
+                    {fmtMs(data.upstream.pongSilenceMs)}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span>连接时长</span>
+                  <span className="text-foreground/80">{fmtMs(data.upstream.connectedDurationMs)}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span>总重连次数</span>
+                  <span className="text-foreground/80">{data.upstream.totalReconnects}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span>收 / 发</span>
+                  <span className="font-mono text-foreground/80">{data.upstream.metrics.received} / {data.upstream.metrics.sent}</span>
+                </div>
+              </div>
+              {data.upstream.lastError && (
+                <div className="mt-1 p-2 rounded bg-red-500/10 border border-red-500/20 text-red-400 text-2xs break-words">
+                  <span className="font-medium">最近错误</span> [{fmtTimestamp(data.upstream.lastErrorAt)}]:{' '}
+                  {data.upstream.lastError}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Downstream (inbound WS from edge clients) */}
+          <div className="rounded-lg border border-border/60 bg-muted/20 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-medium text-foreground/80">下行服务 (边缘端 → 本地)</span>
+              <span className="text-muted-foreground font-mono">
+                :{data.downstream.port ?? '-'} · 在线 {data.downstream.connectedClients} 个
+                {data.downstream.pendingRequests > 0 && (
+                  <span className="ml-2 text-amber-400">{data.downstream.pendingRequests} 个待响应</span>
+                )}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-muted-foreground">
+              <div className="flex justify-between gap-2">
+                <span>运行时长</span>
+                <span className="text-foreground/80">{fmtMs(data.downstream.uptimeMs)}</span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span>收 / 发</span>
+                <span className="font-mono text-foreground/80">
+                  {data.downstream.metrics.totalMessagesReceived} / {data.downstream.metrics.totalMessagesSent}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span>总连接数</span>
+                <span className="text-foreground/80">{data.downstream.metrics.totalConnections}</span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span>超时 / 陈旧关闭</span>
+                <span className={data.downstream.metrics.totalPendingTimeouts > 0 ? 'text-amber-400' : 'text-foreground/80'}>
+                  {data.downstream.metrics.totalPendingTimeouts} / {data.downstream.metrics.totalStaleClosures}
+                </span>
+              </div>
+            </div>
+
+            {/* Per-client health */}
+            {data.downstream.clients.length > 0 && (
+              <div className="mt-2 space-y-1.5">
+                {data.downstream.clients.map((c) => (
+                  <div key={c.clientId} className="flex items-center justify-between gap-3 rounded border border-border/40 bg-background/40 px-2.5 py-1.5">
+                    <div className="min-w-0">
+                      <span className="font-medium text-foreground/90 truncate block">{c.clientLabel || c.clientId}</span>
+                      <span className="text-2xs text-muted-foreground">{c.agentCount} 个 agent</span>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0 text-2xs text-muted-foreground">
+                      <div className="text-right">
+                        <div>Pong 静默</div>
+                        <div className={pongHealthColor[c.pongHealth]}>{fmtMs(c.pongSilenceMs)}</div>
+                      </div>
+                      <span className={`px-1.5 py-0.5 rounded-full border text-2xs font-medium ${
+                        c.status === 'connected'
+                          ? 'border-green-500/30 bg-green-500/10 text-green-400'
+                          : 'border-slate-500/30 bg-slate-500/10 text-slate-400'
+                      }`}>
+                        {c.status === 'connected' ? '在线' : '离线'}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {data.downstream.clients.length === 0 && (
+              <p className="text-muted-foreground text-center py-2">暂无边缘客户端连接</p>
+            )}
+          </div>
+
+          <p className="text-2xs text-muted-foreground text-right">
+            最后更新: {fmtTimestamp(data.timestamp)}
+          </p>
+        </div>
+      )}
+
+      {!data && (
+        <p className="text-xs text-muted-foreground py-2 text-center">加载中...</p>
+      )}
+    </div>
+  )
+}
+
 function DownstreamConnectionSection({ apiKeyInfo }: { apiKeyInfo: any }) {
   const t = useTranslations('settings')
   const tc = useTranslations('common')

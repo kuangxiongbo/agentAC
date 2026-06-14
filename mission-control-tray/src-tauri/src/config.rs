@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 pub const DEFAULT_CENTER_URL: &str = "https://agent.1sheng.work";
 pub const DEFAULT_PORT: u16 = 5101;
-pub const DEFAULT_CLIENT_VERSION: &str = "2.1.2";
+pub const DEFAULT_CLIENT_VERSION: &str = "2.1.3";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeConfig {
@@ -12,6 +12,9 @@ pub struct EdgeConfig {
     /// 企业分发安装包内置的注册令牌（对应中心 MC_EDGE_ENROLL_TOKEN）
     #[serde(default)]
     pub enroll_token: Option<String>,
+    /// 中心桥接 WebSocket 令牌，由 bootstrap 下发；不要与 enroll_token 混用。
+    #[serde(default)]
+    pub gateway_token: Option<String>,
     #[serde(default)]
     pub manifest_url: Option<String>,
     #[serde(default = "default_port")]
@@ -27,6 +30,8 @@ pub struct EdgeConfig {
     pub enterprise_name: Option<String>,
     #[serde(default)]
     pub enterprise_slug: Option<String>,
+    #[serde(default)]
+    pub tenant_id: Option<i64>,
     /// 代理/VPN 自签证书场景：跳过 HTTPS 校验（与浏览器已信任 MITM CA 时等效）
     #[serde(default)]
     pub tls_insecure: Option<bool>,
@@ -58,6 +63,7 @@ impl Default for EdgeConfig {
         Self {
             center_url: DEFAULT_CENTER_URL.to_string(),
             enroll_token: None,
+            gateway_token: None,
             manifest_url: None,
             port: DEFAULT_PORT,
             runtime_version: None,
@@ -65,6 +71,7 @@ impl Default for EdgeConfig {
             client_name: None,
             enterprise_name: None,
             enterprise_slug: None,
+            tenant_id: None,
             tls_insecure: None,
             setup_completed: None,
         }

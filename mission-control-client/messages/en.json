@@ -766,6 +766,7 @@
     "stopGeneration": "Stop generation",
     "sendMessage": "Send message",
     "localCliElevationTitle": "Elevate this message (full local execution permissions)",
+    "localCliElevationCheckingTitle": "Checking elevation permission",
     "localCliElevationSubscribeTitle": "Elevation requires subscription",
     "localCliElevationSubscribeBody": "Local CLI elevation is a subscription feature. Subscribe to enable it.",
     "localCliElevationSubscribeCta": "Go to subscribe",

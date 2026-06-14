@@ -51,7 +51,7 @@ function resolveActiveApiKey(): string {
 
 export type EnrollTokenSource = 'session' | 'env' | 'api_key' | 'bridge' | 'multi' | 'none'
 
-type ScopedEnrollTokenClaims = {
+export type ScopedEnrollTokenClaims = {
   v: 1
   typ: 'edge-enroll'
   uid: number
@@ -97,7 +97,7 @@ export function createScopedDistributionEnrollToken(user: Pick<User, 'id' | 'ten
   return `mcet_${encoded}.${signScopedClaims(claims, secret)}`
 }
 
-function validateScopedEnrollToken(token: string): ScopedEnrollTokenClaims | null {
+export function validateScopedDistributionEnrollToken(token: string): ScopedEnrollTokenClaims | null {
   if (!token.startsWith('mcet_')) return null
   const secret = resolveTokenSigningSecret()
   if (!secret) return null
@@ -171,7 +171,7 @@ export function resolveDistributionEnrollToken(user?: Pick<User, 'id' | 'tenant_
 
 function validateEnrollToken(token: string): TokenValidation {
   if (!token) return { valid: false }
-  const scoped = validateScopedEnrollToken(token)
+  const scoped = validateScopedDistributionEnrollToken(token)
   if (scoped) return { valid: true, scope: scoped }
   const single = (process.env.MC_EDGE_ENROLL_TOKEN || '').trim()
   if (single && token === single) return { valid: true }
@@ -311,6 +311,7 @@ export function buildEdgeBootstrap(input: {
   const settings: Record<string, string> = {
     'gateway.server_url': centerUrl,
     'gateway.token': bridgeToken,
+    'edge.enroll_token': token,
     'gateway.client_name': clientName,
     'device.client_id': clientId,
     'edge.enterprise_name': enterprise.name,

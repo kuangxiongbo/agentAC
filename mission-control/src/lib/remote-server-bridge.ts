@@ -53,6 +53,13 @@ interface BridgeState {
   lastPong: number
   resolvedUrl: string
   discoverySource: string | null
+  /** Lifetime counters — accumulate across reconnects */
+  totalReconnects: number
+  totalMessagesSent: number
+  totalMessagesReceived: number
+  lastErrorAt: number | null
+  lastError: string | null
+  connectedAt: number | null
 }
 
 const state: BridgeState = {
@@ -65,6 +72,12 @@ const state: BridgeState = {
   lastPong: 0,
   resolvedUrl: '',
   discoverySource: null,
+  totalReconnects: 0,
+  totalMessagesSent: 0,
+  totalMessagesReceived: 0,
+  lastErrorAt: null,
+  lastError: null,
+  connectedAt: null,
 }
 
 export const bridgeEmitter = new EventEmitter()
@@ -117,6 +130,7 @@ function safeSend(ws: WebSocket | null, data: object): boolean {
   if (!ws || ws.readyState !== 1) return false
   try {
     ws.send(JSON.stringify(data))
+    state.totalMessagesSent++
     return true
   } catch {
     return false
@@ -377,6 +391,7 @@ function handleSessionTranscriptRequest(message: any): void {
 }
 
 function handleMessage(raw: string): void {
+  state.totalMessagesReceived++
   let msg: any
   try {
     msg = JSON.parse(raw)
@@ -441,9 +456,8 @@ function startHeartbeat(): void {
     const tickGap = now - lastTickAt
     lastTickAt = now
     if (tickGap > PING_INTERVAL_MS * 2.5) {
-      logger.warn({ tickGap }, '[RemoteBridge] Heartbeat gap (possible sleep) — probing connection')
-      state.lastPong = now
-      safeSend(state.ws, { type: 'ping', timestamp: now })
+      logger.warn({ tickGap }, '[RemoteBridge] Heartbeat gap (possible sleep) — forcing reconnect')
+      state.ws.close(4000, 'Post-sleep reconnect')
       return
     }
     if (now - state.lastPong > MAX_PONG_SILENCE_MS) {
@@ -476,10 +490,6 @@ async function connect(): Promise<void> {
     token = getDbSetting('gateway.token').trim()
   }
 
-  if (token) {
-    url.searchParams.set('token', token)
-  }
-
   const WS = await getWebSocketImpl()
   let ws: WebSocket
 
@@ -499,11 +509,23 @@ async function connect(): Promise<void> {
   const clientId = getLocalClientId()
   const clientLabel = getLocalClientLabel()
 
+  const connectTimeout = setTimeout(() => {
+    if (!state.connected && state.ws === ws) {
+      logger.warn({ url: resolved.wsUrl }, '[RemoteBridge] Connection timeout (15s) — forcing close')
+      try { ws.close(4008, 'Connect timeout') } catch {}
+    }
+  }, 15_000)
+
   ws.onopen = () => {
+    clearTimeout(connectTimeout)
     state.connected = true
     state.reconnectAttempts = 0
+    state.connectedAt = Date.now()
     state.lastPong = Date.now()
-    logger.info({ url: resolved.wsUrl, discoverySource: resolved.discoverySource }, '[RemoteBridge] Connected to remote server')
+    logger.info(
+      { url: resolved.wsUrl, discoverySource: resolved.discoverySource, totalReconnects: state.totalReconnects },
+      '[RemoteBridge] Connected to remote server',
+    )
 
     // Trigger a full catch-up sync for historical data
     import('./gateway-sync').then(({ runServerGatewaySync }) => {
@@ -538,20 +560,30 @@ async function connect(): Promise<void> {
     handleMessage(typeof event.data === 'string' ? event.data : String(event.data))
   }
 
-  ws.onerror = () => {
-    logger.warn('[RemoteBridge] WebSocket error, will reconnect...')
-    bridgeEmitter.emit('bridge_error', { message: 'WebSocket error' })
+  ws.onerror = (ev: Event) => {
+    clearTimeout(connectTimeout)
+    const errMsg = (ev as any)?.message || 'WebSocket error'
+    state.lastError = errMsg
+    state.lastErrorAt = Date.now()
+    logger.warn({ err: errMsg, url: state.resolvedUrl }, '[RemoteBridge] WebSocket error, will reconnect...')
+    bridgeEmitter.emit('bridge_error', { message: errMsg })
   }
 
   ws.onclose = (event: CloseEvent) => {
+    clearTimeout(connectTimeout)
+    const durationMs = state.connectedAt ? Date.now() - state.connectedAt : 0
     state.connected = false
     state.ws = null
+    state.connectedAt = null
     stopHeartbeat()
 
     const handler = (ws as any)._chatHandler
     if (handler) eventBus.off('chat.message', handler)
 
-    logger.info({ code: event?.code, reason: event?.reason, url: state.resolvedUrl || resolved.wsUrl }, '[RemoteBridge] Disconnected from remote server')
+    logger.info(
+      { code: event?.code, reason: event?.reason, url: state.resolvedUrl || resolved.wsUrl, durationMs },
+      '[RemoteBridge] Disconnected from remote server',
+    )
     bridgeEmitter.emit('disconnected', { code: event?.code, reason: event?.reason })
 
     if (!state.isShuttingDown) {
@@ -563,8 +595,11 @@ async function connect(): Promise<void> {
 function scheduleReconnect(): void {
   if (state.reconnectTimer) return
   const attempts = state.reconnectAttempts
-  const delay = Math.min(REMOTE_RECONNECT_MS * Math.pow(1.5, Math.min(attempts, 8)), 60_000)
-  logger.info({ delay: Math.round(delay), attempts }, '[RemoteBridge] Scheduling reconnect')
+  const base = Math.min(REMOTE_RECONNECT_MS * Math.pow(1.5, Math.min(attempts, 8)), 60_000)
+  const jitter = base * 0.25 * Math.random()
+  const delay = Math.round(base + jitter)
+  state.totalReconnects++
+  logger.info({ delay, attempts, totalReconnects: state.totalReconnects }, '[RemoteBridge] Scheduling reconnect')
   state.reconnectAttempts += 1
   state.reconnectTimer = setTimeout(() => {
     state.reconnectTimer = null
@@ -634,8 +669,17 @@ export function getRemoteBridgeStatus(): {
   discoverySource: string | null
   reconnectAttempts: number
   lastPong: number
+  pongSilenceMs: number
+  connectedAt: number | null
+  connectedDurationMs: number | null
+  totalReconnects: number
+  totalMessagesSent: number
+  totalMessagesReceived: number
+  lastError: string | null
+  lastErrorAt: number | null
 } {
   const configUrl = (REMOTE_SERVER_URL || getDbSetting('gateway.server_url') || '').trim()
+  const now = Date.now()
   return {
     enabled: Boolean(configUrl) && isRecognizedBridgeUrl(configUrl),
     connected: state.connected,
@@ -644,6 +688,14 @@ export function getRemoteBridgeStatus(): {
     discoverySource: state.discoverySource,
     reconnectAttempts: state.reconnectAttempts,
     lastPong: state.lastPong,
+    pongSilenceMs: state.lastPong ? now - state.lastPong : 0,
+    connectedAt: state.connectedAt,
+    connectedDurationMs: state.connectedAt ? now - state.connectedAt : null,
+    totalReconnects: state.totalReconnects,
+    totalMessagesSent: state.totalMessagesSent,
+    totalMessagesReceived: state.totalMessagesReceived,
+    lastError: state.lastError,
+    lastErrorAt: state.lastErrorAt,
   }
 }
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getUserFromRequest, updateUser, requireRole, destroyAllUserSessions, createSession, publicAuthUserFields } from '@/lib/auth'
 import { logAuditEvent, getDatabase } from '@/lib/db'
 import { resolveEffectiveLicense, resolveUserCenterSubscriptionsUrl } from '@/lib/effective-license'
+import { setMaxEdgeClientsLimit } from '@/lib/bridge-server'
 import { getProviderSubjectForUser } from '@/lib/license-resolve-context'
 import { verifyPassword } from '@/lib/password'
 import { getMcSessionCookieName, getMcSessionCookieOptions, isRequestSecure } from '@/lib/session-cookie'
@@ -36,6 +37,8 @@ export async function GET(request: Request) {
     portalTenantRole: user.portal_tenant_role,
     forceRefresh: true,
   })
+
+  setMaxEdgeClientsLimit(license.entitlements.maxEdgeClients as number ?? 0)
 
   return NextResponse.json({
     user: {

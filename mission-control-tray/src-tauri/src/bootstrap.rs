@@ -75,10 +75,12 @@ pub fn ensure_device_id(cfg: &mut EdgeConfig) -> String {
 struct LocalTrayConfig {
     center_url: Option<String>,
     enroll_token: Option<String>,
+    gateway_token: Option<String>,
     client_name: Option<String>,
     #[allow(dead_code)]
     device_client_id: Option<String>,
     enterprise_name: Option<String>,
+    tenant_id: Option<i64>,
     port: Option<u16>,
 }
 
@@ -107,12 +109,20 @@ pub fn import_from_local_client(cfg: &mut EdgeConfig, port: u16) -> bool {
         cfg.enroll_token = Some(token.trim().to_string());
         changed = true;
     }
+    if let Some(token) = local.gateway_token.filter(|s| !s.trim().is_empty()) {
+        cfg.gateway_token = Some(token.trim().to_string());
+        changed = true;
+    }
     if let Some(name) = local.client_name.filter(|s| !s.trim().is_empty()) {
         cfg.client_name = Some(name.trim().to_string());
         changed = true;
     }
     if let Some(name) = local.enterprise_name.filter(|s| !s.trim().is_empty()) {
         cfg.enterprise_name = Some(name.trim().to_string());
+        changed = true;
+    }
+    if let Some(tenant_id) = local.tenant_id {
+        cfg.tenant_id = Some(tenant_id);
         changed = true;
     }
     if let Some(p) = local.port {
@@ -248,9 +258,13 @@ pub fn fetch_center_bootstrap(cfg: &EdgeConfig) -> Result<CenterBootstrap, Strin
 
 pub fn merge_config_from_bootstrap(cfg: &mut EdgeConfig, payload: &CenterBootstrap) {
     cfg.center_url = payload.center_url.clone();
+    if !payload.bridge.token.trim().is_empty() {
+        cfg.gateway_token = Some(payload.bridge.token.trim().to_string());
+    }
     cfg.client_name = Some(payload.client.client_name.clone());
     cfg.enterprise_name = Some(payload.enterprise.name.clone());
     cfg.enterprise_slug = Some(payload.enterprise.slug.clone());
+    cfg.tenant_id = payload.enterprise.tenant_id;
     if !runtime::has_explicit_manifest_url(cfg) {
         if let Some(version) = payload.runtime_manifest.as_ref().map(|m| m.client_version.clone()) {
             cfg.runtime_version = Some(version);
@@ -275,12 +289,22 @@ fn local_bootstrap_fallback(cfg: &EdgeConfig) -> Result<CenterBootstrap, String>
 
     let mut settings = std::collections::HashMap::new();
     settings.insert("gateway.server_url".to_string(), center_url.clone());
-    settings.insert("gateway.token".to_string(), enroll.clone());
+    settings.insert(
+        "gateway.token".to_string(),
+        cfg.gateway_token.clone().filter(|s| !s.trim().is_empty()).unwrap_or(enroll.clone()),
+    );
+    settings.insert("edge.enroll_token".to_string(), enroll.clone());
     settings.insert("gateway.client_name".to_string(), client_name.clone());
     settings.insert("device.client_id".to_string(), client_id.clone());
     settings.insert("general.server_gateway_sync".to_string(), "true".to_string());
     if let Some(name) = &cfg.enterprise_name {
         settings.insert("edge.enterprise_name".to_string(), name.clone());
+    }
+    if let Some(slug) = &cfg.enterprise_slug {
+        settings.insert("edge.enterprise_slug".to_string(), slug.clone());
+    }
+    if let Some(tenant_id) = cfg.tenant_id {
+        settings.insert("edge.tenant_id".to_string(), tenant_id.to_string());
     }
 
     Ok(CenterBootstrap {
@@ -338,14 +362,21 @@ pub fn apply_tray_bootstrap(cfg: &EdgeConfig) -> Result<CenterBootstrap, String>
 
 /// Push tray credentials into 5101 settings when the local Web client is already up.
 pub fn push_tray_credentials_to_local(cfg: &EdgeConfig) -> Result<(), String> {
-    let token = resolve_enroll_token(cfg)?;
+    let enroll_token = resolve_enroll_token(cfg)?;
     let center_url = cfg.center_url.trim_end_matches('/').to_string();
     if center_url.is_empty() {
         return Ok(());
     }
     let mut settings = std::collections::HashMap::new();
     settings.insert("gateway.server_url".to_string(), center_url);
-    settings.insert("gateway.token".to_string(), token);
+    settings.insert("edge.enroll_token".to_string(), enroll_token.clone());
+    settings.insert(
+        "gateway.token".to_string(),
+        cfg.gateway_token
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(enroll_token),
+    );
     if let Some(name) = cfg
         .client_name
         .as_ref()
@@ -359,6 +390,16 @@ pub fn push_tray_credentials_to_local(cfg: &EdgeConfig) -> Result<(), String> {
         .filter(|s| !s.trim().is_empty())
     {
         settings.insert("edge.enterprise_name".to_string(), name.trim().to_string());
+    }
+    if let Some(slug) = cfg
+        .enterprise_slug
+        .as_ref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        settings.insert("edge.enterprise_slug".to_string(), slug.trim().to_string());
+    }
+    if let Some(tenant_id) = cfg.tenant_id {
+        settings.insert("edge.tenant_id".to_string(), tenant_id.to_string());
     }
     wait_and_apply_local_settings(cfg.port, &settings)
 }
