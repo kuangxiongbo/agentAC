@@ -98,6 +98,17 @@ repair_next_compiled_runtime() {
 }
 repair_next_compiled_runtime "$STAGING/runtime"
 
+echo "==> remove development-only runtime files"
+find "$STAGING/runtime" -maxdepth 2 \( \
+  -name ".dev-server.log" -o \
+  -name ".dev-server.pid" -o \
+  -name ".standalone-server.log" -o \
+  -name ".standalone-server.pid" -o \
+  -name ".turbo" -o \
+  -name ".next/cache" \
+\) -exec rm -rf {} +
+find "$STAGING/runtime" -name ".DS_Store" -delete
+
 required_runtime_files=(
   "$STAGING/runtime/node_modules/next/dist/compiled/next-server/app-route-turbo.runtime.prod.js"
   "$STAGING/runtime/node_modules/next/dist/compiled/next-server/app-page-turbo.runtime.prod.js"
@@ -122,7 +133,7 @@ EOF
 mkdir -p "$OUT_DIR"
 rm -f "$OUT_ZIP"
 if command -v ditto >/dev/null 2>&1; then
-  ditto -c -k --sequesterRsrc --keepParent "$STAGING" "$OUT_ZIP"
+  ditto -c -k --norsrc --keepParent "$STAGING" "$OUT_ZIP"
 else
   (cd "$STAGING/.." && zip -ry "$OUT_ZIP" "$(basename "$STAGING")")
 fi

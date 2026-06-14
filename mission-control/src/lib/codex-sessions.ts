@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from 'fs'
+import { closeSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'fs'
 import { basename, join } from 'path'
 import { config } from './config'
 import { logger } from './logger'
@@ -6,6 +6,9 @@ import { logger } from './logger'
 const ACTIVE_THRESHOLD_MS = 90 * 60 * 1000
 const DEFAULT_FILE_SCAN_LIMIT = 120
 const FUTURE_TOLERANCE_MS = 60 * 1000
+const MAX_FULL_SCAN_BYTES = 6 * 1024 * 1024
+const LARGE_FILE_HEAD_BYTES = 512 * 1024
+const LARGE_FILE_TAIL_BYTES = 2 * 1024 * 1024
 
 export interface CodexSessionStats {
   sessionId: string
@@ -113,15 +116,50 @@ function clampTimestamp(ms: number): number {
   return ms
 }
 
-function parseCodexSessionFile(filePath: string, fileMtimeMs: number): CodexSessionStats | null {
-  let content: string
+function readFileRangeUtf8(filePath: string, startInclusive: number, endExclusive: number): string {
+  const start = Math.max(0, startInclusive)
+  const end = Math.max(start, endExclusive)
+  const length = end - start
+  if (length <= 0) return ''
+
+  const fd = openSync(filePath, 'r')
   try {
-    content = readFileSync(filePath, 'utf-8')
+    const buf = Buffer.alloc(length)
+    const read = readSync(fd, buf, 0, length, start)
+    return buf.subarray(0, read).toString('utf-8')
+  } finally {
+    closeSync(fd)
+  }
+}
+
+function readSessionScanLines(filePath: string, size: number): string[] {
+  if (size <= MAX_FULL_SCAN_BYTES) {
+    return readFileSync(filePath, 'utf-8').split('\n').filter(Boolean)
+  }
+
+  const headEnd = Math.min(size, LARGE_FILE_HEAD_BYTES)
+  const tailStart = Math.max(headEnd, size - LARGE_FILE_TAIL_BYTES)
+  const head = readFileRangeUtf8(filePath, 0, headEnd)
+  let tail = readFileRangeUtf8(filePath, tailStart, size)
+  if (tailStart > 0) {
+    const firstNewline = tail.indexOf('\n')
+    tail = firstNewline >= 0 ? tail.slice(firstNewline + 1) : ''
+  }
+
+  // For large Codex JSONL files the list view only needs metadata and recent
+  // counters; transcript reads are paged separately in session-transcript.ts.
+  return `${head}\n${tail}`.split('\n').filter(Boolean)
+}
+
+function parseCodexSessionFile(filePath: string, fileMtimeMs: number): CodexSessionStats | null {
+  let lines: string[]
+  try {
+    const stat = statSync(filePath)
+    lines = readSessionScanLines(filePath, stat.size)
   } catch {
     return null
   }
 
-  const lines = content.split('\n').filter(Boolean)
   if (lines.length === 0) return null
 
   let sessionId = deriveSessionId(filePath)
