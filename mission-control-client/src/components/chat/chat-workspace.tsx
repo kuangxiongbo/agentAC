@@ -995,6 +995,11 @@ function SessionConversationView({
     return merged
   }, [messages, pendingUserMessage])
 
+  const hasCompletedReplyForCurrentTurn = useMemo(
+    () => isReplyCycleComplete(messages, transcriptBaselineRef.current),
+    [messages],
+  )
+
   const replyProgressUi = useMemo(
     () =>
       resolveReplyProgressUi(
@@ -1063,11 +1068,11 @@ function SessionConversationView({
 
   // End send lock when transcript shows a complete reply (esp. remote/bridge without prompt_completed).
   useEffect(() => {
-    if (!backgroundPromptBusy) return
-    if (isReplyCycleComplete(messages, transcriptBaselineRef.current)) {
-      setBackgroundPromptBusy(false)
-    }
-  }, [messages, backgroundPromptBusy])
+    if (!backgroundPromptBusy && !pendingUserMessage) return
+    if (!hasCompletedReplyForCurrentTurn) return
+    setBackgroundPromptBusy(false)
+    setPendingUserMessage(null)
+  }, [hasCompletedReplyForCurrentTurn, backgroundPromptBusy, pendingUserMessage])
 
   const isTranscriptNearBottom = useCallback(() => {
     const container = transcriptScrollRef.current
@@ -1229,7 +1234,9 @@ function SessionConversationView({
         }
         stickToBottomRef.current = true
         setBackgroundPromptBusy(true)
-        onRefreshTranscript({ background: true })
+        onRefreshTranscript({ background: true, forceFresh: true })
+        window.setTimeout(() => onRefreshTranscript({ background: true, forceFresh: true }), 1200)
+        window.setTimeout(() => onRefreshTranscript({ background: true, forceFresh: true }), 3500)
         await tryAutoBindAgentToSession()
       }
     } catch (err) {
