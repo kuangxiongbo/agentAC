@@ -673,7 +673,8 @@ where
             } else {
                 format!("已下载 {}", format_bytes(downloaded))
             };
-            let mut progress = RuntimeProgress::new("runtime", "正在下载安装包…")
+            let message = format!("正在下载安装包（{detail}）");
+            let mut progress = RuntimeProgress::new("runtime", message)
                 .with_bytes(downloaded, total)
                 .with_detail(detail);
             if let Some(percent) = percent {
@@ -684,8 +685,14 @@ where
             last_emit = Instant::now();
         }
     }
-    let mut progress = RuntimeProgress::new("runtime", "安装包下载完成")
-        .with_bytes(downloaded, total);
+    let detail = if let Some(total) = total {
+        format!("{} / {}", format_bytes(downloaded), format_bytes(total))
+    } else {
+        format!("已下载 {}", format_bytes(downloaded))
+    };
+    let mut progress = RuntimeProgress::new("runtime", format!("安装包下载完成（{detail}）"))
+        .with_bytes(downloaded, total)
+        .with_detail(detail);
     if total.is_some() {
         progress = progress.with_progress(100);
     }

@@ -440,9 +440,7 @@ pub fn open_console(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn close_setup_window(app: AppHandle) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("setup") {
-        w.close().map_err(|e| e.to_string())?;
-    }
+    hide_to_background(&app);
     Ok(())
 }
 

@@ -3,10 +3,11 @@ use crate::config::{self, EdgeConfig};
 use crate::http_client;
 use crate::keep_awake;
 use crate::runtime;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 static CHILD: Mutex<Option<Child>> = Mutex::new(None);
 
@@ -85,30 +86,101 @@ fn is_current_runtime_healthy(cfg: &EdgeConfig) -> bool {
     health.version.as_deref() == Some(installed.as_str())
 }
 
+fn lsof_port_pids(port: u16) -> Result<Vec<String>, String> {
+    let mut child = Command::new("lsof")
+        .arg("-nP")
+        .arg(format!("-tiTCP:{port}"))
+        .arg("-sTCP:LISTEN")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("无法查询端口 {port} 占用进程: {e}"))?;
+    let started = Instant::now();
+    loop {
+        if started.elapsed() > Duration::from_secs(2) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("查询端口 {port} 占用进程超时"));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = String::new();
+                if let Some(mut pipe) = child.stdout.take() {
+                    let _ = pipe.read_to_string(&mut stdout);
+                }
+                if !status.success() {
+                    return Err(format!("无法查询端口 {port} 占用进程"));
+                }
+                return Ok(stdout
+                    .lines()
+                    .map(str::trim)
+                    .filter(|pid| !pid.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => return Err(format!("无法查询端口 {port} 占用进程: {e}")),
+        }
+    }
+}
+
+fn netstat_port_pids(port: u16) -> Result<Vec<String>, String> {
+    let output = Command::new("netstat")
+        .args(["-anv", "-p", "tcp"])
+        .output()
+        .map_err(|e| format!("无法查询端口 {port} 网络状态: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("无法查询端口 {port} 网络状态"));
+    }
+    let suffix = format!(".{port}");
+    let mut pids = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 11 || !fields[3].ends_with(&suffix) {
+            continue;
+        }
+        let state = fields[5];
+        if matches!(state, "TIME_WAIT" | "FIN_WAIT_1" | "FIN_WAIT_2" | "CLOSE_WAIT") {
+            continue;
+        }
+        let pid = fields[10];
+        if pid.chars().all(|ch| ch.is_ascii_digit()) && pid != "0" {
+            pids.push(pid.to_string());
+        }
+    }
+    pids.sort();
+    pids.dedup();
+    Ok(pids)
+}
+
 fn kill_port_owner(port: u16) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let output = Command::new("lsof")
-            .args(["-tiTCP", &format!(":{port}"), "-sTCP:LISTEN"])
-            .output()
-            .map_err(|e| format!("无法查询端口 {port} 占用进程: {e}"))?;
-        if !output.status.success() {
-            return Err(format!("无法查询端口 {port} 占用进程"));
-        }
         let current_pid = std::process::id().to_string();
-        let pids: Vec<String> = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(str::trim)
+        let pids: Vec<String> = lsof_port_pids(port)
+            .or_else(|err| {
+                eprintln!("[E-Agent Edge] {err}，改用 netstat 兜底查询");
+                netstat_port_pids(port)
+            })?
+            .into_iter()
             .filter(|pid| !pid.is_empty() && *pid != current_pid)
-            .map(ToOwned::to_owned)
             .collect();
         if pids.is_empty() {
             return Err(format!("端口 {port} 没有可清理的外部监听进程"));
         }
-        for pid in pids {
-            let _ = Command::new("kill").arg(&pid).status();
+        for pid in &pids {
+            let _ = Command::new("kill").arg(pid).status();
         }
         for _ in 0..20 {
+            if !port_in_use(port) {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        for pid in &pids {
+            let _ = Command::new("kill").args(["-KILL", pid]).status();
+        }
+        for _ in 0..12 {
             if !port_in_use(port) {
                 return Ok(());
             }
@@ -172,6 +244,29 @@ pub fn wait_until_healthy(cfg: &EdgeConfig, max_attempts: u32) -> Result<(), Str
     ))
 }
 
+fn wait_until_current_runtime_healthy(cfg: &EdgeConfig, max_attempts: u32) -> Result<(), String> {
+    let mut last_running = String::from("未知");
+    let target = runtime::installed_version().unwrap_or_else(|| "未知".to_string());
+    for attempt in 0..max_attempts {
+        if let Some(health) = probe_health(cfg) {
+            last_running = health.version.unwrap_or_else(|| "未知".to_string());
+            if is_current_runtime_healthy(cfg) {
+                return Ok(());
+            }
+        }
+        if !is_running() && attempt > 2 {
+            break;
+        }
+        if attempt + 1 < max_attempts {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+    let hint = node_server_log_hint();
+    Err(format!(
+        "本机 Web 客户端版本不匹配：当前运行 {last_running}，目标版本 {target}。托盘将尝试回收旧进程后重启。{hint}"
+    ))
+}
+
 fn apply_bootstrap_settings_if_needed(
     cfg: &EdgeConfig,
     bootstrap: Option<&CenterBootstrap>,
@@ -215,7 +310,15 @@ pub fn ensure_running(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> 
     }
     start(cfg, bootstrap)?;
     // 先等 5101 健康，再写入 apply-bootstrap（否则易误报「无法调用 apply-bootstrap」）
-    wait_until_healthy(cfg, 40)?;
+    if let Err(version_err) = wait_until_current_runtime_healthy(cfg, 40) {
+        eprintln!("[E-Agent Edge] {version_err}");
+        if recover_stale_healthy_port(cfg)? {
+            start(cfg, bootstrap)?;
+            wait_until_current_runtime_healthy(cfg, 40)?;
+        } else {
+            return Err(version_err);
+        }
+    }
     if !is_current_runtime_healthy(cfg) {
         let running = probe_health(cfg)
             .and_then(|h| h.version)
