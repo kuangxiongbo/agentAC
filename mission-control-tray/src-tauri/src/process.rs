@@ -217,10 +217,12 @@ pub fn ensure_running(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> 
     // 先等 5101 健康，再写入 apply-bootstrap（否则易误报「无法调用 apply-bootstrap」）
     wait_until_healthy(cfg, 40)?;
     if !is_current_runtime_healthy(cfg) {
+        let running = probe_health(cfg)
+            .and_then(|h| h.version)
+            .unwrap_or_else(|| "未知".to_string());
+        let target = runtime::installed_version().unwrap_or_else(|| "未知".to_string());
         return Err(format!(
-            "本机 Web 客户端版本不匹配：运行版本 {:?}，目标版本 {:?}",
-            probe_health(cfg).and_then(|h| h.version),
-            runtime::installed_version()
+            "本机 Web 客户端版本不匹配：当前运行 {running}，目标版本 {target}。请在托盘中重启边缘服务，或退出托盘后重新打开。"
         ));
     }
     apply_bootstrap_settings_if_needed(cfg, bootstrap)

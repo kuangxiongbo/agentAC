@@ -8,6 +8,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Instant;
 
 static CACHED_MANIFEST: Mutex<Option<RuntimeManifest>> = Mutex::new(None);
 
@@ -24,6 +25,61 @@ pub struct RuntimeManifest {
 pub struct PlatformArtifact {
     pub url: String,
     pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RuntimeProgress {
+    pub phase: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub downloaded_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
+}
+
+impl RuntimeProgress {
+    fn new(phase: &str, message: impl Into<String>) -> Self {
+        Self {
+            phase: phase.to_string(),
+            message: message.into(),
+            progress: None,
+            detail: None,
+            downloaded_bytes: None,
+            total_bytes: None,
+        }
+    }
+
+    fn with_progress(mut self, progress: u8) -> Self {
+        self.progress = Some(progress.min(100));
+        self
+    }
+
+    fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    fn with_bytes(mut self, downloaded: u64, total: Option<u64>) -> Self {
+        self.downloaded_bytes = Some(downloaded);
+        self.total_bytes = total;
+        self
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / MB)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 pub fn platform_key() -> &'static str {
@@ -455,6 +511,21 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 }
 
 pub fn download_and_install(cfg: &EdgeConfig, force: bool) -> Result<String, String> {
+    download_and_install_with_progress(cfg, force, |_| {})
+}
+
+pub fn download_and_install_with_progress<F>(
+    cfg: &EdgeConfig,
+    force: bool,
+    mut on_progress: F,
+) -> Result<String, String>
+where
+    F: FnMut(RuntimeProgress),
+{
+    on_progress(RuntimeProgress::new(
+        "runtime",
+        "正在获取本机 Web 客户端版本清单…",
+    ));
     let installed = installed_version();
     let manifest = fetch_manifest(cfg)?;
 
@@ -469,6 +540,10 @@ pub fn download_and_install(cfg: &EdgeConfig, force: bool) -> Result<String, Str
     if !force {
         if let Some(cur) = &installed {
             if cur == &target_version {
+                on_progress(RuntimeProgress::new(
+                    "runtime",
+                    format!("本机 Web 客户端已是最新版本 {cur}"),
+                ));
                 return Ok(format!("runtime 已是最新 {cur}"));
             }
         }
@@ -483,7 +558,21 @@ pub fn download_and_install(cfg: &EdgeConfig, force: bool) -> Result<String, Str
         fs::remove_file(&zip_path).map_err(|e| e.to_string())?;
     }
     let artifact_url = resolve_artifact_url(cfg, &artifact.url);
-    download_file(cfg, &artifact_url, &zip_path)?;
+    on_progress(
+        RuntimeProgress::new(
+            "runtime",
+            format!("发现新版本 {target_version}，正在下载安装包…"),
+        )
+        .with_progress(0),
+    );
+    download_file_with_progress(cfg, &artifact_url, &zip_path, |progress| {
+        on_progress(progress)
+    })?;
+    on_progress(
+        RuntimeProgress::new("runtime", "正在校验安装包完整性…")
+            .with_progress(100)
+            .with_detail("正在计算 SHA256"),
+    );
     let digest = sha256_file(&zip_path)?;
     let expected = artifact.sha256.trim().to_lowercase();
     if !expected.is_empty() && digest != expected {
@@ -502,10 +591,12 @@ pub fn download_and_install(cfg: &EdgeConfig, force: bool) -> Result<String, Str
     if extract_parent.exists() {
         fs::remove_dir_all(&extract_parent).map_err(|e| e.to_string())?;
     }
+    on_progress(RuntimeProgress::new("runtime", "正在解压本机 Web 客户端…"));
     extract_zip(&zip_path, &extract_parent)?;
 
     let bundle_root = find_bundle_root(&extract_parent)?;
     let runtime_dest = config::runtime_root();
+    on_progress(RuntimeProgress::new("runtime", "正在替换本地运行环境…"));
     if runtime_dest.exists() {
         fs::remove_dir_all(&runtime_dest).map_err(|e| e.to_string())?;
     }
@@ -513,10 +604,12 @@ pub fn download_and_install(cfg: &EdgeConfig, force: bool) -> Result<String, Str
     copy_tree_preserve_symlinks(&bundle_root, &runtime_dest)?;
     if let Some(server_js) = resolve_server_js() {
         if let Some(root) = server_js.parent() {
+            on_progress(RuntimeProgress::new("runtime", "正在修复运行依赖链接…"));
             repair_runtime_peer_links(root)?;
         }
     }
 
+    on_progress(RuntimeProgress::new("runtime", "正在验证本地运行环境…"));
     let installed_runtime_dir = validate_installed_runtime(&target_version)?;
     fs::write(runtime_dest.join("VERSION"), format!("{target_version}\n"))
         .map_err(|e| e.to_string())?;
@@ -532,10 +625,22 @@ pub fn download_and_install(cfg: &EdgeConfig, force: bool) -> Result<String, Str
     saved.runtime_version = Some(target_version.clone());
     config::save_config(&saved)?;
 
+    on_progress(RuntimeProgress::new(
+        "runtime",
+        format!("本机 Web 客户端 {target_version} 已安装"),
+    ));
     Ok(format!("已安装 runtime {target_version} ({key})"))
 }
 
-fn download_file(cfg: &EdgeConfig, url: &str, dest: &Path) -> Result<(), String> {
+fn download_file_with_progress<F>(
+    cfg: &EdgeConfig,
+    url: &str,
+    dest: &Path,
+    mut on_progress: F,
+) -> Result<(), String>
+where
+    F: FnMut(RuntimeProgress),
+{
     let client = http_client::build_http_client(cfg, Duration::from_secs(600))?;
     let mut resp = client
         .get(url)
@@ -544,15 +649,47 @@ fn download_file(cfg: &EdgeConfig, url: &str, dest: &Path) -> Result<(), String>
     if !resp.status().is_success() {
         return Err(format!("下载 HTTP {} ({url})", resp.status()));
     }
+    let total = resp.content_length();
     let mut out = File::create(dest).map_err(|e| e.to_string())?;
     let mut buf = [0u8; 65536];
+    let mut downloaded = 0u64;
+    let mut last_percent: Option<u8> = None;
+    let mut last_emit = Instant::now();
     loop {
         let n = resp.read(&mut buf).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
         }
         out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        downloaded += n as u64;
+        let percent = total
+            .filter(|t| *t > 0)
+            .map(|t| ((downloaded.saturating_mul(100) / t).min(100)) as u8);
+        let should_emit = percent != last_percent
+            || last_emit.elapsed() >= Duration::from_millis(500);
+        if should_emit {
+            let detail = if let Some(total) = total {
+                format!("{} / {}", format_bytes(downloaded), format_bytes(total))
+            } else {
+                format!("已下载 {}", format_bytes(downloaded))
+            };
+            let mut progress = RuntimeProgress::new("runtime", "正在下载安装包…")
+                .with_bytes(downloaded, total)
+                .with_detail(detail);
+            if let Some(percent) = percent {
+                progress = progress.with_progress(percent);
+            }
+            on_progress(progress);
+            last_percent = percent;
+            last_emit = Instant::now();
+        }
     }
+    let mut progress = RuntimeProgress::new("runtime", "安装包下载完成")
+        .with_bytes(downloaded, total);
+    if total.is_some() {
+        progress = progress.with_progress(100);
+    }
+    on_progress(progress);
     Ok(())
 }
 
@@ -788,13 +925,32 @@ fn fetch_manifest_via_web_client(cfg: &EdgeConfig) -> Result<RuntimeManifest, St
 }
 
 pub fn ensure_runtime(cfg: &EdgeConfig) -> Result<(), String> {
+    ensure_runtime_with_progress(cfg, |_| {})
+}
+
+pub fn ensure_runtime_with_progress<F>(cfg: &EdgeConfig, mut on_progress: F) -> Result<(), String>
+where
+    F: FnMut(RuntimeProgress),
+{
+    on_progress(RuntimeProgress::new(
+        "runtime",
+        "正在检查本机 Web 客户端…",
+    ));
+    let mut target_version: Option<String> = None;
+    let mut requires_update = false;
     if is_runtime_usable() {
         match fetch_manifest(cfg) {
             Ok(manifest) => {
                 let installed = installed_version();
+                target_version = Some(manifest.client_version.clone());
                 if installed.as_deref() == Some(manifest.client_version.as_str()) {
+                    on_progress(RuntimeProgress::new(
+                        "runtime",
+                        format!("本机 Web 客户端已是最新版本 {}", manifest.client_version),
+                    ));
                     return Ok(());
                 }
+                requires_update = true;
                 eprintln!(
                     "[E-Agent Edge] runtime 版本需要更新: 当前 {}，目标 {}",
                     installed.unwrap_or_else(|| "unknown".to_string()),
@@ -819,26 +975,26 @@ pub fn ensure_runtime(cfg: &EdgeConfig) -> Result<(), String> {
             fs::remove_dir_all(&root).map_err(|e| e.to_string())?;
         }
     }
-    if !has_explicit_manifest_url(cfg) {
+    if !requires_update && !has_explicit_manifest_url(cfg) {
         if let Ok(msg) = provision_runtime_via_web_client(cfg) {
             eprintln!("[E-Agent Edge] {msg}");
             return Ok(());
         }
     }
-    let download_cfg = cfg.clone();
     let version = cfg
         .runtime_version
         .clone()
+        .or_else(|| target_version.clone())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_CLIENT_VERSION.to_string());
 
-    match download_and_install(&download_cfg, true) {
+    match download_and_install_with_progress(cfg, true, |progress| on_progress(progress)) {
         Ok(msg) => {
             eprintln!("[E-Agent Edge] {msg}");
             Ok(())
         }
         Err(e) => {
-            if is_runtime_usable() {
+            if is_runtime_usable() && !requires_update {
                 eprintln!(
                     "[E-Agent Edge] 中心 runtime 下载失败（{e}），使用已安装的本地 runtime"
                 );

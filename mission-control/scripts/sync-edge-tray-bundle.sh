@@ -118,6 +118,15 @@ if [[ -z "$VERIFY_MOUNT" || ! -d "$VERIFY_MOUNT/E-Agent Edge.app" || ! -L "$VERI
   echo "error: generated DMG must contain E-Agent Edge.app and an Applications symlink" >&2
   exit 1
 fi
+PLIST="$VERIFY_MOUNT/E-Agent Edge.app/Contents/Info.plist"
+SHORT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST" 2>/dev/null || true)"
+BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST" 2>/dev/null || true)"
+if [[ "$SHORT_VERSION" != "$TRAY_VERSION" || "$BUNDLE_VERSION" != "$TRAY_VERSION" ]]; then
+  hdiutil detach "$VERIFY_MOUNT" >/dev/null 2>&1 || true
+  echo "error: generated DMG Info.plist version mismatch: short=$SHORT_VERSION bundle=$BUNDLE_VERSION expected=$TRAY_VERSION" >&2
+  echo "hint: remove mission-control-tray/src-tauri/target/release/bundle and rerun this script" >&2
+  exit 1
+fi
 hdiutil detach "$VERIFY_MOUNT" >/dev/null 2>&1 || true
 
 if command -v shasum >/dev/null 2>&1; then

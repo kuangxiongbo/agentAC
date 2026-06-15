@@ -113,6 +113,52 @@
       .status.ok {
         color: var(--ok);
       }
+      .progress-wrap {
+        display: none;
+        margin-top: 10px;
+      }
+      .progress-wrap.visible {
+        display: block;
+      }
+      .progress-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 7px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .progress-detail {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .progress-bar {
+        width: 100%;
+        height: 8px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(154, 160, 166, 0.2);
+      }
+      .progress-fill {
+        width: 0%;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--accent);
+        transition: width 180ms ease;
+      }
+      .progress-bar.indeterminate .progress-fill {
+        width: 38%;
+        animation: indeterminate 1.2s ease-in-out infinite;
+      }
+      @keyframes indeterminate {
+        0% {
+          transform: translateX(-120%);
+        }
+        100% {
+          transform: translateX(280%);
+        }
+      }
       .done-actions {
         display: none;
         margin-top: 12px;
@@ -210,6 +256,15 @@
       </form>
 
       <div id="status" class="status"></div>
+      <div id="progress_wrap" class="progress-wrap">
+        <div class="progress-meta">
+          <span id="progress_detail" class="progress-detail"></span>
+          <span id="progress_percent"></span>
+        </div>
+        <div id="progress_bar" class="progress-bar">
+          <div id="progress_fill" class="progress-fill"></div>
+        </div>
+      </div>
       <div id="done_actions" class="done-actions">
         <button type="button" id="open_console">打开 Web 控制台 (5101)</button>
         <button type="button" id="close_win" class="secondary">关闭此窗口</button>
@@ -231,6 +286,11 @@
       const updateCard = document.getElementById('update_card')
       const updateTitle = document.getElementById('update_title')
       const updateBody = document.getElementById('update_body')
+      const progressWrap = document.getElementById('progress_wrap')
+      const progressDetail = document.getElementById('progress_detail')
+      const progressPercent = document.getElementById('progress_percent')
+      const progressBar = document.getElementById('progress_bar')
+      const progressFill = document.getElementById('progress_fill')
 
       let lastPhase = 'idle'
       let hasSavedToken = false
@@ -242,11 +302,54 @@
         statusEl.className = 'status' + (kind ? ' ' + kind : '')
       }
 
+      function clearProgress() {
+        progressWrap.classList.remove('visible')
+        progressBar.classList.remove('indeterminate')
+        progressFill.style.width = '0%'
+        progressDetail.textContent = ''
+        progressPercent.textContent = ''
+      }
+
+      function applyProgress(s) {
+        const hasProgress = typeof s.progress === 'number'
+        const detail = s.detail || formatByteDetail(s)
+        if (!hasProgress && !detail) {
+          clearProgress()
+          return
+        }
+        progressWrap.classList.add('visible')
+        progressDetail.textContent = detail || s.message || ''
+        if (hasProgress) {
+          const value = Math.max(0, Math.min(100, Math.round(s.progress)))
+          progressBar.classList.remove('indeterminate')
+          progressFill.style.width = `${value}%`
+          progressPercent.textContent = `${value}%`
+        } else {
+          progressBar.classList.add('indeterminate')
+          progressFill.style.width = ''
+          progressPercent.textContent = ''
+        }
+      }
+
+      function formatByteDetail(s) {
+        if (!s.downloaded_bytes && !s.total_bytes) return ''
+        const downloaded = formatBytes(s.downloaded_bytes || 0)
+        if (s.total_bytes) return `${downloaded} / ${formatBytes(s.total_bytes)}`
+        return `已下载 ${downloaded}`
+      }
+
+      function formatBytes(bytes) {
+        if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+        if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
+        return `${bytes} B`
+      }
+
       function applyStatus(s) {
         if (!s) return
         const phase = s.phase || 'idle'
         if (phase === 'done') {
           setStatus(s.message || '初始化完成', 'ok')
+          clearProgress()
           submitBtn.disabled = false
           doneActions.classList.add('visible')
           if (refreshTimer) {
@@ -258,12 +361,14 @@
         }
         if (phase === 'error') {
           setStatus(s.error || s.message || '失败', 'error')
+          clearProgress()
           submitBtn.disabled = false
           lastPhase = 'error'
           return
         }
         if (phase !== 'idle') {
           setStatus(s.message || '处理中…', '')
+          applyProgress(s)
           submitBtn.disabled = true
           doneActions.classList.remove('visible')
         }

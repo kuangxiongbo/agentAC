@@ -16,6 +16,14 @@ pub struct SetupStatus {
     pub message: String,
     pub console_url: String,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub downloaded_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
 }
 
 /// Pre-fill for setup.html (token stored locally in ~/.e-agent-edge/config.json).
@@ -78,6 +86,10 @@ fn default_status() -> SetupStatus {
         message: String::new(),
         console_url: console_url(&cfg),
         error: None,
+        progress: None,
+        detail: None,
+        downloaded_bytes: None,
+        total_bytes: None,
     }
 }
 
@@ -90,6 +102,26 @@ fn set_status(update: impl FnOnce(&mut SetupStatus)) {
 
 fn set_running(running: bool) {
     SETUP.lock().unwrap().running = running;
+}
+
+fn clear_status_progress(s: &mut SetupStatus) {
+    s.progress = None;
+    s.detail = None;
+    s.downloaded_bytes = None;
+    s.total_bytes = None;
+}
+
+fn emit_runtime_progress(app: &AppHandle, progress: runtime::RuntimeProgress) {
+    set_status(|s| {
+        s.phase = progress.phase;
+        s.message = progress.message;
+        s.error = None;
+        s.progress = progress.progress;
+        s.detail = progress.detail;
+        s.downloaded_bytes = progress.downloaded_bytes;
+        s.total_bytes = progress.total_bytes;
+    });
+    let _ = app.emit("setup-status", current_status());
 }
 
 fn is_running() -> bool {
@@ -156,6 +188,7 @@ fn run_setup_pipeline(app: AppHandle, mut cfg: EdgeConfig) {
         s.phase = "connecting".to_string();
         s.message = "正在连接服务中心…".to_string();
         s.error = None;
+        clear_status_progress(s);
     });
     let _ = app.emit("setup-status", current_status());
 
@@ -163,6 +196,7 @@ fn run_setup_pipeline(app: AppHandle, mut cfg: EdgeConfig) {
         set_status(|s| {
             s.phase = "connecting".to_string();
             s.message = "正在连接服务中心…".to_string();
+            clear_status_progress(s);
         });
         let _ = app.emit("setup-status", current_status());
         let payload = bootstrap::apply_tray_bootstrap(&cfg)?;
@@ -170,13 +204,17 @@ fn run_setup_pipeline(app: AppHandle, mut cfg: EdgeConfig) {
         set_status(|s| {
             s.phase = "runtime".to_string();
             s.message = "正在准备本机运行环境…".to_string();
+            clear_status_progress(s);
         });
         let _ = app.emit("setup-status", current_status());
-        runtime::ensure_runtime(&cfg)?;
+        runtime::ensure_runtime_with_progress(&cfg, |progress| {
+            emit_runtime_progress(&app, progress)
+        })?;
 
         set_status(|s| {
             s.phase = "starting".to_string();
             s.message = "正在启动本机 Web 客户端…".to_string();
+            clear_status_progress(s);
         });
         let _ = app.emit("setup-status", current_status());
         process::ensure_running(&cfg, Some(&payload))?;
@@ -197,6 +235,7 @@ fn run_setup_pipeline(app: AppHandle, mut cfg: EdgeConfig) {
                 s.message = format!("已连接 {enterprise} · 客户端「{client_name}」");
                 s.console_url = url.clone();
                 s.error = None;
+                clear_status_progress(s);
             });
             let _ = app.emit("setup-status", current_status());
             if process::is_healthy(&cfg) {
@@ -209,6 +248,7 @@ fn run_setup_pipeline(app: AppHandle, mut cfg: EdgeConfig) {
                 s.phase = "error".to_string();
                 s.message = "初始化失败".to_string();
                 s.error = Some(e.clone());
+                clear_status_progress(s);
             });
             let _ = app.emit("setup-status", current_status());
             eprintln!("[E-Agent Edge] 初始化失败: {e}");
@@ -240,6 +280,7 @@ pub fn run_if_configured(app: &AppHandle, open_console_when_done: bool) {
             s.phase = "starting".to_string();
             s.message = "正在启动边缘服务…".to_string();
             s.error = None;
+            clear_status_progress(s);
         });
         let _ = app.emit("setup-status", current_status());
 
@@ -248,8 +289,17 @@ pub fn run_if_configured(app: &AppHandle, open_console_when_done: bool) {
             eprintln!("[E-Agent Edge] 启动阶段: 获取服务中心 bootstrap");
             let payload = bootstrap::apply_tray_bootstrap(&cfg)?;
             eprintln!("[E-Agent Edge] 启动阶段: 准备 runtime");
-            runtime::ensure_runtime(&cfg)?;
+            runtime::ensure_runtime_with_progress(&cfg, |progress| {
+                emit_runtime_progress(&app, progress)
+            })?;
             eprintln!("[E-Agent Edge] 启动阶段: 拉起本机 Web 客户端");
+            set_status(|s| {
+                s.phase = "starting".to_string();
+                s.message = "正在启动本机 Web 客户端…".to_string();
+                s.error = None;
+                clear_status_progress(s);
+            });
+            let _ = app.emit("setup-status", current_status());
             process::ensure_running(&cfg, Some(&payload))?;
             Ok::<(), String>(())
         })();
@@ -260,6 +310,7 @@ pub fn run_if_configured(app: &AppHandle, open_console_when_done: bool) {
                 s.phase = "error".to_string();
                 s.message = "启动失败".to_string();
                 s.error = Some(e);
+                clear_status_progress(s);
             });
         } else {
             set_status(|s| {
@@ -268,6 +319,7 @@ pub fn run_if_configured(app: &AppHandle, open_console_when_done: bool) {
                 s.message = "边缘服务已运行".to_string();
                 s.console_url = console_url(&load_config());
                 s.error = None;
+                clear_status_progress(s);
             });
             if open_console_when_done {
                 let _ = open_console(app.clone());
@@ -348,6 +400,7 @@ pub fn submit_setup(
         s.message = "正在保存并连接…".to_string();
         s.console_url = console_url(&cfg);
         s.error = None;
+        clear_status_progress(s);
     });
 
     let app_clone = app.clone();
