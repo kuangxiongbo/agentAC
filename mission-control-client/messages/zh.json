@@ -836,7 +836,9 @@
     "bindAgentLabel": "绑定到智能体",
     "bindAgentPlaceholder": "选择智能体…",
     "bindAgentAction": "绑定会话",
-    "noCompatibleAgentsForSession": "没有与当前 {kind} 会话类型匹配的智能体（Claude 与 Codex 不能混绑）"
+    "noCompatibleAgentsForSession": "没有与当前 {kind} 会话类型匹配的智能体（Claude 与 Codex 不能混绑）",
+    "continueAcceptedStatus": "已提交到本地会话，正在等待响应…",
+    "continueDeliveredStatus": "消息已送达运行时，正在读取回复…"
   },
   "agentComms": {
     "connecting": "连接到 Feed 中...",

@@ -836,7 +836,9 @@
     "bindAgentLabel": "Bind to agent",
     "bindAgentPlaceholder": "Select agent…",
     "bindAgentAction": "Bind session",
-    "noCompatibleAgentsForSession": "No agents match this {kind} session type (Claude and Codex cannot be mixed)"
+    "noCompatibleAgentsForSession": "No agents match this {kind} session type (Claude and Codex cannot be mixed)",
+    "continueAcceptedStatus": "Submitted to the local session. Waiting for a response…",
+    "continueDeliveredStatus": "Message delivered to the runtime. Reading the response…"
   },
   "agentComms": {
     "connecting": "Connecting to feed...",

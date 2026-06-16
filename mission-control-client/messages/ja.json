@@ -1868,5 +1868,9 @@
     "online": "オンライン",
     "busy": "稼働中",
     "errors": "エラー"
+  },
+  "chat": {
+    "continueAcceptedStatus": "Submitted to the local session. Waiting for a response…",
+    "continueDeliveredStatus": "Message delivered to the runtime. Reading the response…"
   }
 }

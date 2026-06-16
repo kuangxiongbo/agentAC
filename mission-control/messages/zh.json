@@ -1121,7 +1121,9 @@
     "useCurrentSessionId": "填入当前会话 ID",
     "bindAgentLabel": "绑定到智能体",
     "bindAgentPlaceholder": "选择智能体…",
-    "bindAgentAction": "绑定会话"
+    "bindAgentAction": "绑定会话",
+    "continueAcceptedStatus": "已提交到本地会话，正在等待响应…",
+    "continueDeliveredStatus": "消息已送达运行时，正在读取回复…"
   },
   "agentComms": {
     "connecting": "连接到 Feed 中...",

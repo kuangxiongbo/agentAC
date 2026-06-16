@@ -83,7 +83,6 @@
     "securityAuthCenter": "Security authentication center",
     "loginEmailPlaceholder": "Email or username",
     "loginHintOptionalLine": "Optional. Leave blank and click the button to continue with SSO; if filled, it is sent as login_hint to pre-fill the IdP form.",
-    "loginHintOptionalLine": "Optional. Leave blank and click the button to continue with SSO; if filled, it is sent as login_hint to pre-fill the IdP form.",
     "loginHintHelp": "The red button below opens your organization's SSO sign-in page (hosted by the identity provider). Leave blank to continue; if you enter an email or username, it is sent as login_hint so the IdP can pre-fill the form.",
     "ssoActiveBuildLine": "BUILD {build} · SSO ACTIVE",
     "registerAccount": "Create account",
@@ -1889,5 +1888,9 @@
     "online": "온라인",
     "busy": "바쁨",
     "errors": "오류"
+  },
+  "chat": {
+    "continueAcceptedStatus": "Submitted to the local session. Waiting for a response…",
+    "continueDeliveredStatus": "Message delivered to the runtime. Reading the response…"
   }
 }

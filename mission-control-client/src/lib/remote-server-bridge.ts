@@ -1429,6 +1429,31 @@ export function pushPermissionDecisionToUpstream(input: {
   })
 }
 
+export function pushWorkerHumanReplyToUpstream(input: {
+  requestId: string
+  selectedOptionId: string
+  sessionId?: string | null
+  messageId?: string | null
+  replyText?: string | null
+  observedAt?: string | null
+  idempotencyKey?: string | null
+}): boolean {
+  const requestId = String(input.requestId || '').trim()
+  const selectedOptionId = String(input.selectedOptionId || '').trim()
+  if (!requestId || !selectedOptionId) return false
+  if (!state.ws || state.ws.readyState !== 1) return false
+  return safeSend(state.ws, {
+    type: 'worker_human_reply_sync',
+    requestId,
+    selectedOptionId,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    ...(input.messageId ? { messageId: input.messageId } : {}),
+    ...(input.replyText ? { replyText: input.replyText } : {}),
+    ...(input.observedAt ? { observedAt: input.observedAt } : {}),
+    ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+  })
+}
+
 function scheduleReconnect(): void {
   if (state.reconnectTimer) return
   const attempts = state.reconnectAttempts

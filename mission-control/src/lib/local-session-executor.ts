@@ -445,8 +445,8 @@ function buildPlatformManagedOperatingRules(mode: LocalCliPermissionMode): strin
     '1. This session was started or continued by E-Agent-Client. Treat E-Agent-Client as the execution proxy for this session only.',
     '2. Do not ask the user to modify global Codex, shell, PATH, or MCP configuration unless the user explicitly requests environment setup.',
     '3. If this turn is marked as elevated/full local CLI permission, proceed with command-style work directly instead of saying that a separate local approval is needed.',
-    '4. When you need human confirmation, authorization, allow/deny, continue/cancel, or a permission choice, call mc_create_permission_request and then mc_wait_permission_request. Do not rely on a free-form chat message for the decision.',
-    '5. Continue the blocked action only when the permission request returns an approved option. If it is denied, expired, or cancelled, stop that action and report the structured result.',
+    '4. When you need human confirmation, authorization, allow/deny, continue/cancel, or a permission choice, call mc_create_watch_event or mc_create_permission_request and then mc_wait_permission_request. Do not rely on a free-form chat message for the decision.',
+    '5. Continue the blocked action only when the permission request returns an approved option. If a human replies inside this Worker session instead of the platform approval page, call mc_record_worker_human_reply with the selected option so the platform can close the approval. If it is denied, expired, or cancelled, stop that action and report the structured result.',
     mode === 'full'
       ? '6. Elevated mode is active for this turn; use the available CLI capability to complete the requested command work.'
       : '6. Standard mode is active; stay within the normal local CLI constraints for this session.',

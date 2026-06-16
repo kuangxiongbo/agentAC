@@ -83,7 +83,7 @@ export function buildAgentCenterCsp(input: {
   const { nonce, googleEnabled, isDev = false, extraConnectOrigins = [] } = input
   const scriptSrc = isDev
     ? `script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:${googleEnabled ? ' https://accounts.google.com' : ''}`
-    : `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' blob:${googleEnabled ? ' https://accounts.google.com' : ''}`
+    : `script-src 'self' 'unsafe-inline' 'nonce-${nonce}' blob:${googleEnabled ? ' https://accounts.google.com' : ''}`
 
   const formAction = isDev
     ? `form-action 'self' ${devFormActionSourcesForOidc().join(' ')}`

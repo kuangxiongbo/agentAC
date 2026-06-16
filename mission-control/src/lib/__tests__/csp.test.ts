@@ -22,10 +22,11 @@ describe('devFormActionSourcesForOidc', () => {
 })
 
 describe('buildAgentCenterCsp', () => {
-  it('includes the request nonce in script and style directives', () => {
+  it('includes the request nonce and production-safe inline script fallback', () => {
     const csp = buildAgentCenterCsp({ nonce: 'nonce-123', googleEnabled: false })
 
-    expect(csp).toContain(`script-src 'self' 'nonce-nonce-123' 'strict-dynamic'`)
+    expect(csp).toContain(`script-src 'self' 'unsafe-inline' 'nonce-nonce-123'`)
+    expect(csp).not.toContain('strict-dynamic')
     expect(csp).toContain("style-src 'self' 'unsafe-inline'")
     expect(csp).toContain("style-src-elem 'self' 'unsafe-inline'")
     expect(csp).toContain("style-src-attr 'unsafe-inline'")

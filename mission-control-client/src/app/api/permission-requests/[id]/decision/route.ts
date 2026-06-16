@@ -41,18 +41,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
   const deciderType = normalizeDeciderType(body.deciderType ?? body.decider_type)
   if (!deciderType) {
-    return NextResponse.json({ error: 'deciderType must be human_user, steward_agent, or system' }, { status: 400 })
-  }
-
-  if (deciderType === 'steward_agent') {
-    const option = current.options.find((item) => item.id === optionId)
-    if (!option) return NextResponse.json({ error: 'Invalid optionId for permission request' }, { status: 400 })
-    if (option.action === 'approve' && (current.risk === 'high' || current.risk === 'critical')) {
-      return NextResponse.json(
-        { error: 'Steward agent cannot approve high or critical permission requests' },
-        { status: 403 },
-      )
-    }
+    return NextResponse.json({ error: 'deciderType must be human_user, human_external, steward_agent, or system' }, { status: 400 })
   }
 
   try {
@@ -84,6 +73,17 @@ export async function POST(request: NextRequest, context: RouteContext) {
       reason: typeof body.reason === 'string' ? body.reason : null,
       deciderType,
       deciderUserId: auth.user.id,
+      decisionSource: typeof body.decisionSource === 'string'
+        ? body.decisionSource
+        : typeof body.decision_source === 'string'
+          ? body.decision_source
+          : 'platform_ui',
+      idempotencyKey:
+        typeof body.idempotencyKey === 'string'
+          ? body.idempotencyKey
+          : typeof body.idempotency_key === 'string'
+            ? body.idempotency_key
+            : null,
       deciderAgentId:
         typeof body.deciderAgentId === 'string'
           ? body.deciderAgentId
@@ -107,12 +107,18 @@ export async function POST(request: NextRequest, context: RouteContext) {
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to decide permission request'
-    const status = message.includes('not found') ? 404 : message.includes('pending') ? 409 : 400
+    const status = message.includes('not found')
+      ? 404
+      : message.includes('pending') || message.includes('denied') || message.includes('approved')
+        ? 409
+        : message.includes('dangerous action')
+          ? 403
+          : 400
     return NextResponse.json({ error: message }, { status })
   }
 }
 
 function normalizeDeciderType(value: unknown): PermissionDeciderType | null {
   const raw = String(value || 'human_user').trim()
-  return raw === 'human_user' || raw === 'steward_agent' || raw === 'system' ? raw : null
+  return raw === 'human_user' || raw === 'human_external' || raw === 'steward_agent' || raw === 'system' ? raw : null
 }

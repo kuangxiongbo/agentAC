@@ -7,6 +7,7 @@ import {
   getPermissionRequest,
   listPermissionRequests,
   patchPermissionRequestContext,
+  recordWorkerHumanReply,
   waitForPermissionRequestDecision,
 } from '@/lib/permission-requests'
 
@@ -153,17 +154,47 @@ describe('permission-requests', () => {
     expect(getPermissionRequest('expired-1', 1, db)?.status).toBe('expired')
   })
 
-  it('prevents steward agents from approving high risk requests', () => {
+  it('allows steward agents to approve high risk requests when no dangerous action matches', () => {
     createPermissionRequest(
       {
         id: 'high-1',
         workspaceId: 1,
         requestType: 'local_cli_permission',
         title: 'High risk',
-        prompt: 'Worker requests destructive access.',
+        prompt: 'Worker requests a broad but reversible analysis step.',
         risk: 'high',
         options: [
-          { id: 'approve_full', label: 'Approve full access', action: 'approve' },
+          { id: 'approve_full', label: 'Approve analysis', action: 'approve' },
+          { id: 'deny', label: 'Deny', action: 'deny' },
+        ],
+      },
+      db,
+    )
+
+    const approved = decidePermissionRequest(
+      {
+        requestId: 'high-1',
+        workspaceId: 1,
+        optionId: 'approve_full',
+        deciderType: 'steward_agent',
+        deciderAgentId: 'steward-9',
+      },
+      db,
+    )
+    expect(approved.status).toBe('approved')
+  })
+
+  it('prevents steward agents from approving dangerous action requests', () => {
+    createPermissionRequest(
+      {
+        id: 'danger-1',
+        workspaceId: 1,
+        requestType: 'local_cli_permission',
+        title: '删除目录',
+        prompt: 'Worker requests rm -rf /tmp/build-cache.',
+        risk: 'medium',
+        options: [
+          { id: 'approve_delete', label: 'Approve delete', action: 'approve' },
           { id: 'deny', label: 'Deny', action: 'deny' },
         ],
       },
@@ -173,20 +204,23 @@ describe('permission-requests', () => {
     expect(() =>
       decidePermissionRequest(
         {
-          requestId: 'high-1',
+          requestId: 'danger-1',
           workspaceId: 1,
-          optionId: 'approve_full',
+          optionId: 'approve_delete',
           deciderType: 'steward_agent',
           deciderAgentId: 'steward-9',
         },
         db,
       ),
-    ).toThrow('Steward agent cannot approve')
-    expect(getPermissionRequest('high-1', 1, db)?.status).toBe('pending')
+    ).toThrow('dangerous action')
+    const pending = getPermissionRequest('danger-1', 1, db)
+    expect(pending?.status).toBe('pending')
+    expect(Array.isArray(pending?.context?.watch_event_audit)).toBe(true)
+    expect((pending?.context?.watch_event as { notify_status?: string } | undefined)?.notify_status).toBe('failed')
 
     const denied = decidePermissionRequest(
       {
-        requestId: 'high-1',
+        requestId: 'danger-1',
         workspaceId: 1,
         optionId: 'deny',
         deciderType: 'steward_agent',
@@ -195,6 +229,103 @@ describe('permission-requests', () => {
       db,
     )
     expect(denied.status).toBe('denied')
+  })
+
+  it('records masked notification targets for dangerous action escalation', () => {
+    createPermissionRequest(
+      {
+        id: 'danger-notify-1',
+        workspaceId: 1,
+        requestType: 'local_cli_permission',
+        title: '删除目录',
+        prompt: '删除 /tmp/build-cache',
+        risk: 'low',
+        options: [
+          { id: 'approve_delete', label: 'Approve delete', action: 'approve' },
+          { id: 'deny', label: 'Deny', action: 'deny' },
+        ],
+        context: {
+          watch_event: {
+            notification_targets: ['webhook:https://example.test/hook?token=secret-token'],
+          },
+        },
+      },
+      db,
+    )
+
+    expect(() =>
+      decidePermissionRequest(
+        {
+          requestId: 'danger-notify-1',
+          workspaceId: 1,
+          optionId: 'approve_delete',
+          deciderType: 'steward_agent',
+        },
+        db,
+      ),
+    ).toThrow('dangerous action')
+    const current = getPermissionRequest('danger-notify-1', 1, db)
+    expect((current?.context?.watch_event as { notify_status?: string } | undefined)?.notify_status).toBe('sent')
+    const audit = current?.context?.watch_event_audit as Array<{ event_name?: string; targets?: string[] }> | undefined
+    const sent = audit?.find((item) => item.event_name === 'human_notification_sent')
+    expect(sent?.targets?.[0]).toContain('token=***')
+    expect(sent?.targets?.[0]).not.toContain('secret-token')
+  })
+
+  it('records worker human replies as platform decisions', () => {
+    createBase('worker-reply-1')
+    const decided = recordWorkerHumanReply(
+      {
+        requestId: 'worker-reply-1',
+        workspaceId: 1,
+        sessionId: 'session-1',
+        messageId: 'message-1',
+        replyText: '批准只读',
+        selectedOptionId: 'approve_readonly',
+        operatorUserId: 7,
+      },
+      db,
+    )
+
+    expect(decided.status).toBe('approved')
+    expect(decided.decider_type).toBe('human_user')
+    expect(decided.decider_user_id).toBe(7)
+    expect(decided.selected_option_id).toBe('approve_readonly')
+    const audit = decided.context?.watch_event_audit
+    expect(Array.isArray(audit)).toBe(true)
+    expect((audit as Array<{ event_name?: string }>).map((item) => item.event_name)).toContain('worker_human_reply_received')
+    expect((audit as Array<{ event_name?: string }>).map((item) => item.event_name)).toContain('decision_submitted')
+  })
+
+  it('does not let late worker replies change completed decisions', () => {
+    createBase('late-reply-1')
+    decidePermissionRequest(
+      {
+        requestId: 'late-reply-1',
+        workspaceId: 1,
+        optionId: 'deny',
+        deciderType: 'human_user',
+      },
+      db,
+    )
+
+    expect(() =>
+      recordWorkerHumanReply(
+        {
+          requestId: 'late-reply-1',
+          workspaceId: 1,
+          sessionId: 'session-1',
+          messageId: 'message-2',
+          replyText: '批准',
+          selectedOptionId: 'approve_readonly',
+        },
+        db,
+      ),
+    ).toThrow('denied')
+    const current = getPermissionRequest('late-reply-1', 1, db)
+    expect(current?.status).toBe('denied')
+    const audit = current?.context?.watch_event_audit as Array<{ event_name?: string }> | undefined
+    expect(audit?.map((item) => item.event_name)).toContain('worker_human_reply_late')
   })
 
   it('waits for a permission decision event', async () => {

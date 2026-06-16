@@ -1120,7 +1120,9 @@
     "useCurrentSessionId": "Use current session ID",
     "bindAgentLabel": "Bind to agent",
     "bindAgentPlaceholder": "Select agent…",
-    "bindAgentAction": "Bind session"
+    "bindAgentAction": "Bind session",
+    "continueAcceptedStatus": "Submitted to the local session. Waiting for a response…",
+    "continueDeliveredStatus": "Message delivered to the runtime. Reading the response…"
   },
   "agentComms": {
     "connecting": "Connecting to feed...",

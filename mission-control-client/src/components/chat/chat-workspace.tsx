@@ -463,8 +463,9 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
     selectedSession?.active ? ACTIVE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS : IDLE_SESSION_TRANSCRIPT_FALLBACK_POLL_MS,
     {
       enabled: !!selectedSession,
-      // Remote edge transcripts may not get prompt_completed on the center host.
-      pauseWhenSseConnected: !selectedSession?.nodeId,
+      // Transcript files are the source of truth. Keep a low-frequency fallback
+      // even when SSE is connected so a lost lifecycle event cannot leave chat stale.
+      pauseWhenSseConnected: false,
     }
   )
 
@@ -829,6 +830,7 @@ function SessionConversationView({
   const [continueError, setContinueError] = useState<string | null>(null)
   const continueSendLockRef = useRef(false)
   const [pendingUserMessage, setPendingUserMessage] = useState<SessionTranscriptMessage | null>(null)
+  const [serverFeedbackMessage, setServerFeedbackMessage] = useState<SessionTranscriptMessage | null>(null)
   const [backgroundPromptBusy, setBackgroundPromptBusy] = useState(false)
   const awaitingReplyPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const transcriptBaselineRef = useRef(0)
@@ -862,6 +864,7 @@ function SessionConversationView({
     setPrefError(null)
     setContinueError(null)
     setPendingUserMessage(null)
+    setServerFeedbackMessage(null)
     setBackgroundPromptBusy(false)
     setBindingMessage(null)
   }, [session.prefKey, session.displayName, session.colorTag])
@@ -928,12 +931,13 @@ function SessionConversationView({
       const detail = (rawEvent as CustomEvent<SessionRealtimePayload | undefined>).detail
       if (!sessionMatchesRealtimeEvent(detail)) return
 
-      if (
-        detail?.reason === 'prompt_completed'
-        || detail?.reason === 'prompt_failed'
-        || detail?.reason === 'bridge_continue'
-      ) {
+      if (detail?.reason === 'prompt_failed') {
         setBackgroundPromptBusy(false)
+      } else if (detail?.reason === 'prompt_completed' || detail?.reason === 'bridge_continue') {
+        // The lifecycle event can arrive before the transcript reader has flushed
+        // the assistant content. Keep the waiting/refresh loop alive until the
+        // transcript itself proves the reply is complete.
+        setBackgroundPromptBusy(true)
       } else {
         applyPendingPromptFromRealtime(detail)
       }
@@ -1019,8 +1023,14 @@ function SessionConversationView({
         merged.push(pendingUserMessage)
       }
     }
+    if (serverFeedbackMessage) {
+      const text = getUserTextFromTranscriptMessage(serverFeedbackMessage)
+      if (text && !transcriptHasText(messages, text)) {
+        merged.push(serverFeedbackMessage)
+      }
+    }
     return merged
-  }, [messages, pendingUserMessage])
+  }, [messages, pendingUserMessage, serverFeedbackMessage])
 
   const hasCompletedReplyForCurrentTurn = useMemo(
     () => isReplyCycleComplete(messages, transcriptBaselineRef.current),
@@ -1067,6 +1077,14 @@ function SessionConversationView({
   }, [messages, pendingUserMessage])
 
   useEffect(() => {
+    if (!serverFeedbackMessage) return
+    const text = getUserTextFromTranscriptMessage(serverFeedbackMessage)
+    if (text && transcriptHasText(messages, text)) {
+      setServerFeedbackMessage(null)
+    }
+  }, [messages, serverFeedbackMessage])
+
+  useEffect(() => {
     if (!awaitingReply) {
       setAwaitingReplySeconds(0)
       if (awaitingReplyPollRef.current) {
@@ -1099,6 +1117,7 @@ function SessionConversationView({
     if (!hasCompletedReplyForCurrentTurn) return
     setBackgroundPromptBusy(false)
     setPendingUserMessage(null)
+    setServerFeedbackMessage(null)
   }, [hasCompletedReplyForCurrentTurn, backgroundPromptBusy, pendingUserMessage])
 
   const isTranscriptNearBottom = useCallback(() => {
@@ -1194,6 +1213,11 @@ function SessionConversationView({
       timestamp: new Date().toISOString(),
     }
     setPendingUserMessage(optimisticUser)
+    setServerFeedbackMessage({
+      role: 'system',
+      parts: [{ type: 'text', text: t('continueAcceptedStatus') }],
+      timestamp: new Date().toISOString(),
+    })
     transcriptBaselineRef.current = messages.length
     setContinuePrompt('')
     const elevatedForTurn = continueElevated
@@ -1227,6 +1251,11 @@ function SessionConversationView({
         if (fwd?.attempted && !fwd?.delivered) {
           setContinueError(t('messageSavedNotDelivered', { reason: fwd.reason || t('reasonUnknown') }))
         }
+        setServerFeedbackMessage({
+          role: 'system',
+          parts: [{ type: 'text', text: fwd?.delivered ? t('continueDeliveredStatus') : t('continueAcceptedStatus') }],
+          timestamp: new Date().toISOString(),
+        })
         stickToBottomRef.current = true
         setBackgroundPromptBusy(true)
         setTimeout(() => onRefreshTranscript({ background: true }), 2000)
@@ -1258,6 +1287,19 @@ function SessionConversationView({
           }
           throw new Error(data?.error || t('failedToContinueSession'))
         }
+        if (typeof data?.reply === 'string' && data.reply.trim()) {
+          setServerFeedbackMessage({
+            role: 'assistant',
+            parts: [{ type: 'text', text: data.reply.trim() }],
+            timestamp: new Date().toISOString(),
+          })
+        } else {
+          setServerFeedbackMessage({
+            role: 'system',
+            parts: [{ type: 'text', text: data?.remote ? t('continueDeliveredStatus') : t('continueAcceptedStatus') }],
+            timestamp: new Date().toISOString(),
+          })
+        }
         stickToBottomRef.current = true
         setBackgroundPromptBusy(true)
         onRefreshTranscript({ background: true, forceFresh: true })
@@ -1268,6 +1310,7 @@ function SessionConversationView({
     } catch (err) {
       setContinueError(err instanceof Error ? err.message : t('failedToContinueSession'))
       setPendingUserMessage(null)
+      setServerFeedbackMessage(null)
       setBackgroundPromptBusy(false)
     } finally {
       continueSendLockRef.current = false
@@ -1792,6 +1835,17 @@ function transcriptHasUserPrompt(messages: SessionTranscriptMessage[], prompt: s
     if (msg.role !== 'user') continue
     const text = getUserTextFromTranscriptMessage(msg)
     if (variants.some((variant) => text === variant || text.includes(variant))) return true
+  }
+  return false
+}
+
+function transcriptHasText(messages: SessionTranscriptMessage[], text: string): boolean {
+  const target = text.trim()
+  if (!target) return false
+  const start = Math.max(0, messages.length - 10)
+  for (let i = messages.length - 1; i >= start; i--) {
+    const current = getUserTextFromTranscriptMessage(messages[i])
+    if (current === target || current.includes(target)) return true
   }
   return false
 }

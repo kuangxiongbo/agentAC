@@ -9,7 +9,7 @@ import type { LocalSessionTranscriptKind, TranscriptMessage } from './session-tr
 import { notifySessionTranscriptUpdated } from './session-realtime'
 import { replaceBridgeAgentIndex, type BridgeAgentIndexInput } from './sync-agent-index'
 import { reconcileClientAgentInventory } from './sync-agent-inventory'
-import { decidePermissionRequest, type PermissionRequestView } from './permission-requests'
+import { decidePermissionRequest, recordWorkerHumanReply, type PermissionRequestView } from './permission-requests'
 import { forwardPermissionDecisionToExecApproval } from './permission-request-exec-bridge'
 import type { LocalCliElevationGrantContext } from './local-cli-elevation-audit'
 
@@ -780,6 +780,54 @@ export function initBridgeServer(port: number = 5002) {
                   requestId,
                   ok: false,
                   error: err instanceof Error ? err.message : 'Failed to sync permission decision',
+                }))
+              }
+              break
+            }
+
+            case 'worker_human_reply_sync': {
+              touchConnection(connectionId)
+              const requestId = typeof msg?.requestId === 'string' ? msg.requestId : typeof msg?.request_id === 'string' ? msg.request_id : ''
+              const selectedOptionId = typeof msg?.selectedOptionId === 'string'
+                ? msg.selectedOptionId
+                : typeof msg?.selected_option_id === 'string'
+                  ? msg.selected_option_id
+                  : typeof msg?.optionId === 'string'
+                    ? msg.optionId
+                    : ''
+              if (!requestId || !selectedOptionId) {
+                ws.send(JSON.stringify({
+                  type: 'worker_human_reply_sync_response',
+                  requestId,
+                  ok: false,
+                  error: 'requestId and selectedOptionId are required',
+                }))
+                break
+              }
+              try {
+                const updated = recordWorkerHumanReply({
+                  requestId,
+                  workspaceId: 1,
+                  clientNodeId: typeof msg?.clientNodeId === 'string' ? msg.clientNodeId : clientId,
+                  sessionId: typeof msg?.sessionId === 'string' ? msg.sessionId : typeof msg?.session_id === 'string' ? msg.session_id : null,
+                  messageId: typeof msg?.messageId === 'string' ? msg.messageId : typeof msg?.message_id === 'string' ? msg.message_id : null,
+                  replyText: typeof msg?.replyText === 'string' ? msg.replyText : typeof msg?.reply_text === 'string' ? msg.reply_text : null,
+                  selectedOptionId,
+                  observedAt: typeof msg?.observedAt === 'string' ? msg.observedAt : typeof msg?.observed_at === 'string' ? msg.observed_at : null,
+                  idempotencyKey: typeof msg?.idempotencyKey === 'string' ? msg.idempotencyKey : typeof msg?.idempotency_key === 'string' ? msg.idempotency_key : null,
+                })
+                ws.send(JSON.stringify({
+                  type: 'worker_human_reply_sync_response',
+                  requestId,
+                  ok: true,
+                  request: updated,
+                }))
+              } catch (err) {
+                ws.send(JSON.stringify({
+                  type: 'worker_human_reply_sync_response',
+                  requestId,
+                  ok: false,
+                  error: err instanceof Error ? err.message : 'Failed to sync worker human reply',
                 }))
               }
               break

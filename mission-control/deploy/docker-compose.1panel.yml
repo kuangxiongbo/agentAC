@@ -5,7 +5,7 @@
 services:
   mission-control:
     # 升级版本时改此处 tag，并 docker compose pull && up -d
-    image: crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.1.8
+    image: crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.1.9
     container_name: agentcenter
     restart: unless-stopped
 

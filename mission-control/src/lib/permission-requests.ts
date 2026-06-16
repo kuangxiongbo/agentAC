@@ -5,7 +5,7 @@ import { eventBus } from './event-bus'
 
 export type PermissionRequestRisk = 'low' | 'medium' | 'high' | 'critical'
 export type PermissionRequestStatus = 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled'
-export type PermissionDeciderType = 'human_user' | 'steward_agent' | 'system'
+export type PermissionDeciderType = 'human_user' | 'human_external' | 'steward_agent' | 'system'
 
 export interface PermissionRequestOption {
   id: string
@@ -80,6 +80,21 @@ export interface DecidePermissionRequestInput {
   deciderType: PermissionDeciderType
   deciderUserId?: number | null
   deciderAgentId?: string | null
+  decisionSource?: string | null
+  idempotencyKey?: string | null
+}
+
+export interface WorkerHumanReplyInput {
+  requestId: string
+  workspaceId: number
+  clientNodeId?: string | null
+  sessionId?: string | null
+  messageId?: string | null
+  replyText?: string | null
+  selectedOptionId: string
+  operatorUserId?: number | null
+  observedAt?: string | null
+  idempotencyKey?: string | null
 }
 
 export interface WaitForPermissionRequestDecisionOptions {
@@ -120,6 +135,138 @@ function parseJsonObject(raw: string | null): Record<string, unknown> | null {
   } catch {
     return null
   }
+}
+
+function auditList(context: Record<string, unknown> | null): Array<Record<string, unknown>> {
+  const raw = context?.watch_event_audit
+  return Array.isArray(raw) ? raw.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object' && !Array.isArray(item))) : []
+}
+
+function appendAudit(
+  context: Record<string, unknown> | null,
+  eventName: string,
+  detail: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...(context ?? {}),
+    watch_event_audit: [
+      ...auditList(context),
+      {
+        event_name: eventName,
+        created_at: Math.floor(Date.now() / 1000),
+        ...detail,
+      },
+    ],
+  }
+}
+
+function notificationTargets(context: Record<string, unknown> | null): string[] {
+  const watchEvent = context?.watch_event
+  const raw = watchEvent && typeof watchEvent === 'object' && !Array.isArray(watchEvent)
+    ? (watchEvent as Record<string, unknown>).notification_targets
+    : null
+  return Array.isArray(raw) ? raw.map((item) => String(item || '').trim()).filter(Boolean) : []
+}
+
+function maskNotificationTarget(target: string): string {
+  return target
+    .replace(/(token=)[^&]+/gi, '$1***')
+    .replace(/(key=)[^&]+/gi, '$1***')
+    .replace(/(signature=)[^&]+/gi, '$1***')
+    .replace(/(Bearer\s+)[A-Za-z0-9._-]+/gi, '$1***')
+}
+
+function withWatchEventNotifyStatus(
+  context: Record<string, unknown>,
+  status: 'sent' | 'failed' | 'pending',
+): Record<string, unknown> {
+  const watchEvent = context.watch_event && typeof context.watch_event === 'object' && !Array.isArray(context.watch_event)
+    ? context.watch_event as Record<string, unknown>
+    : {}
+  return {
+    ...context,
+    watch_event: {
+      ...watchEvent,
+      notify_status: status,
+      notify_updated_at: Math.floor(Date.now() / 1000),
+    },
+  }
+}
+
+function appendHumanNotificationAudit(
+  context: Record<string, unknown> | null,
+  detail: Record<string, unknown>,
+): Record<string, unknown> {
+  const targets = notificationTargets(context)
+  if (targets.length === 0) {
+    return withWatchEventNotifyStatus(
+      appendAudit(context, 'human_notification_failed', {
+        ...detail,
+        reason: 'notification_targets_missing',
+      }),
+      'failed',
+    )
+  }
+  return withWatchEventNotifyStatus(
+    appendAudit(context, 'human_notification_sent', {
+      ...detail,
+      targets: targets.map(maskNotificationTarget),
+    }),
+    'sent',
+  )
+}
+
+const DANGEROUS_ACTION_PATTERNS: Array<{ key: string; pattern: RegExp }> = [
+  { key: 'delete', pattern: /\b(rm\s+-rf|delete|drop|truncate|remove|unlink|删除|清空|销毁)\b/i },
+  { key: 'uninstall', pattern: /\b(uninstall|brew\s+uninstall|apt\s+remove|停止关键进程|卸载)\b/i },
+  { key: 'overwrite', pattern: /\b(overwrite|replace|覆盖|批量修改|批量重命名)\b/i },
+  { key: 'production_change', pattern: /\b(production|prod|deploy|restart|上线|生产|部署|重启)\b/i },
+  { key: 'payment', pattern: /\b(payment|pay|purchase|refund|transfer|付款|购买|退款|转账)\b/i },
+  { key: 'external_send', pattern: /\b(send email|sms|webhook|notify customer|外发|发送邮件|短信|客户通知)\b/i },
+  { key: 'secret_access', pattern: /\b(secret|token|password|certificate|private key|密钥|凭证|密码|证书)\b/i },
+  { key: 'privilege_escalation', pattern: /\b(sudo|chmod\s+777|chown|提权|权限提升|关闭安全校验)\b/i },
+]
+
+function contextDangerousActionKeys(context: Record<string, unknown> | null): string[] {
+  const watchEvent = context?.watch_event
+  const explicit = watchEvent && typeof watchEvent === 'object' && !Array.isArray(watchEvent)
+    ? (watchEvent as Record<string, unknown>).dangerous_action_keys
+    : null
+  if (Array.isArray(explicit)) {
+    return explicit.map((item) => String(item || '').trim()).filter(Boolean)
+  }
+  const single = watchEvent && typeof watchEvent === 'object' && !Array.isArray(watchEvent)
+    ? (watchEvent as Record<string, unknown>).dangerous_action
+    : null
+  if (typeof single === 'string' && single.trim()) return [single.trim()]
+  return []
+}
+
+function detectsDangerousAction(request: PermissionRequestView): string[] {
+  const explicit = contextDangerousActionKeys(request.context)
+  if (explicit.length > 0) return explicit
+  const haystack = [
+    request.request_type,
+    request.title,
+    request.prompt,
+    JSON.stringify(request.context ?? {}),
+    ...request.options.map((option) => `${option.id} ${option.label} ${option.description ?? ''}`),
+  ].join('\n')
+  return DANGEROUS_ACTION_PATTERNS.filter(({ pattern }) => pattern.test(haystack)).map(({ key }) => key)
+}
+
+export function isDangerousPermissionRequest(request: PermissionRequestView): boolean {
+  return detectsDangerousAction(request).length > 0
+}
+
+function normalizeIdempotencyKey(value: string | null | undefined): string | null {
+  const key = String(value || '').trim()
+  return key || null
+}
+
+function hasDecisionIdempotencyKey(context: Record<string, unknown> | null, key: string | null): boolean {
+  if (!key) return false
+  return auditList(context).some((item) => item.idempotency_key === key)
 }
 
 function parseOptions(raw: string): PermissionRequestOption[] {
@@ -406,6 +553,35 @@ export function decidePermissionRequest(
     eventBus.broadcast('permission.decided', getPermissionRequest(input.requestId, input.workspaceId, db))
     throw new Error('Permission request is expired')
   }
+  const beforeOption = before.options.find((item) => item.id === input.optionId)
+  if (!beforeOption) throw new Error('Invalid optionId for permission request')
+  if (
+    before.status === 'pending'
+    && input.deciderType === 'steward_agent'
+    && beforeOption.action === 'approve'
+    && isDangerousPermissionRequest(before)
+  ) {
+    const idempotencyKey = normalizeIdempotencyKey(input.idempotencyKey)
+    const rejectedContext = appendAudit(before.context, 'decision_rejected_by_policy', {
+      reason: 'dangerous_action_requires_human',
+      option_id: beforeOption.id,
+      decider_type: input.deciderType,
+      dangerous_action_keys: detectsDangerousAction(before),
+      decision_source: input.decisionSource ?? null,
+      idempotency_key: idempotencyKey,
+    })
+    const context = appendHumanNotificationAudit(rejectedContext, {
+      request_id: before.id,
+      option_id: beforeOption.id,
+      dangerous_action_keys: detectsDangerousAction(before),
+    })
+    db.prepare(
+      `UPDATE permission_requests
+       SET context_json = ?, updated_at = unixepoch()
+       WHERE id = ? AND workspace_id = ? AND status = 'pending'`,
+    ).run(JSON.stringify(context), input.requestId, input.workspaceId)
+    throw new Error('Steward agent cannot approve dangerous action permission requests')
+  }
 
   return db.transaction(() => {
     const current = getPermissionRequest(input.requestId, input.workspaceId, db)
@@ -414,12 +590,14 @@ export function decidePermissionRequest(
 
     const option = current.options.find((item) => item.id === input.optionId)
     if (!option) throw new Error('Invalid optionId for permission request')
+    const idempotencyKey = normalizeIdempotencyKey(input.idempotencyKey)
+    if (hasDecisionIdempotencyKey(current.context, idempotencyKey)) return current
     if (
       input.deciderType === 'steward_agent'
       && option.action === 'approve'
-      && (current.risk === 'high' || current.risk === 'critical')
+      && isDangerousPermissionRequest(current)
     ) {
-      throw new Error('Steward agent cannot approve high or critical permission requests')
+      throw new Error('Steward agent cannot approve dangerous action permission requests')
     }
     const status: PermissionRequestStatus = option.action === 'approve' ? 'approved' : 'denied'
     const reason = String(input.reason || '').trim() || null
@@ -438,6 +616,15 @@ export function decidePermissionRequest(
       deciderAgentId,
     )
 
+    const context = appendAudit(current.context, 'decision_submitted', {
+      option_id: option.id,
+      decider_type: input.deciderType,
+      decider_user_id: input.deciderUserId ?? null,
+      decider_agent_id: deciderAgentId,
+      decision_source: input.decisionSource ?? null,
+      idempotency_key: idempotencyKey,
+    })
+
     db.prepare(
       `UPDATE permission_requests
        SET status = ?,
@@ -446,6 +633,7 @@ export function decidePermissionRequest(
            decider_type = ?,
            decider_user_id = ?,
            decider_agent_id = ?,
+           context_json = ?,
            decided_at = unixepoch(),
            updated_at = unixepoch()
        WHERE id = ? AND workspace_id = ? AND status = 'pending'`,
@@ -456,6 +644,7 @@ export function decidePermissionRequest(
       input.deciderType,
       input.deciderUserId ?? null,
       deciderAgentId,
+      JSON.stringify(context),
       input.requestId,
       input.workspaceId,
     )
@@ -465,6 +654,69 @@ export function decidePermissionRequest(
     eventBus.broadcast('permission.decided', decided)
     return decided
   })()
+}
+
+export function recordWorkerHumanReply(
+  input: WorkerHumanReplyInput,
+  database?: Database.Database,
+): PermissionRequestView {
+  const db = dbOr(database)
+  const current = getPermissionRequest(input.requestId, input.workspaceId, db)
+  if (!current) throw new Error('Permission request not found')
+  const key = normalizeIdempotencyKey(input.idempotencyKey) || normalizeIdempotencyKey(
+    input.messageId ? `worker-reply:${input.sessionId ?? 'unknown'}:${input.messageId}` : null,
+  )
+  if (hasDecisionIdempotencyKey(current.context, key)) return current
+  if (current.status !== 'pending') {
+    const context = appendAudit(current.context, 'worker_human_reply_late', {
+      client_node_id: input.clientNodeId ?? null,
+      session_id: input.sessionId ?? null,
+      message_id: input.messageId ?? null,
+      reply_text: input.replyText ?? null,
+      selected_option_id: input.selectedOptionId,
+      idempotency_key: key,
+      status: current.status,
+    })
+    db.prepare(
+      `UPDATE permission_requests
+       SET context_json = ?, updated_at = unixepoch()
+       WHERE id = ? AND workspace_id = ?`,
+    ).run(JSON.stringify(context), input.requestId, input.workspaceId)
+    const updated = getPermissionRequest(input.requestId, input.workspaceId, db)
+    if (!updated) throw new Error('Permission request disappeared after worker reply audit')
+    eventBus.broadcast('permission.decided', updated)
+    throw new Error(`Permission request is ${current.status}`)
+  }
+
+  const context = appendAudit(current.context, 'worker_human_reply_received', {
+    client_node_id: input.clientNodeId ?? null,
+    session_id: input.sessionId ?? null,
+    message_id: input.messageId ?? null,
+    reply_text: input.replyText ?? null,
+    selected_option_id: input.selectedOptionId,
+    operator_user_id: input.operatorUserId ?? null,
+    observed_at: input.observedAt ?? null,
+    reply_idempotency_key: key,
+  })
+  db.prepare(
+    `UPDATE permission_requests
+     SET context_json = ?, updated_at = unixepoch()
+     WHERE id = ? AND workspace_id = ? AND status = 'pending'`,
+  ).run(JSON.stringify(context), input.requestId, input.workspaceId)
+
+  return decidePermissionRequest(
+    {
+      requestId: input.requestId,
+      workspaceId: input.workspaceId,
+      optionId: input.selectedOptionId,
+      reason: input.replyText ?? null,
+      deciderType: input.operatorUserId != null ? 'human_user' : 'human_external',
+      deciderUserId: input.operatorUserId ?? null,
+      decisionSource: 'worker_session_reply',
+      idempotencyKey: key,
+    },
+    db,
+  )
 }
 
 export function patchPermissionRequestContext(

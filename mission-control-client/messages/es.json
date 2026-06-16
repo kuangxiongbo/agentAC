@@ -1922,5 +1922,9 @@
     "loadingSchema": "Cargando esquema...",
     "viewPendingChanges": "Ver {count} cambios pendientes",
     "noSettingsMatch": "Ningún ajuste coincide con '{query}'"
+  },
+  "chat": {
+    "continueAcceptedStatus": "Submitted to the local session. Waiting for a response…",
+    "continueDeliveredStatus": "Message delivered to the runtime. Reading the response…"
   }
 }
