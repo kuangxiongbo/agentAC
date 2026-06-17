@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { NextRequest } from 'next/server'
 import { resolveDistributionEnrollToken } from '@/lib/edge-bootstrap'
-import { resolveBundledTrayFromManifest } from '@/lib/edge-tray-manifest'
+import { loadEdgeTrayManifest, resolveBundledTrayFromManifest, resolveManifestPublicUrl } from '@/lib/edge-tray-manifest'
 import { getDatabase } from '@/lib/db'
 import type { User } from '@/lib/auth'
 import { APP_VERSION } from '@/lib/version'
@@ -72,6 +72,79 @@ export function resolveTrayDownloadUrl(centerUrl: string): string | null {
   }
 
   return null
+}
+
+export type TrayPlatformDownload = {
+  platform: string
+  arch_label: string
+  cpu_family: 'apple_silicon' | 'intel' | 'unknown'
+  tray_version: string
+  download_url: string | null
+  filename: string | null
+  sha256: string | null
+  available: boolean
+}
+
+function inferCpuFamily(platform: string): TrayPlatformDownload['cpu_family'] {
+  if (platform === 'darwin-aarch64') return 'apple_silicon'
+  if (platform === 'darwin-x86_64') return 'intel'
+  return 'unknown'
+}
+
+function inferArchLabel(platform: string): string {
+  if (platform === 'darwin-aarch64') return 'Apple Silicon (M1 / M2 / M3 / M4)'
+  if (platform === 'darwin-x86_64') return 'Intel Mac'
+  return platform
+}
+
+export function resolveTrayDownloads(centerUrl: string): TrayPlatformDownload[] {
+  const manifest = loadEdgeTrayManifest()
+  if (!manifest?.platforms || typeof manifest.platforms !== 'object') {
+    return [
+      {
+        platform: 'darwin-aarch64',
+        arch_label: inferArchLabel('darwin-aarch64'),
+        cpu_family: 'apple_silicon',
+        tray_version: resolveTrayVersion(centerUrl),
+        download_url: resolveTrayDownloadUrl(centerUrl),
+        filename: 'E-Agent-Edge.dmg',
+        sha256: null,
+        available: Boolean(resolveTrayDownloadUrl(centerUrl)),
+      },
+      {
+        platform: 'darwin-x86_64',
+        arch_label: inferArchLabel('darwin-x86_64'),
+        cpu_family: 'intel',
+        tray_version: resolveTrayVersion(centerUrl),
+        download_url: null,
+        filename: 'E-Agent-Edge.dmg',
+        sha256: null,
+        available: false,
+      },
+    ]
+  }
+
+  const preferredOrder = ['darwin-aarch64', 'darwin-x86_64']
+  const seen = new Set<string>()
+  const result: TrayPlatformDownload[] = []
+
+  for (const platform of [...preferredOrder, ...Object.keys(manifest.platforms)]) {
+    if (seen.has(platform)) continue
+    seen.add(platform)
+    const entry = manifest.platforms[platform]
+    result.push({
+      platform,
+      arch_label: inferArchLabel(platform),
+      cpu_family: inferCpuFamily(platform),
+      tray_version: manifest.tray_version,
+      download_url: entry?.url ? resolveManifestPublicUrl(entry.url, centerUrl) : null,
+      filename: entry?.filename || 'E-Agent-Edge.dmg',
+      sha256: entry?.sha256 || null,
+      available: Boolean(entry?.url),
+    })
+  }
+
+  return result
 }
 
 export function buildMacInstallScript(centerUrl: string, enrollToken: string): string {

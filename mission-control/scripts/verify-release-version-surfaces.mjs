@@ -211,7 +211,8 @@ for (const file of [
 
 assertTextIncludes('edge download page', path.join(serverRoot, 'src/app/edge/download/page.tsx'), [
   'info.tray_version',
-  'downloadDmg',
+  'downloadByChipTitle',
+  'downloadPlatformButton',
 ]);
 assertTextIncludes(
   'edge download-info api',

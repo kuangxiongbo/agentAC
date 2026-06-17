@@ -5,6 +5,7 @@ import {
   maskSecret,
   resolveEnterpriseName,
   resolveEnrollTokenMeta,
+  resolveTrayDownloads,
   resolveTrayDownloadUrl,
   resolveTrayVersion,
 } from '@/lib/edge-download'
@@ -35,6 +36,7 @@ export async function GET(request: NextRequest) {
       enroll_token_masked: enrollToken ? maskSecret(enrollToken) : '',
       tray_download_url: trayDownloadUrl,
       tray_version: trayVersion,
+      tray_downloads: resolveTrayDownloads(centerUrl),
       platform: 'darwin',
     },
     { headers: { 'Cache-Control': 'private, no-store' } },

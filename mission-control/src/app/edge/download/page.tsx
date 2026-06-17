@@ -18,6 +18,16 @@ type DownloadInfo = {
   tray_download_url: string | null
   tray_version: string
   platform: string
+  tray_downloads?: Array<{
+    platform: string
+    arch_label: string
+    cpu_family: 'apple_silicon' | 'intel' | 'unknown'
+    tray_version: string
+    download_url: string | null
+    filename: string | null
+    sha256: string | null
+    available: boolean
+  }>
 }
 
 function CopyField({
@@ -194,18 +204,52 @@ export default function EdgeDownloadPage() {
                 )}
               </div>
 
-              {info.tray_download_url ? (
-                <Button asChild className="w-full">
-                  <a href={info.tray_download_url} download>
-                    <DownloadIcon className="w-4 h-4 mr-2" />
-                    {t('downloadDmg', { version: info.tray_version })}
-                  </a>
-                </Button>
-              ) : (
-                <div className="rounded-lg border border-border/60 bg-secondary/10 px-3 py-2 text-xs text-muted-foreground">
-                  {t('dmgNotAvailableHint')}
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <h2 className="text-sm font-medium">{t('downloadByChipTitle')}</h2>
+                  <p className="text-xs text-muted-foreground">{t('downloadByChipHint')}</p>
                 </div>
-              )}
+                <div className="space-y-2">
+                  {(info.tray_downloads && info.tray_downloads.length > 0 ? info.tray_downloads : [
+                    {
+                      platform: 'darwin-aarch64',
+                      arch_label: t('appleSiliconLabel'),
+                      cpu_family: 'apple_silicon' as const,
+                      tray_version: info.tray_version,
+                      download_url: info.tray_download_url,
+                      filename: 'E-Agent-Edge.dmg',
+                      sha256: null,
+                      available: Boolean(info.tray_download_url),
+                    },
+                  ]).map((item) => (
+                    <div key={item.platform} className="rounded-lg border border-border/60 bg-secondary/10 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-foreground">{item.arch_label}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {t('downloadPlatformVersion', { version: item.tray_version })}
+                          </div>
+                        </div>
+                        {item.available && item.download_url ? (
+                          <Button asChild>
+                            <a href={item.download_url} download>
+                              <DownloadIcon className="w-4 h-4 mr-2" />
+                              {t('downloadPlatformButton')}
+                            </a>
+                          </Button>
+                        ) : (
+                          <div className="text-xs text-muted-foreground">{t('platformNotAvailable')}</div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {!info.tray_download_url && (!info.tray_downloads || info.tray_downloads.every((item) => !item.available)) && (
+                  <div className="rounded-lg border border-border/60 bg-secondary/10 px-3 py-2 text-xs text-muted-foreground">
+                    {t('dmgNotAvailableHint')}
+                  </div>
+                )}
+              </div>
 
               <div className="space-y-3">
                 <h2 className="text-sm font-medium">{t('stepsTitle')}</h2>
