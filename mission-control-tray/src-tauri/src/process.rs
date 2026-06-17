@@ -47,8 +47,36 @@ pub fn is_running() -> bool {
 pub fn stop() -> Result<(), String> {
     let mut guard = CHILD.lock().unwrap();
     if let Some(mut child) = guard.take() {
+        #[cfg(target_os = "macos")]
+        {
+            let child_pid = child.id().to_string();
+            if let Some(pgid) = pid_pgid(&child_pid) {
+                eprintln!(
+                    "[E-Agent Edge] stop(): 终止本机 Web 进程组 PGID {}（child PID {}）",
+                    pgid, child_pid
+                );
+                let _ = kill_process_group(&pgid);
+            }
+        }
         let _ = child.kill();
         let _ = child.wait();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let cfg = config::load_config();
+        let _ = recover_owned_port(&cfg, "stop() 收尾清理旧 runtime 进程");
+        if port_in_use(cfg.port) {
+            if let Ok(infos) = port_owner_infos(cfg.port) {
+                if infos.iter().all(|info| info.owned_by_edge) {
+                    eprintln!(
+                        "[E-Agent Edge] stop(): 端口 {} 仍被本产品进程占用，执行最终清理:\n{}",
+                        cfg.port,
+                        format_port_owner_infos(&infos)
+                    );
+                    let _ = kill_port_owner(cfg.port);
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -58,7 +86,18 @@ fn node_binary() -> Result<PathBuf, String> {
 }
 
 fn port_in_use(port: u16) -> bool {
-    std::net::TcpListener::bind(("127.0.0.1", port)).is_err()
+    #[cfg(target_os = "macos")]
+    {
+        return lsof_port_pids(port)
+            .or_else(|_| netstat_port_pids(port))
+            .map(|pids| !pids.is_empty())
+            .unwrap_or_else(|_| std::net::TcpListener::bind(("127.0.0.1", port)).is_err());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::net::TcpListener::bind(("127.0.0.1", port)).is_err()
+    }
 }
 
 fn health_probe_url(port: u16) -> String {
@@ -212,6 +251,52 @@ fn pid_command(pid: &str) -> Option<String> {
     } else {
         Some(value)
     }
+}
+
+#[cfg(target_os = "macos")]
+fn pid_pgid(pid: &str) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-p", pid, "-o", "pgid="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn kill_process_group(pgid: &str) -> Result<(), String> {
+    let group = pgid.trim();
+    if group.is_empty() {
+        return Err("进程组 ID 为空".to_string());
+    }
+    let target = format!("-{group}");
+    let _ = Command::new("kill").arg(&target).status();
+    for _ in 0..20 {
+        let still_alive = Command::new("ps")
+            .args(["-o", "pid=", "-g", group])
+            .output()
+            .ok()
+            .map(|out| {
+                out.status.success()
+                    && String::from_utf8_lossy(&out.stdout)
+                        .lines()
+                        .any(|line| !line.trim().is_empty())
+            })
+            .unwrap_or(false);
+        if !still_alive {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = Command::new("kill").args(["-KILL", &target]).status();
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
