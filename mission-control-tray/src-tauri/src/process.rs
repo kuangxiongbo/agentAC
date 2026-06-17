@@ -153,18 +153,57 @@ fn netstat_port_pids(port: u16) -> Result<Vec<String>, String> {
     Ok(pids)
 }
 
+#[cfg(target_os = "macos")]
+fn port_owner_pids(port: u16) -> Result<Vec<String>, String> {
+    let current_pid = std::process::id().to_string();
+    Ok(lsof_port_pids(port)
+        .or_else(|err| {
+            eprintln!("[E-Agent Edge] {err}，改用 netstat 兜底查询");
+            netstat_port_pids(port)
+        })?
+        .into_iter()
+        .filter(|pid| !pid.is_empty() && *pid != current_pid)
+        .collect())
+}
+
+#[cfg(target_os = "macos")]
+fn pid_cwd(pid: &str) -> Option<PathBuf> {
+    let output = Command::new("lsof")
+        .arg("-nP")
+        .arg("-a")
+        .arg("-p")
+        .arg(pid)
+        .arg("-d")
+        .arg("cwd")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    for line in String::from_utf8_lossy(&output.stdout).lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if let Some(path) = fields.last() {
+            return Some(PathBuf::from(path));
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn is_edge_runtime_port_owner(pid: &str) -> bool {
+    let runtime_root = config::runtime_root()
+        .canonicalize()
+        .unwrap_or_else(|_| config::runtime_root());
+    pid_cwd(pid)
+        .and_then(|cwd| cwd.canonicalize().ok())
+        .map(|cwd| cwd.starts_with(&runtime_root))
+        .unwrap_or(false)
+}
+
 fn kill_port_owner(port: u16) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let current_pid = std::process::id().to_string();
-        let pids: Vec<String> = lsof_port_pids(port)
-            .or_else(|err| {
-                eprintln!("[E-Agent Edge] {err}，改用 netstat 兜底查询");
-                netstat_port_pids(port)
-            })?
-            .into_iter()
-            .filter(|pid| !pid.is_empty() && *pid != current_pid)
-            .collect();
+        let pids = port_owner_pids(port)?;
         if pids.is_empty() {
             return Err(format!("端口 {port} 没有可清理的外部监听进程"));
         }
@@ -192,6 +231,36 @@ fn kill_port_owner(port: u16) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         Err(format!("端口 {port} 被旧服务占用，请先手动停止后重试"))
+    }
+}
+
+fn recover_owned_port(cfg: &EdgeConfig, reason: &str) -> Result<bool, String> {
+    if !port_in_use(cfg.port) {
+        return Ok(false);
+    }
+    if is_current_runtime_healthy(cfg) {
+        return Ok(false);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let pids = port_owner_pids(cfg.port)?;
+        if pids.is_empty() {
+            return Ok(false);
+        }
+        if !pids.iter().all(|pid| is_edge_runtime_port_owner(pid)) {
+            return Ok(false);
+        }
+        eprintln!(
+            "[E-Agent Edge] 端口 {} 被本产品 Web 进程占用（{reason}），自动回收后重启",
+            cfg.port
+        );
+        kill_port_owner(cfg.port)?;
+        return Ok(true);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = reason;
+        Ok(false)
     }
 }
 
@@ -289,6 +358,7 @@ pub fn ensure_running(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> 
         }
     }
     let _ = recover_stale_healthy_port(cfg)?;
+    let _ = recover_owned_port(cfg, "启动前检测到非当前 runtime")?;
     if port_in_use(cfg.port) {
         if is_current_runtime_healthy(cfg) {
             eprintln!(
@@ -353,6 +423,7 @@ pub fn start(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<()
         return Ok(());
     }
     let _ = recover_stale_healthy_port(cfg)?;
+    let _ = recover_owned_port(cfg, "启动前检测到非当前 runtime")?;
     if port_in_use(cfg.port) {
         if is_current_runtime_healthy(cfg) {
             eprintln!(
@@ -449,6 +520,7 @@ pub fn start(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<()
 pub fn restart(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<(), String> {
     stop()?;
     let _ = recover_stale_healthy_port(cfg)?;
+    let _ = recover_owned_port(cfg, "重启前检测到非当前 runtime")?;
     if port_in_use(cfg.port) && !is_healthy(cfg) {
         eprintln!(
             "[E-Agent Edge] 端口 {} 仍被占用，请手动停止旧 Web 客户端后重试",

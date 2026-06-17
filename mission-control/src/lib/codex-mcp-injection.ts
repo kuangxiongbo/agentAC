@@ -16,6 +16,12 @@ function quoteTomlString(value: string): string {
   return JSON.stringify(value)
 }
 
+function quoteTomlInlineTable(value: Record<string, string>): string {
+  return `{ ${Object.entries(value)
+    .map(([key, val]) => `${key} = ${quoteTomlString(val)}`)
+    .join(', ')} }`
+}
+
 function resolveMcpServerScript(): string {
   const candidates = [
     path.join(process.cwd(), 'scripts', 'mc-mcp-server.cjs'),
@@ -50,7 +56,7 @@ export function buildCodexMcpConfigArgs(options: CodexMcpInjectionOptions): stri
     '-c',
     `mcp_servers.${MCP_SERVER_NAME}.args=${JSON.stringify([scriptPath])}`,
     '-c',
-    `mcp_servers.${MCP_SERVER_NAME}.env=${JSON.stringify(env)}`,
+    `mcp_servers.${MCP_SERVER_NAME}.env=${quoteTomlInlineTable(env)}`,
   ]
 }
 

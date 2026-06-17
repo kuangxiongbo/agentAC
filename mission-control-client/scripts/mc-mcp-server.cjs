@@ -497,6 +497,29 @@ const TOOLS = [
     handler: async (args) => api('POST', '/api/permission-requests', args),
   },
   {
+    name: 'mc_create_watch_event',
+    description: 'Alias for mc_create_permission_request. Create a structured watch event when a Worker needs an external decision.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Optional stable request ID for idempotency' },
+        request_type: { type: 'string', description: 'Type, e.g. local_cli_approval, handoff_approval, browser_confirmation' },
+        title: { type: 'string', description: 'Short title shown to human/steward approvers' },
+        prompt: { type: 'string', description: 'Detailed question and action context' },
+        risk: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Risk level, default medium' },
+        options: { type: 'array', description: 'Decision options' },
+        client_id: { type: 'string' },
+        worker_name: { type: 'string' },
+        worker_session_id: { type: 'string' },
+        steward_name: { type: 'string' },
+        context: { type: 'object' },
+        expires_at: { type: 'number' },
+      },
+      required: ['request_type', 'title', 'prompt', 'options'],
+    },
+    handler: async (args) => api('POST', '/api/permission-requests', args),
+  },
+  {
     name: 'mc_wait_permission_request',
     description: 'Wait until a permission request is approved, denied, expired, or cancelled. Use after mc_create_permission_request before continuing the blocked action.',
     inputSchema: {
@@ -533,6 +556,32 @@ const TOOLS = [
         reason,
         deciderType: deciderType || 'steward_agent',
         deciderAgentId,
+      }),
+  },
+  {
+    name: 'mc_record_worker_human_reply',
+    description: 'Record that a human replied inside the Worker session and convert it into a structured platform decision. Use this so the platform does not keep waiting for approval.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        requestId: { type: 'string', description: 'Permission request ID' },
+        selectedOptionId: { type: 'string', description: 'Approved/denied option id selected by the human reply' },
+        replyText: { type: 'string', description: 'Human reply text observed in the Worker session' },
+        sessionId: { type: 'string', description: 'Worker session id' },
+        messageId: { type: 'string', description: 'Worker message id for idempotency' },
+        observedAt: { type: 'string', description: 'ISO timestamp when the reply was observed' },
+        idempotencyKey: { type: 'string', description: 'Stable idempotency key' },
+      },
+      required: ['requestId', 'selectedOptionId'],
+    },
+    handler: async ({ requestId, selectedOptionId, replyText, sessionId, messageId, observedAt, idempotencyKey }) =>
+      api('POST', `/api/permission-requests/${encodeURIComponent(requestId)}/worker-human-reply`, {
+        selectedOptionId,
+        replyText,
+        sessionId,
+        messageId,
+        observedAt,
+        idempotencyKey,
       }),
   },
 
@@ -786,7 +835,7 @@ for (const tool of TOOLS) {
 
 const SERVER_INFO = {
   name: 'mission-control',
-  version: '2.1.9',
+  version: '2.1.10',
 };
 
 const CAPABILITIES = {

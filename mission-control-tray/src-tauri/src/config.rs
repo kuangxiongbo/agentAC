@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 pub const DEFAULT_CENTER_URL: &str = "https://agent.1sheng.work";
 pub const DEFAULT_PORT: u16 = 5101;
-pub const DEFAULT_CLIENT_VERSION: &str = "2.1.9";
+pub const DEFAULT_CLIENT_VERSION: &str = "2.1.10";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeConfig {
@@ -42,7 +42,7 @@ pub struct EdgeConfig {
 
 /// 安装后仅需填写「连接地址 + API 令牌」即视为可启动。
 pub fn is_setup_complete(cfg: &EdgeConfig) -> bool {
-    has_credentials(cfg) && cfg.setup_completed == Some(true)
+    has_credentials(cfg)
 }
 
 pub fn has_credentials(cfg: &EdgeConfig) -> bool {

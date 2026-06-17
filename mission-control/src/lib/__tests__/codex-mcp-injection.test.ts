@@ -18,9 +18,9 @@ describe('codex-mcp-injection', () => {
     expect(args).toContain('-c')
     expect(args.some((arg) => arg.startsWith('mcp_servers.mission_control.command='))).toBe(true)
     expect(args.some((arg) => arg.startsWith('mcp_servers.mission_control.args='))).toBe(true)
-    expect(args.some((arg) => arg.includes('"MC_MANAGED_SESSION":"1"'))).toBe(true)
-    expect(args.some((arg) => arg.includes('"MC_AGENT_ID":"42"'))).toBe(true)
-    expect(args.some((arg) => arg.includes('"MC_LOCAL_CLI_PERMISSION_MODE":"full"'))).toBe(true)
+    expect(args.some((arg) => arg.includes('MC_MANAGED_SESSION = "1"'))).toBe(true)
+    expect(args.some((arg) => arg.includes('MC_AGENT_ID = "42"'))).toBe(true)
+    expect(args.some((arg) => arg.includes('MC_LOCAL_CLI_PERMISSION_MODE = "full"'))).toBe(true)
 
     const finalArgs = withCodexMcpConfigArgs(['exec', 'hello'], {
       managedByPlatform: true,
