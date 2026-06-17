@@ -1,6 +1,6 @@
 [package]
 name = "mission-control-tray"
-version = "3.0.4"
+version = "3.0.5"
 description = "E-Agent Edge — tray launcher for mission-control-client runtime"
 authors = ["1sheng"]
 edition = "2021"

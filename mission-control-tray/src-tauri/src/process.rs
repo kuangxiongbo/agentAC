@@ -17,6 +17,14 @@ struct HealthResponse {
     version: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct PortOwnerInfo {
+    pid: String,
+    command: Option<String>,
+    cwd: Option<PathBuf>,
+    owned_by_edge: bool,
+}
+
 pub fn is_running() -> bool {
     let mut guard = CHILD.lock().unwrap();
     if let Some(child) = guard.as_mut() {
@@ -190,6 +198,23 @@ fn pid_cwd(pid: &str) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
+fn pid_command(pid: &str) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-p", pid, "-o", "comm="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn is_edge_runtime_port_owner(pid: &str) -> bool {
     let runtime_root = config::runtime_root()
         .canonicalize()
@@ -198,6 +223,44 @@ fn is_edge_runtime_port_owner(pid: &str) -> bool {
         .and_then(|cwd| cwd.canonicalize().ok())
         .map(|cwd| cwd.starts_with(&runtime_root))
         .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn port_owner_infos(port: u16) -> Result<Vec<PortOwnerInfo>, String> {
+    Ok(port_owner_pids(port)?
+        .into_iter()
+        .map(|pid| PortOwnerInfo {
+            command: pid_command(&pid),
+            cwd: pid_cwd(&pid),
+            owned_by_edge: is_edge_runtime_port_owner(&pid),
+            pid,
+        })
+        .collect())
+}
+
+#[cfg(target_os = "macos")]
+fn format_port_owner_infos(infos: &[PortOwnerInfo]) -> String {
+    if infos.is_empty() {
+        return "未识别到占用进程".to_string();
+    }
+    infos
+        .iter()
+        .map(|info| {
+            let command = info.command.as_deref().unwrap_or("unknown");
+            let cwd = info
+                .cwd
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            let owner = if info.owned_by_edge {
+                "E-Agent Edge"
+            } else {
+                "other"
+            };
+            format!("PID {} · {} · {} · cwd={}", info.pid, command, owner, cwd)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn kill_port_owner(port: u16) -> Result<(), String> {
@@ -336,6 +399,20 @@ fn wait_until_current_runtime_healthy(cfg: &EdgeConfig, max_attempts: u32) -> Re
     ))
 }
 
+fn recover_for_version_mismatch(
+    cfg: &EdgeConfig,
+    bootstrap: Option<&CenterBootstrap>,
+) -> Result<bool, String> {
+    let stale = recover_stale_healthy_port(cfg)?;
+    let owned = recover_owned_port(cfg, "下载完成后仍存在旧 runtime 进程")?;
+    if !stale && !owned {
+        return Ok(false);
+    }
+    start(cfg, bootstrap)?;
+    wait_until_current_runtime_healthy(cfg, 40)?;
+    Ok(true)
+}
+
 fn apply_bootstrap_settings_if_needed(
     cfg: &EdgeConfig,
     bootstrap: Option<&CenterBootstrap>,
@@ -367,6 +444,28 @@ pub fn ensure_running(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> 
             );
             return apply_bootstrap_settings_if_needed(cfg, bootstrap);
         }
+        #[cfg(target_os = "macos")]
+        {
+            let infos = port_owner_infos(cfg.port)?;
+            if infos.iter().all(|info| info.owned_by_edge) {
+                eprintln!(
+                    "[E-Agent Edge] 端口 {} 仍被旧 runtime 占用，执行最终强制回收:\n{}",
+                    cfg.port,
+                    format_port_owner_infos(&infos)
+                );
+                kill_port_owner(cfg.port)?;
+                start(cfg, bootstrap)?;
+                wait_until_current_runtime_healthy(cfg, 40)?;
+                return apply_bootstrap_settings_if_needed(cfg, bootstrap);
+            }
+            if !infos.is_empty() {
+                return Err(format!(
+                    "端口 {} 已被其他程序占用，E-Agent Edge 未自动终止该进程。请先关闭占用程序后重试：\n{}",
+                    cfg.port,
+                    format_port_owner_infos(&infos)
+                ));
+            }
+        }
         if is_healthy(cfg) {
             return Err(format!(
                 "端口 {} 已被旧版本 Web 客户端占用，但自动回收失败。请退出托盘后重试，或手动停止占用该端口的 node 进程。",
@@ -382,10 +481,7 @@ pub fn ensure_running(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> 
     // 先等 5101 健康，再写入 apply-bootstrap（否则易误报「无法调用 apply-bootstrap」）
     if let Err(version_err) = wait_until_current_runtime_healthy(cfg, 40) {
         eprintln!("[E-Agent Edge] {version_err}");
-        if recover_stale_healthy_port(cfg)? {
-            start(cfg, bootstrap)?;
-            wait_until_current_runtime_healthy(cfg, 40)?;
-        } else {
+        if !recover_for_version_mismatch(cfg, bootstrap)? {
             return Err(version_err);
         }
     }
@@ -432,6 +528,25 @@ pub fn start(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<()
             );
             return Ok(());
         }
+        #[cfg(target_os = "macos")]
+        {
+            let infos = port_owner_infos(cfg.port)?;
+            if infos.iter().all(|info| info.owned_by_edge) {
+                eprintln!(
+                    "[E-Agent Edge] start(): 端口 {} 仍被旧 runtime 占用，执行最终强制回收:\n{}",
+                    cfg.port,
+                    format_port_owner_infos(&infos)
+                );
+                kill_port_owner(cfg.port)?;
+            } else if !infos.is_empty() {
+                return Err(format!(
+                    "端口 {} 已被其他程序占用，E-Agent Edge 未自动终止该进程。请先关闭占用程序后重试：\n{}",
+                    cfg.port,
+                    format_port_owner_infos(&infos)
+                ));
+            }
+        }
+        if port_in_use(cfg.port) {
         eprintln!(
             "[E-Agent Edge] 端口 {} 已被占用（多为 pnpm prod:restart）。请先执行: cd mission-control-client && pnpm prod:restart --stop，或停止占用该端口的进程后重试托盘。",
             cfg.port
@@ -440,6 +555,7 @@ pub fn start(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<()
             "端口 {} 已被占用，请先停止本机 Web 客户端（pnpm prod:restart --stop）再连接",
             cfg.port
         ));
+        }
     }
 
     let server_js = runtime::server_js_path();
@@ -521,6 +637,26 @@ pub fn restart(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<
     stop()?;
     let _ = recover_stale_healthy_port(cfg)?;
     let _ = recover_owned_port(cfg, "重启前检测到非当前 runtime")?;
+    if port_in_use(cfg.port) && !is_healthy(cfg) {
+        #[cfg(target_os = "macos")]
+        {
+            let infos = port_owner_infos(cfg.port)?;
+            if infos.iter().all(|info| info.owned_by_edge) {
+                eprintln!(
+                    "[E-Agent Edge] restart(): 端口 {} 仍被旧 runtime 占用，执行最终强制回收:\n{}",
+                    cfg.port,
+                    format_port_owner_infos(&infos)
+                );
+                kill_port_owner(cfg.port)?;
+            } else if !infos.is_empty() {
+                return Err(format!(
+                    "端口 {} 已被其他程序占用，E-Agent Edge 未自动终止该进程。请先关闭占用程序后重试：\n{}",
+                    cfg.port,
+                    format_port_owner_infos(&infos)
+                ));
+            }
+        }
+    }
     if port_in_use(cfg.port) && !is_healthy(cfg) {
         eprintln!(
             "[E-Agent Edge] 端口 {} 仍被占用，请手动停止旧 Web 客户端后重试",
