@@ -10,6 +10,7 @@ import {
   recordWorkerHumanReply,
   waitForPermissionRequestDecision,
 } from '@/lib/permission-requests'
+import { listHumanWatchEvents } from '@/lib/human-watch-events'
 
 describe('permission-requests', () => {
   let db: Database.Database
@@ -55,6 +56,12 @@ describe('permission-requests', () => {
     const rows = listPermissionRequests({ workspaceId: 1, tenantId: 1, status: 'pending' }, db)
     expect(rows).toHaveLength(1)
     expect(rows[0]?.id).toBe('pr-1')
+
+    const events = listHumanWatchEvents({ workspaceId: 1, permissionRequestId: 'pr-1' }, db)
+    expect(events).toHaveLength(1)
+    expect(events[0]?.status).toBe('pending')
+    expect(events[0]?.source).toBe('permission_request')
+    expect(events[0]?.permission_request_id).toBe('pr-1')
   })
 
   it('decides by option id and records the decider', () => {
@@ -80,6 +87,11 @@ describe('permission-requests', () => {
       .prepare(`SELECT * FROM permission_request_decisions WHERE request_id = ?`)
       .get('pr-1') as { option_id?: string } | undefined
     expect(decision?.option_id).toBe('approve_readonly')
+
+    const events = listHumanWatchEvents({ workspaceId: 1, permissionRequestId: 'pr-1' }, db)
+    expect(events).toHaveLength(1)
+    expect(events[0]?.status).toBe('resolved')
+    expect(events[0]?.resolved_action).toBe('approve_request')
   })
 
   it('rejects invalid option ids', () => {

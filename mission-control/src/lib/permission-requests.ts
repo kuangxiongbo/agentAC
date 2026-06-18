@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getDatabase } from './db'
 import { eventBus } from './event-bus'
+import { createHumanWatchEvent } from './human-watch-events'
+import { listHumanWatchEvents, updateHumanWatchEvent } from './human-watch-events'
 
 export type PermissionRequestRisk = 'low' | 'medium' | 'high' | 'critical'
 export type PermissionRequestStatus = 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled'
@@ -259,6 +261,21 @@ export function isDangerousPermissionRequest(request: PermissionRequestView): bo
   return detectsDangerousAction(request).length > 0
 }
 
+function resolveLinkedWatchEvents(
+  requestId: string,
+  workspaceId: number,
+  database?: Database.Database,
+) {
+  return listHumanWatchEvents(
+    {
+      workspaceId,
+      permissionRequestId: requestId,
+      limit: 20,
+    },
+    database,
+  )
+}
+
 function normalizeIdempotencyKey(value: string | null | undefined): string | null {
   const key = String(value || '').trim()
   return key || null
@@ -369,6 +386,50 @@ export function createPermissionRequest(
 
   const created = getPermissionRequest(id, input.workspaceId, db)
   if (!created) throw new Error('Failed to create permission request')
+  const watchEvent = created.context?.watch_event
+  const watchEventSource =
+    watchEvent && typeof watchEvent === 'object' && !Array.isArray(watchEvent)
+      ? String((watchEvent as Record<string, unknown>).source || '').trim()
+      : ''
+  const summary = [created.title, created.prompt].filter(Boolean).join(' - ').trim()
+  createHumanWatchEvent(
+    {
+      workspaceId: created.workspace_id,
+      tenantId: created.tenant_id,
+      clientId: created.client_id ?? 'local',
+      bindingId: created.binding_id,
+      workerSyncIndexId: created.worker_sync_index_id,
+      workerLocalAgentId: created.worker_local_agent_id,
+      workerName: created.worker_name,
+      workerSessionId: created.worker_session_id,
+      stewardSyncIndexId: created.steward_sync_index_id,
+      stewardLocalAgentId: created.steward_local_agent_id,
+      stewardName: created.steward_name,
+      permissionRequestId: created.id,
+      source: watchEventSource === 'worker_tool' ? 'worker_tool' : 'permission_request',
+      status: 'pending',
+      priority: created.risk === 'critical' || created.risk === 'high' ? created.risk : 'medium',
+      title: created.title,
+      summary: summary || created.prompt,
+      context: {
+        permission_request_id: created.id,
+        request_type: created.request_type,
+        options: created.options,
+        request_risk: created.risk,
+        session_kind:
+          created.context && typeof created.context === 'object' && !Array.isArray(created.context)
+            ? (created.context as Record<string, unknown>).session_kind ?? null
+            : null,
+        watch_event: created.context?.watch_event ?? null,
+      },
+      latestWorkerMessage: created.prompt,
+      suggestedAction: created.options.some((option) => option.action === 'ask_human')
+        ? 'approve_request'
+        : 'send_message_to_worker',
+      dedupeKey: `permission_request:${created.id}`,
+    },
+    db,
+  )
   eventBus.broadcast('permission.requested', created)
   return created
 }
@@ -651,6 +712,25 @@ export function decidePermissionRequest(
 
     const decided = getPermissionRequest(input.requestId, input.workspaceId, db)
     if (!decided) throw new Error('Permission request disappeared after decision')
+    for (const event of resolveLinkedWatchEvents(decided.id, decided.workspace_id, db)) {
+      updateHumanWatchEvent(
+        event.id,
+        decided.workspace_id,
+        {
+          status: 'resolved',
+          resolvedAction: option.action === 'approve' ? 'approve_request' : 'deny_request',
+          resolvedNote: reason,
+          resolvedByType: input.deciderType,
+          resolvedByUserId: input.deciderUserId ?? null,
+          resolvedByAgentId: deciderAgentId,
+          contextPatch: {
+            permission_status: decided.status,
+            selected_option_id: option.id,
+          },
+        },
+        db,
+      )
+    }
     eventBus.broadcast('permission.decided', decided)
     return decided
   })()
@@ -684,6 +764,19 @@ export function recordWorkerHumanReply(
     ).run(JSON.stringify(context), input.requestId, input.workspaceId)
     const updated = getPermissionRequest(input.requestId, input.workspaceId, db)
     if (!updated) throw new Error('Permission request disappeared after worker reply audit')
+    for (const event of resolveLinkedWatchEvents(updated.id, updated.workspace_id, db)) {
+      updateHumanWatchEvent(
+        event.id,
+        updated.workspace_id,
+        {
+          contextPatch: {
+            worker_human_reply_late: true,
+            permission_status: updated.status,
+          },
+        },
+        db,
+      )
+    }
     eventBus.broadcast('permission.decided', updated)
     throw new Error(`Permission request is ${current.status}`)
   }

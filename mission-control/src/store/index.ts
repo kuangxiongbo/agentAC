@@ -432,6 +432,43 @@ export interface PermissionRequest {
   updated_at: number
 }
 
+export interface HumanWatchEvent {
+  id: string
+  workspace_id: number
+  tenant_id: number | null
+  client_id: string
+  binding_id: number | null
+  worker_sync_index_id: number | null
+  worker_local_agent_id: number | null
+  worker_name: string | null
+  worker_session_id: string | null
+  steward_sync_index_id: number | null
+  steward_local_agent_id: number | null
+  steward_name: string | null
+  permission_request_id: string | null
+  source: string
+  status: 'pending' | 'visible' | 'claimed' | 'resolved' | 'dismissed' | 'expired'
+  priority: 'low' | 'medium' | 'high' | 'critical'
+  title: string
+  summary: string
+  context: Record<string, unknown> | null
+  latest_worker_message: string | null
+  suggested_action: 'send_message_to_worker' | 'approve_request' | 'deny_request' | 'dismiss' | null
+  claimed_by_type: 'human_user' | 'human_external' | 'steward_agent' | 'system' | null
+  claimed_by_user_id: number | null
+  claimed_by_agent_id: string | null
+  claimed_at: number | null
+  resolved_action: 'send_message_to_worker' | 'approve_request' | 'deny_request' | 'dismiss' | null
+  resolved_note: string | null
+  resolved_by_type: 'human_user' | 'human_external' | 'steward_agent' | 'system' | null
+  resolved_by_user_id: number | null
+  resolved_by_agent_id: string | null
+  resolved_at: number | null
+  dedupe_key: string | null
+  created_at: number
+  updated_at: number
+}
+
 interface AgentCenterStore {
   // Dashboard Mode (local vs full gateway)
   dashboardMode: 'full' | 'local'
@@ -631,6 +668,10 @@ interface AgentCenterStore {
   setPermissionRequests: (requests: PermissionRequest[]) => void
   upsertPermissionRequest: (request: PermissionRequest) => void
   updatePermissionRequest: (id: string, updates: Partial<PermissionRequest>) => void
+  humanWatchEvents: HumanWatchEvent[]
+  setHumanWatchEvents: (events: HumanWatchEvent[]) => void
+  upsertHumanWatchEvent: (event: HumanWatchEvent) => void
+  updateHumanWatchEvent: (id: string, updates: Partial<HumanWatchEvent>) => void
 
   // Skills (persisted across tab switches)
   skillsList: { id: string; name: string; source: string; path: string; description?: string; registry_slug?: string | null; security_status?: string | null }[] | null
@@ -982,6 +1023,31 @@ export const useAgentCenterStore = create<AgentCenterStore>()(
     updatePermissionRequest: (id, updates) =>
       set((state) => ({
         permissionRequests: state.permissionRequests.map((item) => item.id === id ? { ...item, ...updates } : item),
+      })),
+    humanWatchEvents: [],
+    setHumanWatchEvents: (events) =>
+      set((state) => {
+        const next = [...state.humanWatchEvents]
+        for (const event of events) {
+          const existing = next.findIndex((item) => item.id === event.id)
+          if (existing === -1) next.unshift(event)
+          else next[existing] = { ...next[existing], ...event }
+        }
+        return { humanWatchEvents: next.slice(0, 200) }
+      }),
+    upsertHumanWatchEvent: (event) =>
+      set((state) => {
+        const existing = state.humanWatchEvents.findIndex((item) => item.id === event.id)
+        if (existing === -1) {
+          return { humanWatchEvents: [event, ...state.humanWatchEvents].slice(0, 200) }
+        }
+        const next = [...state.humanWatchEvents]
+        next[existing] = { ...next[existing], ...event }
+        return { humanWatchEvents: next }
+      }),
+    updateHumanWatchEvent: (id, updates) =>
+      set((state) => ({
+        humanWatchEvents: state.humanWatchEvents.map((item) => item.id === id ? { ...item, ...updates } : item),
       })),
 
     // Skills

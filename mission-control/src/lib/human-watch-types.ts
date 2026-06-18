@@ -1,5 +1,28 @@
 export type HumanWatchDecision = 'noop' | 'auto_send' | 'suggest_only' | 'skipped'
 
+export type HumanWatchEventSource =
+  | 'worker_tool'
+  | 'permission_request'
+  | 'transcript_rule'
+  | 'transcript_wait'
+  | 'system'
+
+export type HumanWatchEventStatus =
+  | 'pending'
+  | 'visible'
+  | 'claimed'
+  | 'resolved'
+  | 'dismissed'
+  | 'expired'
+
+export type HumanWatchEventAction =
+  | 'send_message_to_worker'
+  | 'approve_request'
+  | 'deny_request'
+  | 'dismiss'
+
+export type HumanWatchEventPriority = 'low' | 'medium' | 'high' | 'critical'
+
 export type HumanWatchInterventionEventType =
   | 'rule_evaluated'
   | 'intervention_attempt'
@@ -80,5 +103,60 @@ export interface ListHumanWatchInterventionsFilters {
   stewardSyncIndexId?: number
   stewardLocalAgentId?: number
   since?: number
+  limit?: number
+}
+
+export interface HumanWatchEventRow {
+  id: string
+  workspace_id: number
+  tenant_id: number | null
+  client_id: string
+  binding_id: number | null
+  worker_sync_index_id: number | null
+  worker_local_agent_id: number | null
+  worker_name: string | null
+  worker_session_id: string | null
+  steward_sync_index_id: number | null
+  steward_local_agent_id: number | null
+  steward_name: string | null
+  permission_request_id: string | null
+  source: HumanWatchEventSource
+  status: HumanWatchEventStatus
+  priority: HumanWatchEventPriority
+  title: string
+  summary: string
+  context_json: string | null
+  latest_worker_message: string | null
+  suggested_action: HumanWatchEventAction | null
+  claimed_by_type: 'human_user' | 'human_external' | 'steward_agent' | 'system' | null
+  claimed_by_user_id: number | null
+  claimed_by_agent_id: string | null
+  claimed_at: number | null
+  resolved_action: HumanWatchEventAction | null
+  resolved_note: string | null
+  resolved_by_type: 'human_user' | 'human_external' | 'steward_agent' | 'system' | null
+  resolved_by_user_id: number | null
+  resolved_by_agent_id: string | null
+  resolved_at: number | null
+  dedupe_key: string | null
+  created_at: number
+  updated_at: number
+}
+
+export interface HumanWatchEventView extends Omit<HumanWatchEventRow, 'context_json'> {
+  context: Record<string, unknown> | null
+}
+
+export interface ListHumanWatchEventsFilters {
+  workspaceId: number
+  tenantId?: number
+  clientId?: string
+  bindingId?: number
+  workerLocalAgentId?: number
+  stewardLocalAgentId?: number
+  workerSessionId?: string
+  permissionRequestId?: string
+  source?: HumanWatchEventSource
+  status?: HumanWatchEventStatus
   limit?: number
 }

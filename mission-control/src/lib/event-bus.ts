@@ -31,6 +31,7 @@ export type EventType =
   | 'human_watch.bindings_synced'
   | 'permission.requested'
   | 'permission.decided'
+  | 'human_watch.event'
   | 'agent.status_changed'
   | 'audit.security'
   | 'security.event'

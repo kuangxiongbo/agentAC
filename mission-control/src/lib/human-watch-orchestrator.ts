@@ -7,6 +7,7 @@ import {
   hasSuccessfulInterventionFingerprint,
   logHumanWatchIntervention,
 } from './human-watch-audit'
+import { createHumanWatchEvent } from './human-watch-events'
 import type { HumanWatchBindingRow } from './human-watch-bindings'
 import {
   listAllEnabledHumanWatchBindings,
@@ -108,6 +109,70 @@ function auditBase(binding: HumanWatchBindingRow) {
     stewardName: binding.steward_name,
     workerSessionId: binding.worker_session_id,
   }
+}
+
+function createPendingWatchEvent(
+  binding: HumanWatchBindingRow,
+  messages: TranscriptMessage[],
+  evaluation: { fingerprint: string; rulesHit: Record<string, unknown> },
+  source: 'transcript_rule' | 'transcript_wait',
+) {
+  const lastAssistant = [...messages].reverse().find((message) => message.role === 'assistant')
+  const lastUser = [...messages].reverse().find((message) => message.role === 'user')
+  const summaryParts = [
+    binding.worker_name || `worker-${binding.worker_local_agent_id ?? binding.worker_sync_index_id ?? 'unknown'}`,
+    lastAssistant?.parts
+      ?.map((part) => {
+        if (part.type === 'text') return part.text
+        if (part.type === 'thinking') return part.thinking
+        return null
+      })
+      .filter(Boolean)
+      .join(' ')
+      .trim(),
+  ].filter(Boolean)
+
+  createHumanWatchEvent({
+    workspaceId: binding.workspace_id,
+    tenantId: binding.tenant_id,
+    clientId: binding.client_id,
+    bindingId: binding.id,
+    workerSyncIndexId: binding.worker_sync_index_id,
+    workerLocalAgentId: binding.worker_local_agent_id,
+    workerName: binding.worker_name,
+    workerSessionId: binding.worker_session_id,
+    stewardSyncIndexId: binding.steward_sync_index_id,
+    stewardLocalAgentId: binding.steward_local_agent_id,
+    stewardName: binding.steward_name,
+    source,
+    status: 'pending',
+    priority: evaluation.rulesHit.pending_tool || evaluation.rulesHit.confirmation_strong ? 'high' : 'medium',
+    title: 'Worker 等待值守介入',
+    summary: summaryParts.join(' · ') || 'Worker 会话等待回复或卡住',
+    context: {
+      session_kind: resolveSessionKindForBinding(binding),
+      rules_hit: evaluation.rulesHit,
+      fingerprint: evaluation.fingerprint,
+      last_user_message:
+        lastUser?.parts
+          ?.map((part) => (part.type === 'text' ? part.text : null))
+          .filter(Boolean)
+          .join(' ')
+          .trim() || null,
+    },
+    latestWorkerMessage:
+      lastAssistant?.parts
+        ?.map((part) => {
+          if (part.type === 'text') return part.text
+          if (part.type === 'thinking') return part.thinking
+          return null
+        })
+        .filter(Boolean)
+        .join(' ')
+        .trim() || null,
+    suggestedAction: 'send_message_to_worker',
+    dedupeKey: `transcript:${binding.id}:${binding.worker_session_id}:${evaluation.fingerprint}`,
+  })
 }
 
 function withinGracePeriod(bindingId: number, graceSeconds: number): boolean {
@@ -260,6 +325,16 @@ export async function evaluateHumanWatchBinding(
     }
 
     if (!evaluation.matched) return
+
+    createPendingWatchEvent(
+      binding,
+      page.messages,
+      {
+        fingerprint: evaluation.fingerprint,
+        rulesHit: evaluation.rulesHit,
+      },
+      options.trigger === 'poll' || options.llmSweep ? 'transcript_wait' : 'transcript_rule',
+    )
 
     if (binding.mode === 'suggest_only') {
       logHumanWatchIntervention({

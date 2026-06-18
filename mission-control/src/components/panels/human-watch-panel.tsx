@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Loader } from '@/components/ui/loader'
 import { useAgentCenterStore } from '@/store'
+import { HumanWatchEventsTab } from '@/components/panels/human-watch-events-tab'
 
 interface BindingRow {
   id: number
@@ -117,6 +118,12 @@ export function HumanWatchPanel() {
         ) : (
           <p className="text-xs text-muted-foreground">{t('noBindings')}</p>
         )}
+      </section>
+
+      <section className="rounded-xl border border-border/70 bg-card p-4 space-y-3">
+        <h2 className="text-sm font-semibold">{t('eventsTitle')}</h2>
+        <p className="text-xs text-muted-foreground">{t('eventsDescription')}</p>
+        <HumanWatchEventsTab />
       </section>
     </div>
   )

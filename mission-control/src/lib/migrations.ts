@@ -1760,6 +1760,63 @@ const migrations: Migration[] = [
       db.exec(`CREATE INDEX IF NOT EXISTS idx_permission_decisions_request ON permission_request_decisions(request_id, created_at DESC)`)
     },
   },
+  {
+    id: '066_human_watch_events',
+    up(db: Database.Database) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS human_watch_events (
+          id TEXT PRIMARY KEY,
+          workspace_id INTEGER NOT NULL,
+          tenant_id INTEGER,
+          client_id TEXT NOT NULL,
+          binding_id INTEGER,
+          worker_sync_index_id INTEGER,
+          worker_local_agent_id INTEGER,
+          worker_name TEXT,
+          worker_session_id TEXT,
+          steward_sync_index_id INTEGER,
+          steward_local_agent_id INTEGER,
+          steward_name TEXT,
+          permission_request_id TEXT,
+          source TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          priority TEXT NOT NULL DEFAULT 'medium',
+          title TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          context_json TEXT,
+          latest_worker_message TEXT,
+          suggested_action TEXT,
+          claimed_by_type TEXT,
+          claimed_by_user_id INTEGER,
+          claimed_by_agent_id TEXT,
+          claimed_at INTEGER,
+          resolved_action TEXT,
+          resolved_note TEXT,
+          resolved_by_type TEXT,
+          resolved_by_user_id INTEGER,
+          resolved_by_agent_id TEXT,
+          resolved_at INTEGER,
+          dedupe_key TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (binding_id) REFERENCES human_watch_bindings(id) ON DELETE SET NULL,
+          FOREIGN KEY (permission_request_id) REFERENCES permission_requests(id) ON DELETE SET NULL
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_events_workspace_status_created
+        ON human_watch_events(workspace_id, status, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_events_client_status_created
+        ON human_watch_events(client_id, status, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_events_worker_session
+        ON human_watch_events(worker_session_id, status, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_events_permission_request
+        ON human_watch_events(permission_request_id, status, created_at DESC)`)
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_hw_events_dedupe_pending
+        ON human_watch_events(workspace_id, client_id, dedupe_key)
+        WHERE dedupe_key IS NOT NULL
+          AND status IN ('pending', 'visible', 'claimed')`)
+    },
+  },
 ]
 
 export function runMigrations(db: Database.Database) {

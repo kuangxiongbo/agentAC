@@ -87,6 +87,22 @@ const bridgeHelloTimers: Map<string, NodeJS.Timeout> =
 
 let bridgeKeepaliveTimer: ReturnType<typeof setInterval> | null = null
 
+function bridgePortAlreadyInUse(port: number): boolean {
+  try {
+    const net = require('node:net') as typeof import('node:net')
+    const tester = net.createServer()
+    return new Promise<boolean>((resolve) => {
+      tester.once('error', () => resolve(true))
+      tester.once('listening', () => {
+        tester.close(() => resolve(false))
+      })
+      tester.listen(port, '::')
+    }) as unknown as boolean
+  } catch {
+    return false
+  }
+}
+
 function getSettingValue(key: string): string {
   try {
     const db = getDatabase()
@@ -488,6 +504,7 @@ function resolvePendingRequest(msg: any) {
 
 export function initBridgeServer(port: number = 5002) {
   if (wss) return
+  if (bridgeServerMeta.port === port && bridgeServerMeta.startedAt) return
 
   try {
     // ── Token-based access control ──────────────────────────────────────────
@@ -862,13 +879,23 @@ export function initBridgeServer(port: number = 5002) {
       })
     })
 
-    wss.on('error', (err) => {
+    wss.on('error', (err: any) => {
+      if (err?.code === 'EADDRINUSE') {
+        logger.warn({ err, port }, '[BridgeServer] Bridge port already in use; dev duplicate listener ignored')
+        return
+      }
       logger.error({ err }, '[BridgeServer] WebSocket server error')
     })
 
     startBridgeKeepalive()
 
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.code === 'EADDRINUSE') {
+      logger.warn({ err, port }, '[BridgeServer] Bridge port already in use; assuming an existing bridge server is active')
+      bridgeServerMeta.port = port
+      bridgeServerMeta.startedAt = bridgeServerMeta.startedAt || Date.now()
+      return
+    }
     logger.error({ err }, '[BridgeServer] Failed to start bridge server')
   }
 }

@@ -17,6 +17,7 @@ import { isHumanWatchAgent, normalizeHumanWatchFramework } from '@/lib/human-wat
 import { HumanWatchRulesConfig } from '@/components/panels/human-watch-rules-config'
 import { HumanWatchBindingControls } from '@/components/panels/human-watch-binding-controls'
 import { useAgentEdgeIdentity } from '@/components/panels/use-agent-edge-identity'
+import { HumanWatchEventsTab } from '@/components/panels/human-watch-events-tab'
 
 interface BindingRow {
   id: number
@@ -235,6 +236,14 @@ export function HumanWatchWorkerBindTab({
           onSaved={load}
         />
       ) : null}
+
+      <div className="rounded-lg border border-border/60 bg-surface-1/40 p-3 space-y-2">
+        <p className="text-xs font-medium text-foreground">{t('eventsTitle')}</p>
+        <HumanWatchEventsTab
+          clientId={clientId}
+          workerLocalAgentId={effectiveWorkerLocalId}
+        />
+      </div>
 
       <label className="block text-xs text-muted-foreground">
         {t('stewardAgent')}
