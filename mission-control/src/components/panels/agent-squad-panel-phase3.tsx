@@ -433,7 +433,17 @@ export function AgentSquadPanelPhase3() {
   }, {} as Record<string, number>)
 
   const agentSections = useMemo(() => {
-    const topLevel = agents.filter((agent) => shouldShowAgentInSquadGrid(agent, agents))
+    const topLevel = agents.filter((agent) => {
+      if (!shouldShowAgentInSquadGrid(agent, agents)) return false
+      if (centralMode && !selectedClientId) {
+        const source = String((agent as any).source || '').trim()
+        const clientId = getAgentClientId(agent)
+        if (!clientId && (source === 'client' || source === 'bridge_index' || source === 'bridge')) {
+          return false
+        }
+      }
+      return true
+    })
 
     const groupByFramework = (list: Agent[]) => {
       const grouped = list.reduce((acc, agent) => {

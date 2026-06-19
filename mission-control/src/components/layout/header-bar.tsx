@@ -516,6 +516,21 @@ function ModeBadge({
     }
   }, [])
 
+  const deleteOfflineClient = useCallback(async (clientId: string) => {
+    const confirmation = window.prompt(
+      `${th('deleteClientConfirmTitle')}\n${th('deleteClientConfirmBody')}\n${th('deleteClientConfirmAction')}`,
+    )
+    if ((confirmation || '').trim() !== 'delete-client-data') return
+    const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/cleanup?confirm=delete-client-data`, {
+      method: 'DELETE',
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      throw new Error(data.error || th('deleteClientBlocked'))
+    }
+    await fetchServiceStatus()
+  }, [fetchServiceStatus, th])
+
   const formatLastSeen = useCallback((timestamp?: number) => {
     if (!timestamp) return '-'
     const diffSec = Math.max(0, Math.floor(Date.now() / 1000) - timestamp)
@@ -638,6 +653,23 @@ function ModeBadge({
                           <span className="truncate font-mono text-foreground/80">{formatLastSeen(client.last_seen)}</span>
                         </div>
                       </div>
+                      {client.status === 'disconnected' ? (
+                        <div className="mt-2 flex justify-end">
+                          <button
+                            type="button"
+                            className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-2xs text-rose-300 hover:bg-rose-500/20"
+                            onClick={async () => {
+                              try {
+                                await deleteOfflineClient(client.client_id)
+                              } catch (error) {
+                                console.error(error)
+                              }
+                            }}
+                          >
+                            {th('deleteClient')}
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   ))}
                 </div>
