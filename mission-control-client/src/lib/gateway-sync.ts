@@ -164,9 +164,12 @@ function buildRemoteAgentRegistrationName(clientName: string, agentName: string)
   return `${clientSlug}-agent-${hashSuffix(agentName)}`.slice(0, 63)
 }
 
-function normalizeRemoteRegisterRole(role: string): string {
+export function normalizeRemoteRegisterRole(role: string): string {
   const normalized = String(role || '').trim().toLowerCase()
   if (!normalized) return 'agent'
+  if (normalized === 'human-watch' || normalized === 'human_watch' || normalized.includes('human-watch')) {
+    return 'human-watch'
+  }
   if (normalized.includes('review')) return 'reviewer'
   if (normalized.includes('test') || normalized.includes('qa')) return 'tester'
   if (normalized.includes('ops') || normalized.includes('devops') || normalized.includes('infra')) return 'devops'
@@ -251,6 +254,7 @@ export async function runServerGatewaySync(): Promise<{ ok: boolean; message: st
           previous_client_name: previousClientName || undefined,
           agent_count: agents.length,
           agent_inventory: agents.map((agent) => ({
+            local_agent_id: agent.id,
             original_name: agent.name,
             status: agent.status,
             role: agent.role,
@@ -375,10 +379,14 @@ export async function runServerGatewaySync(): Promise<{ ok: boolean; message: st
             },
             body: JSON.stringify({
               name: fullAgentName,
+              local_agent_id: agent.id,
               status: agent.status,
               role: normalizeRemoteRegisterRole(agent.role),
               framework: agent.framework || undefined,
               original_name: agent.name,
+              ...(String(agent.role || '').trim() === 'human-watch'
+                ? { agent_kind: 'human_watch' }
+                : {}),
               parent_name: agent.parent_id ? (agentNameById.get(agent.parent_id) || undefined) : undefined,
             })
           })

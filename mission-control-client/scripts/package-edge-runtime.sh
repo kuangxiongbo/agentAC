@@ -32,7 +32,7 @@ echo "==> build standalone (mission-control-client)"
 cd "$PROJECT_ROOT"
 rm -rf "$PROJECT_ROOT/dist/edge-runtime-staging-$VERSION-$PLATFORM"
 pnpm install --frozen-lockfile
-pnpm build
+NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=8192}" pnpm build
 
 STANDALONE="$PROJECT_ROOT/.next/standalone"
 if [[ ! -f "$STANDALONE/server.js" ]]; then

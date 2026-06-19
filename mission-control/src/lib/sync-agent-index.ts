@@ -238,6 +238,26 @@ export function clientAgentInventoryKey(
   return `${nodeId}:${originalName.toLowerCase()}`
 }
 
+function clientAgentLocalIdKey(
+  nodeId: string | null | undefined,
+  config: unknown,
+): string | null {
+  if (!nodeId) return null
+  let parsed: Record<string, unknown> = {}
+  if (typeof config === 'string') {
+    try {
+      parsed = JSON.parse(config) as Record<string, unknown>
+    } catch {
+      parsed = {}
+    }
+  } else if (config && typeof config === 'object' && !Array.isArray(config)) {
+    parsed = config as Record<string, unknown>
+  }
+  const localAgentId = Number(parsed.local_agent_id)
+  if (!Number.isFinite(localAgentId)) return null
+  return `${nodeId}:${localAgentId}`
+}
+
 export function mergeDbAgentsWithBridgeIndex<T extends { source?: string; node_id?: string | null; config?: unknown }>(
   dbAgents: T[],
   indexRows: SyncAgentIndexRow[],
@@ -246,31 +266,60 @@ export function mergeDbAgentsWithBridgeIndex<T extends { source?: string; node_i
   const indexByKey = new Map<string, SyncAgentIndexRow>(
     indexRows.map((row) => [`${row.client_id}:${row.original_name.toLowerCase()}`, row]),
   )
+  const indexByLocalId = new Map<string, SyncAgentIndexRow>(
+    indexRows.map((row) => [`${row.client_id}:${row.local_agent_id}`, row]),
+  )
 
   const clientMirrorKeys = new Set<string>()
+  const clientMirrorLocalIdKeys = new Set<string>()
   for (const agent of dbAgents) {
     const key = clientAgentInventoryKey(agent.node_id, agent.config)
     if (key) clientMirrorKeys.add(key)
+    const localIdKey = clientAgentLocalIdKey(agent.node_id, agent.config)
+    if (localIdKey) clientMirrorLocalIdKeys.add(localIdKey)
   }
 
   // Bridge 在线：同 key 的 HTTP client 镜像让位给 bridge_index（以边缘实时索引为准）
   const filteredDbAgents = dbAgents.filter((agent) => {
     if (agent.source !== 'client') return true
+    const localIdKey = clientAgentLocalIdKey(agent.node_id, agent.config)
+    if (localIdKey && bridgeOnline(agent.node_id || '') && indexByLocalId.has(localIdKey)) {
+      return false
+    }
     const key = clientAgentInventoryKey(agent.node_id, agent.config)
-    if (!key || !bridgeOnline(agent.node_id || '')) return true
+    if (!bridgeOnline(agent.node_id || '')) return true
+    if (!key) {
+      let parsed: Record<string, unknown> = {}
+      if (typeof agent.config === 'string') {
+        try {
+          parsed = JSON.parse(agent.config) as Record<string, unknown>
+        } catch {
+          parsed = {}
+        }
+      } else if (agent.config && typeof agent.config === 'object' && !Array.isArray(agent.config)) {
+        parsed = agent.config as Record<string, unknown>
+      }
+      const originalName = String(parsed.original_name || '').trim().toLowerCase()
+      const clientId = String(agent.node_id || '').trim()
+      if (clientId && originalName && indexByKey.has(`${clientId}:${originalName}`)) {
+        return false
+      }
+      return true
+    }
     return !indexByKey.has(key)
   })
 
   const merged: Array<T | ReturnType<typeof bridgeIndexRowToAgentListItem>> = [...filteredDbAgents]
   for (const row of indexRows) {
     const key = `${row.client_id}:${row.original_name.toLowerCase()}`
+    const localIdKey = `${row.client_id}:${row.local_agent_id}`
     const online = bridgeOnline(row.client_id)
     if (online) {
       merged.push(bridgeIndexRowToAgentListItem(row, true))
       continue
     }
     // Bridge 离线：保留 HTTP 镜像；无镜像时才展示上次索引缓存
-    if (!clientMirrorKeys.has(key)) {
+    if (!clientMirrorKeys.has(key) && !clientMirrorLocalIdKeys.has(localIdKey)) {
       merged.push(bridgeIndexRowToAgentListItem(row, false))
     }
   }

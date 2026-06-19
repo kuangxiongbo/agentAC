@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { upsertSyncClientHeartbeat } from '@/lib/sync-clients'
-import { parseAgentInventory, reconcileClientAgentInventory } from '@/lib/sync-agent-inventory'
+import { cleanupDuplicateClientAgents, parseAgentInventory, reconcileClientAgentInventory } from '@/lib/sync-agent-inventory'
 import { config } from '@/lib/config'
 
 export const dynamic = 'force-dynamic'
@@ -46,11 +46,13 @@ export async function POST(request: NextRequest) {
 
   const agentSyncMode = config.centralMode ? 'clients-only' : 'full'
   let agentsPruned = 0
+  let duplicateAgentsRemoved = 0
   if (agentSyncMode === 'full' && body?.agent_inventory !== undefined) {
     const workspaceId = auth.user.workspace_id ?? 1
     const inventory = parseAgentInventory(body.agent_inventory)
     const result = reconcileClientAgentInventory(workspaceId, clientId, clientName, inventory)
     agentsPruned = result.removed
+    duplicateAgentsRemoved = cleanupDuplicateClientAgents(workspaceId, clientId).removed
   }
 
   return NextResponse.json({
@@ -58,5 +60,6 @@ export async function POST(request: NextRequest) {
     client,
     agent_sync_mode: agentSyncMode,
     agents_pruned: agentsPruned,
+    duplicate_agents_removed: duplicateAgentsRemoved,
   })
 }

@@ -7,7 +7,7 @@ import { eventBus } from '@/lib/event-bus'
 import { logger } from '@/lib/logger'
 
 const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$/
-const VALID_ROLES = ['coder', 'reviewer', 'tester', 'devops', 'researcher', 'assistant', 'agent']
+const VALID_ROLES = ['coder', 'reviewer', 'tester', 'devops', 'researcher', 'assistant', 'agent', 'human-watch']
 
 /**
  * POST /api/agents/register — Agent self-registration.

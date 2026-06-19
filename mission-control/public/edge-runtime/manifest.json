@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "client_version": "2.1.14",
+  "client_version": "2.1.15",
   "tray_min_version": "0.1.0",
-  "published_at": "2026-06-19T00:29:52Z",
+  "published_at": "2026-06-19T12:59:04Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "/edge-runtime/client-runtime-2.1.14-darwin-aarch64.zip",
-      "sha256": "8e8058f3dbb2735794341b18b70a93850257f669bf390c3965eb0ea391f82ad0"
+      "url": "/edge-runtime/client-runtime-2.1.15-darwin-aarch64.zip",
+      "sha256": "5fcba6064ffe19cde0e854702f93b22c4ef8dbfd580429741984ce293da3ec3f"
     }
   }
 }

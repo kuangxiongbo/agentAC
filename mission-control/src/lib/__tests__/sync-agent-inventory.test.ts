@@ -1,12 +1,31 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   buildInventoryMatchSets,
   buildRemoteAgentRegistrationName,
+  cleanupDuplicateClientAgents,
   parseAgentInventory,
   shouldRetainClientSyncedAgent,
 } from '@/lib/sync-agent-inventory'
+import Database from 'better-sqlite3'
+import { runMigrations } from '@/lib/migrations'
 
 describe('sync-agent-inventory', () => {
+  let db: Database.Database
+
+  beforeEach(() => {
+    vi.resetModules()
+    db = new Database(':memory:')
+    runMigrations(db)
+    vi.doMock('@/lib/db', () => ({
+      getDatabase: () => db,
+    }))
+  })
+
+  afterEach(() => {
+    db.close()
+    vi.restoreAllMocks()
+  })
+
   it('parses agent_inventory payloads', () => {
     expect(
       parseAgentInventory([
@@ -43,5 +62,48 @@ describe('sync-agent-inventory', () => {
         matchSets,
       ),
     ).toBe(false)
+  })
+
+  it('matches by local_agent_id when present', () => {
+    const clientName = 'My Mac'
+    const inventory = [{ local_agent_id: 7, original_name: 'Coder' }]
+    const matchSets = buildInventoryMatchSets(clientName, inventory)
+
+    expect(
+      shouldRetainClientSyncedAgent(
+        { name: 'whatever', config: JSON.stringify({ local_agent_id: 7, original_name: 'Old Name' }) },
+        matchSets,
+      ),
+    ).toBe(true)
+
+    expect(
+      shouldRetainClientSyncedAgent(
+        { name: 'whatever', config: JSON.stringify({ local_agent_id: 9, original_name: 'Coder' }) },
+        matchSets,
+      ),
+    ).toBe(true)
+  })
+
+  it('cleans up duplicate client agents and keeps the newest row', async () => {
+    db.prepare(`
+      INSERT INTO agents (id, name, role, status, config, created_at, updated_at, last_seen, workspace_id, source, node_id)
+      VALUES (?, ?, 'assistant', 'idle', ?, ?, ?, ?, 1, 'client', 'client-a')
+    `).run(1, 'old-agent', JSON.stringify({ original_name: '24 小时智能值守', local_agent_id: 9 }), 100, 100, 100)
+    db.prepare(`
+      INSERT INTO agents (id, name, role, status, config, created_at, updated_at, last_seen, workspace_id, source, node_id)
+      VALUES (?, ?, 'assistant', 'idle', ?, ?, ?, ?, 1, 'client', 'client-a')
+    `).run(2, 'new-agent', JSON.stringify({ original_name: '24 小时智能值守', local_agent_id: 9 }), 200, 200, 200)
+
+    const { cleanupDuplicateClientAgents } = await import('@/lib/sync-agent-inventory')
+    const result = cleanupDuplicateClientAgents(1, 'client-a')
+    expect(result.removed).toBe(1)
+
+    const rows = db.prepare(`
+      SELECT id, name
+      FROM agents
+      WHERE workspace_id = 1 AND source = 'client' AND node_id = 'client-a'
+      ORDER BY id
+    `).all() as Array<{ id: number; name: string }>
+    expect(rows).toEqual([{ id: 2, name: 'new-agent' }])
   })
 })

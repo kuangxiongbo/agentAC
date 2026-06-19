@@ -68,6 +68,31 @@ describe('sync-agent-index bridge hybrid', () => {
     expect(mergedOffline[0]).toMatchObject({ source: 'client', status: 'idle' })
   })
 
+  it('dedupes client mirror by local_agent_id when bridge index has the same steward', async () => {
+    const { replaceBridgeAgentIndex, listBridgeAgentIndex, mergeDbAgentsWithBridgeIndex } =
+      await import('@/lib/sync-agent-index')
+
+    replaceBridgeAgentIndex('client-a', 'Mac', [
+      { id: 9, name: '24 小时智能值守', role: 'human-watch', status: 'idle', framework: 'codex-cli' },
+    ])
+    const rows = listBridgeAgentIndex('client-a')
+    const mirroredClientAgent = {
+      source: 'client',
+      node_id: 'client-a',
+      name: 'mac-24-watch',
+      status: 'idle',
+      config: { original_name: '历史名字', local_agent_id: 9 },
+    }
+
+    const mergedOnline = mergeDbAgentsWithBridgeIndex([mirroredClientAgent], rows, () => true)
+    expect(mergedOnline).toHaveLength(1)
+    expect(mergedOnline[0]).toMatchObject({ source: 'bridge_index' })
+
+    const mergedOffline = mergeDbAgentsWithBridgeIndex([mirroredClientAgent], rows, () => false)
+    expect(mergedOffline).toHaveLength(1)
+    expect(mergedOffline[0]).toMatchObject({ source: 'client' })
+  })
+
   it('resolves bridge recipient by remote_name or original_name', async () => {
     const { replaceBridgeAgentIndex, listBridgeAgentIndex, getBridgeAgentIndexByRecipient } =
       await import('@/lib/sync-agent-index')

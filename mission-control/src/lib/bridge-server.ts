@@ -8,7 +8,7 @@ import { config, BRIDGE_TOKEN } from './config'
 import type { LocalSessionTranscriptKind, TranscriptMessage } from './session-transcript'
 import { notifySessionTranscriptUpdated } from './session-realtime'
 import { replaceBridgeAgentIndex, type BridgeAgentIndexInput } from './sync-agent-index'
-import { reconcileClientAgentInventory } from './sync-agent-inventory'
+import { cleanupDuplicateClientAgents, reconcileClientAgentInventory } from './sync-agent-inventory'
 import { decidePermissionRequest, recordWorkerHumanReply, type PermissionRequestView } from './permission-requests'
 import { forwardPermissionDecisionToExecApproval } from './permission-request-exec-bridge'
 import type { LocalCliElevationGrantContext } from './local-cli-elevation-audit'
@@ -924,12 +924,14 @@ async function ingestBridgeAgentList(clientId: string, clientLabel: string, agen
     replaceBridgeAgentIndex(clientId, clientLabel, normalized)
     if (config.centralMode) {
       const inventory = normalized.map((agent) => ({
+        local_agent_id: agent.id,
         original_name: agent.name,
         status: agent.status,
         role: agent.role,
         framework: agent.framework,
       }))
       reconcileClientAgentInventory(1, clientId, clientLabel, inventory)
+      cleanupDuplicateClientAgents(1, clientId)
     } else {
       await registerRemoteAgents(clientId, clientLabel, normalized)
     }

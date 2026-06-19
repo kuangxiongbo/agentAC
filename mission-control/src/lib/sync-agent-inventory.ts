@@ -2,6 +2,7 @@ import { getDatabase } from './db'
 import { eventBus } from './event-bus'
 
 export interface SyncedAgentInventoryItem {
+  local_agent_id?: number
   original_name: string
   status?: string
   role?: string
@@ -15,6 +16,10 @@ export function parseAgentInventory(raw: unknown): SyncedAgentInventoryItem[] {
     const originalName = typeof item?.original_name === 'string' ? item.original_name.trim() : ''
     if (!originalName) continue
     items.push({
+      local_agent_id:
+        typeof item?.local_agent_id === 'number' && Number.isFinite(item.local_agent_id)
+          ? item.local_agent_id
+          : undefined,
       original_name: originalName,
       status: typeof item?.status === 'string' ? item.status : undefined,
       role: typeof item?.role === 'string' ? item.role : undefined,
@@ -56,6 +61,11 @@ export function buildRemoteAgentRegistrationName(clientName: string, agentName: 
 }
 
 export function buildInventoryMatchSets(clientName: string, inventory: SyncedAgentInventoryItem[]) {
+  const localAgentIds = new Set(
+    inventory
+      .map((item) => item.local_agent_id)
+      .filter((id): id is number => typeof id === 'number' && Number.isFinite(id)),
+  )
   const originalNames = new Set(
     inventory.map((item) => item.original_name.trim().toLowerCase()).filter(Boolean),
   )
@@ -64,7 +74,7 @@ export function buildInventoryMatchSets(clientName: string, inventory: SyncedAge
       buildRemoteAgentRegistrationName(clientName, item.original_name).toLowerCase(),
     ),
   )
-  return { originalNames, remoteNames }
+  return { localAgentIds, originalNames, remoteNames }
 }
 
 export function shouldRetainClientSyncedAgent(
@@ -78,6 +88,11 @@ export function shouldRetainClientSyncedAgent(
     } catch {
       config = {}
     }
+  }
+
+  const localAgentId = Number(config.local_agent_id)
+  if (Number.isFinite(localAgentId) && matchSets.localAgentIds.has(localAgentId)) {
+    return true
   }
 
   const originalName = String(config.original_name || '').trim().toLowerCase()
@@ -110,6 +125,76 @@ export function reconcileClientAgentInventory(
     .all(workspaceId, clientId) as Array<{ id: number; name: string; config: string | null }>
 
   const toRemove = rows.filter((row) => !shouldRetainClientSyncedAgent(row, matchSets))
+  if (toRemove.length === 0) return { removed: 0 }
+
+  const deleteStmt = db.prepare('DELETE FROM agents WHERE id = ? AND workspace_id = ?')
+  db.transaction(() => {
+    for (const row of toRemove) {
+      deleteStmt.run(row.id, workspaceId)
+    }
+  })()
+
+  for (const row of toRemove) {
+    eventBus.broadcast('agent.deleted', { id: row.id, name: row.name })
+  }
+
+  return { removed: toRemove.length }
+}
+
+export function cleanupDuplicateClientAgents(
+  workspaceId: number,
+  clientId: string,
+): { removed: number } {
+  const db = getDatabase()
+  const rows = db.prepare(`
+    SELECT id, name, created_at, updated_at, config
+    FROM agents
+    WHERE workspace_id = ? AND source = 'client' AND node_id = ?
+    ORDER BY updated_at DESC, created_at DESC, id DESC
+  `).all(workspaceId, clientId) as Array<{
+    id: number
+    name: string
+    created_at: number | null
+    updated_at: number | null
+    config: string | null
+  }>
+
+  const seenByLocalId = new Set<string>()
+  const seenByOriginalName = new Set<string>()
+  const toRemove: Array<{ id: number; name: string }> = []
+
+  for (const row of rows) {
+    let config: Record<string, unknown> = {}
+    if (row.config) {
+      try {
+        config = JSON.parse(row.config) as Record<string, unknown>
+      } catch {
+        config = {}
+      }
+    }
+
+    const localAgentId = Number(config.local_agent_id)
+    const originalName = String(config.original_name || '').trim().toLowerCase()
+
+    if (Number.isFinite(localAgentId)) {
+      const key = `${clientId}:${localAgentId}`
+      if (seenByLocalId.has(key)) {
+        toRemove.push({ id: row.id, name: row.name })
+        continue
+      }
+      seenByLocalId.add(key)
+    }
+
+    if (originalName) {
+      const key = `${clientId}:${originalName}`
+      if (seenByOriginalName.has(key)) {
+        toRemove.push({ id: row.id, name: row.name })
+        continue
+      }
+      seenByOriginalName.add(key)
+    }
+  }
+
   if (toRemove.length === 0) return { removed: 0 }
 
   const deleteStmt = db.prepare('DELETE FROM agents WHERE id = ? AND workspace_id = ?')

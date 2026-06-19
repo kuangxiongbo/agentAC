@@ -9,7 +9,7 @@ import { config } from '@/lib/config'
 import { readSyncClientIdentity, upsertSyncClientHeartbeat } from '@/lib/sync-clients'
 
 const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$/
-const VALID_ROLES = ['coder', 'reviewer', 'tester', 'devops', 'researcher', 'assistant', 'agent']
+const VALID_ROLES = ['coder', 'reviewer', 'tester', 'devops', 'researcher', 'assistant', 'agent', 'human-watch']
 
 /**
  * POST /api/agents/register — Agent self-registration.
@@ -45,6 +45,11 @@ export async function POST(request: NextRequest) {
   const framework = typeof body?.framework === 'string' ? body.framework.trim() : null
   const requestedStatus = typeof body?.status === 'string' ? body.status.trim() : 'idle'
   const originalName = typeof body?.original_name === 'string' ? body.original_name.trim() : ''
+  const agentKind = typeof body?.agent_kind === 'string' ? body.agent_kind.trim() : ''
+  const localAgentId =
+    typeof body?.local_agent_id === 'number' && Number.isFinite(body.local_agent_id)
+      ? body.local_agent_id
+      : NaN
   const parentName = typeof body?.parent_name === 'string' ? body.parent_name.trim() : ''
 
   if (!name || !NAME_RE.test(name)) {
@@ -91,6 +96,8 @@ export async function POST(request: NextRequest) {
         ...(framework ? { framework } : {}),
         node_label: syncClient.clientName,
         sync_client_id: syncClient.clientId,
+        ...(Number.isFinite(localAgentId) ? { local_agent_id: localAgentId } : {}),
+        ...(agentKind ? { agent_kind: agentKind } : {}),
         ...(originalName ? { original_name: originalName } : {}),
       }
       const configJson = JSON.stringify(nextConfig)
