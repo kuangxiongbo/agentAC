@@ -16,6 +16,13 @@ let db: Database.Database | null = null;
 const isBuildPhase = process.env.NEXT_PHASE === 'phase-production-build'
 const isTestMode = process.env.MISSION_CONTROL_TEST_MODE === '1'
 
+function shouldAutoStartBackgroundServices(): boolean {
+  if (isBuildPhase || isTestMode) return false
+  const isDevRuntime = process.env.NODE_ENV === 'development'
+  if (!isDevRuntime) return true
+  return process.env.MC_ENABLE_BACKGROUND_SERVICES_IN_DEV === '1'
+}
+
 /**
  * Get or create database connection
  */
@@ -77,9 +84,11 @@ function initializeSchema() {
         // Silent - webhooks are optional
       });
 
-      // Start built-in scheduler for runtime installs only.
-      // Skip during `next build` and E2E/test mode to keep startup deterministic.
-      if (!isBuildPhase && !isTestMode) {
+      // Start built-in scheduler / remote bridge only in stable long-lived runtimes.
+      // Next dev route workers are short-lived and can crash when background sockets/timers
+      // outlive the worker process. Keep dev explicit via /api/server-bridge or
+      // MC_ENABLE_BACKGROUND_SERVICES_IN_DEV=1.
+      if (shouldAutoStartBackgroundServices()) {
         import('./scheduler').then(({ initScheduler }) => {
           initScheduler();
         }).catch(() => {
@@ -92,6 +101,10 @@ function initializeSchema() {
         }).catch(() => {
           // Silent
         });
+      } else if (!isBuildPhase && !isTestMode && process.env.NODE_ENV === 'development') {
+        logger.info(
+          'Skipping auto-start of scheduler/remote bridge in Next dev worker; use /api/server-bridge or MC_ENABLE_BACKGROUND_SERVICES_IN_DEV=1 for explicit startup.',
+        )
       }
     }
 

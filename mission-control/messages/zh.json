@@ -28,7 +28,10 @@
     "updateNow": "立即更新",
     "showDetails": "显示详情",
     "hideDetails": "隐藏详情",
-    "moreIssues": "+ {count} 个更多问题"
+    "moreIssues": "+ {count} 个更多问题",
+    "deleteConfirmTitle": "确认删除",
+    "deleteConfirmBody": "该操作会删除对应数据，请确认影响范围后继续。",
+    "deleteConfirmAction": "确认删除"
   },
   "auth": {
     "missionControl": "Agent 指挥舱",
@@ -3087,6 +3090,8 @@
     "eventsLoadFailed": "加载值守事件失败",
     "eventsEmpty": "当前没有待处理值守事件。",
     "eventsReplyPrompt": "请输入要发送给 Worker 的介入消息",
+    "eventsReplyPromptTitle": "发送介入消息",
+    "eventsReplyPromptBody": "该消息会作为新的用户输入回写到 Worker 会话。",
     "eventsActionFailed": "处理值守事件失败",
     "eventsActionSuccess": "值守动作已提交",
     "eventsReplyAction": "发送介入消息",
@@ -3099,6 +3104,8 @@
     "exportHint": "管理员可导出干预留痕：",
     "unbind": "解除绑定",
     "unbindConfirm": "确定解除该 Worker 与值守的绑定？",
+    "unbindConfirmTitle": "确认解除绑定",
+    "unbindConfirmBody": "解除后，该 Worker 与值守智能体的自动跟进关系会被移除。",
     "unbindFailed": "解除绑定失败",
     "unbindSuccess": "已解除绑定",
     "saveRules": "保存规则",

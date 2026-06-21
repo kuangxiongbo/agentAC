@@ -6,9 +6,11 @@ import { useAgentCenterStore, type Conversation, type ChatAttachment } from '@/s
 import { useSmartPoll } from '@/lib/use-smart-poll'
 import { createClientLogger } from '@/lib/client-logger'
 import {
+  dispatchSessionPendingPrompt,
   SESSION_LIST_UPDATED_EVENT,
   SESSION_TRANSCRIPT_UPDATED_EVENT,
   sessionKindFromSource,
+  type SessionRealtimeKind,
   type SessionRealtimePayload,
 } from '@/lib/session-realtime-events'
 import { Loader } from '@/components/ui/loader'
@@ -248,6 +250,21 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
         const data = await res.json()
         if (data.message) {
           replacePendingMessage(tempId, data.message)
+        }
+        const nextSessionKey = typeof data.session_key === 'string' ? data.session_key.trim() : ''
+        const nextSessionKind = typeof data.session_kind === 'string' ? data.session_kind.trim() : ''
+        const queuedPrompt = typeof data.queued_prompt === 'string' ? data.queued_prompt.trim() : ''
+        if (nextSessionKey && nextSessionKind && (nextSessionKind === 'codex-cli' || nextSessionKind === 'claude-code' || nextSessionKind === 'hermes')) {
+          if (queuedPrompt) {
+            dispatchSessionPendingPrompt(
+              nextSessionKind as SessionRealtimeKind,
+              nextSessionKey,
+              queuedPrompt,
+              'prompt_queued',
+            )
+          }
+          setActiveConversation(`session:${nextSessionKind}:${nextSessionKey}`)
+          return
         }
       } else {
         updatePendingMessage(tempId, { pendingStatus: 'failed' })

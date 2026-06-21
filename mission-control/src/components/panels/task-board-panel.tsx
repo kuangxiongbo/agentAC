@@ -1224,6 +1224,7 @@ function TaskDetailModal({
   onEdit: (task: Task) => void
   onDelete: () => void
 }) {
+  const tc = useTranslations('common')
   const t = useTranslations('taskBoard')
   const router = useRouter()
   const { currentUser } = useAgentCenterStore()
@@ -1241,6 +1242,8 @@ function TaskDetailModal({
   const [reviewStatus, setReviewStatus] = useState<'approved' | 'rejected'>('approved')
   const [reviewNotes, setReviewNotes] = useState('')
   const [reviewError, setReviewError] = useState<string | null>(null)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const mentionTargets = useMentionTargets()
   const [activeTab, setActiveTab] = useState<'details' | 'comments' | 'quality' | 'session'>('details')
   const [reviewer, setReviewer] = useState('aegis')
@@ -1426,6 +1429,48 @@ function TaskDetailModal({
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="task-detail-title" className="bg-card border border-border rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
         <div className="p-6">
+          {deleteDialogOpen ? (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4">
+              <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-2xl">
+                <div className="text-sm font-semibold text-foreground">{tc('deleteConfirmTitle')}</div>
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                  {t('deleteTaskConfirm', { title: task.title })}
+                </p>
+                <div className="mt-2 rounded border border-border/60 bg-secondary/20 px-2 py-1 text-xs text-foreground/80">
+                  {tc('deleteConfirmBody')}
+                </div>
+                {deleteError ? (
+                  <div className="mt-2 rounded border border-rose-500/20 bg-rose-500/10 px-2 py-1 text-2xs text-rose-300">
+                    {deleteError}
+                  </div>
+                ) : null}
+                <div className="mt-4 flex justify-end gap-2">
+                  <Button size="sm" variant="secondary" onClick={() => setDeleteDialogOpen(false)}>
+                    {tc('cancel')}
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="bg-rose-500/20 text-rose-200 border border-rose-500/30 hover:bg-rose-500/30"
+                    onClick={async () => {
+                      try {
+                        const res = await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' })
+                        if (!res.ok) {
+                          const errorData = await res.json().catch(() => ({ error: 'Failed to delete task' }))
+                          throw new Error(errorData.error || 'Failed to delete task')
+                        }
+                        setDeleteDialogOpen(false)
+                        onClose()
+                      } catch (error) {
+                        setDeleteError(error instanceof Error ? error.message : 'Failed to delete task')
+                      }
+                    }}
+                  >
+                    {tc('deleteConfirmAction')}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : null}
           <div className="flex justify-between items-start mb-4">
             <h3 id="task-detail-title" className="text-xl font-bold text-foreground">{task.title}</h3>
             <div className="flex gap-2">
@@ -1435,24 +1480,7 @@ function TaskDetailModal({
               <Button
                 variant="destructive"
                 size="sm"
-                onClick={async () => {
-                  if (!confirm(t('deleteTaskConfirm', { title: task.title }))) return
-                  try {
-                    const res = await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' })
-                    if (!res.ok) {
-                      const errorData = await res.json().catch(() => ({ error: 'Failed to delete task' }))
-                      throw new Error(errorData.error || 'Failed to delete task')
-                    }
-                    // Close modal immediately on successful deletion
-                    // SSE will handle the task.deleted event and remove the task from the UI
-                    onClose()
-                  } catch (error) {
-                    // Show error to user
-                    const errorMessage = error instanceof Error ? error.message : 'Failed to delete task'
-                    alert(errorMessage)
-                    // Don't close modal on error
-                  }
-                }}
+                onClick={() => setDeleteDialogOpen(true)}
               >
                 {t('delete')}
               </Button>

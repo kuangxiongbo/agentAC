@@ -26,6 +26,7 @@ import {
   requestBridgeClientStewardJudge,
 } from './bridge-server'
 import {
+  buildWorkerJudgeContext,
   buildStewardJudgePrompt,
   buildWorkerSummaryForJudge,
   parseStewardConfigFromAgent,
@@ -131,6 +132,8 @@ function createPendingWatchEvent(
       .join(' ')
       .trim(),
   ].filter(Boolean)
+  const workerSummary = buildWorkerSummaryForJudge(messages, {})
+  const workerJudgeContext = buildWorkerJudgeContext(messages, {})
 
   createHumanWatchEvent({
     workspaceId: binding.workspace_id,
@@ -150,9 +153,12 @@ function createPendingWatchEvent(
     title: 'Worker 等待值守介入',
     summary: summaryParts.join(' · ') || 'Worker 会话等待回复或卡住',
     context: {
+      event_kind: 'worker_watch',
       session_kind: resolveSessionKindForBinding(binding),
       rules_hit: evaluation.rulesHit,
       fingerprint: evaluation.fingerprint,
+      worker_summary: workerSummary,
+      worker_judge_context: workerJudgeContext,
       last_user_message:
         lastUser?.parts
           ?.map((part) => (part.type === 'text' ? part.text : null))
@@ -226,7 +232,8 @@ async function resolveInterventionPrompt(
     const stewardConfig = await getStewardConfigForBinding(binding, deps)
 
     const summary = buildWorkerSummaryForJudge(messages, stewardConfig.context)
-    const judgePrompt = buildStewardJudgePrompt(summary, stewardConfig)
+    const workerContext = buildWorkerJudgeContext(messages, stewardConfig.context)
+    const judgePrompt = buildStewardJudgePrompt(summary, workerContext, stewardConfig)
     const judge = await deps.runJudge({
       clientId: binding.client_id,
       localAgentId: stewardId,

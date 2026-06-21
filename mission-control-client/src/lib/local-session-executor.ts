@@ -9,6 +9,7 @@ import {
   readLastClaudeSessionReply,
   syncClaudeSessions,
 } from './claude-sessions'
+import { readLocalSessionTranscriptPage } from './session-transcript'
 import { invalidateMergedSessionsCache } from './sessions-list-cache'
 import { invalidateCodexSessionScan, scanCodexSessions } from './codex-sessions'
 import { runCommand } from './command'
@@ -44,6 +45,8 @@ export interface LocalSessionExecutionResult {
   sessionId: string | null
   reply: string
 }
+
+const EMPTY_SESSION_REPLY = 'Session continued, but no text response was returned.'
 
 export interface LocalPromptEnqueueResult {
   accepted: true
@@ -1384,13 +1387,55 @@ export async function executeLocalSessionPrompt(
     invalidateMergedSessionsCache()
   }
   if (!result.reply) {
+    const recoveredReply = await recoverReplyFromTranscript(kind, result.sessionId || sessionId || null)
+    if (recoveredReply) {
+      return {
+        sessionId: result.sessionId || sessionId || null,
+        reply: recoveredReply,
+      }
+    }
     return {
       sessionId: result.sessionId || sessionId || null,
-      reply: 'Session continued, but no text response was returned.',
+      reply: EMPTY_SESSION_REPLY,
     }
   }
 
   return result
+}
+
+async function recoverReplyFromTranscript(
+  kind: LocalSessionKind,
+  sessionId: string | null,
+): Promise<string | null> {
+  const sid = String(sessionId || '').trim()
+  if (!sid) return null
+
+  if (kind === 'claude-code') {
+    return readLastClaudeSessionReply(sid)
+  }
+
+  if (kind !== 'codex-cli') {
+    return null
+  }
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const page = readLocalSessionTranscriptPage('codex-cli', sid, { limit: 12 })
+    const lastAssistant = [...page.messages].reverse().find((message) => {
+      if (message.role !== 'assistant') return false
+      return message.parts.some((part) => part.type === 'text' && part.text.trim())
+    })
+    if (lastAssistant) {
+      const text = lastAssistant.parts
+        .map((part) => (part.type === 'text' ? part.text : null))
+        .filter(Boolean)
+        .join('\n')
+        .trim()
+      if (text) return text
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+
+  return null
 }
 
 async function executeBoundLocalAgentPromptCore(

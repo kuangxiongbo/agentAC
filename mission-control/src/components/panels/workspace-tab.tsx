@@ -24,6 +24,7 @@ const emptyForm = {
 }
 
 export function WorkspaceTab() {
+  const tc = useTranslations('common')
   const t = useTranslations('workspaces')
   const [workspaces, setWorkspaces] = useState<WorkspaceRow[]>([])
   const [formMode, setFormMode] = useState<'hidden' | 'create' | 'edit'>('hidden')
@@ -32,6 +33,11 @@ export function WorkspaceTab() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; id: string | null; error: string | null }>({
+    open: false,
+    id: null,
+    error: null,
+  })
 
   const fetchWorkspaces = useCallback(async () => {
     try {
@@ -115,15 +121,17 @@ export function WorkspaceTab() {
   }
 
   const deleteWorkspace = async (id: string) => {
-    if (!window.confirm(t('deleteConfirm'))) return
     setError(null)
     try {
       const res = await fetch(`/api/workspaces?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || t('deleteFailed'))
+      setDeleteDialog({ open: false, id: null, error: null })
       await fetchWorkspaces()
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('deleteFailed'))
+      const msg = err instanceof Error ? err.message : t('deleteFailed')
+      setError(msg)
+      setDeleteDialog((prev) => ({ ...prev, error: msg }))
     }
   }
 
@@ -146,6 +154,34 @@ export function WorkspaceTab() {
 
   return (
     <div className="space-y-3">
+      {deleteDialog.open ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-2xl">
+            <div className="text-sm font-semibold text-foreground">{tc('deleteConfirmTitle')}</div>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t('deleteConfirm')}</p>
+            <div className="mt-2 rounded border border-border/60 bg-secondary/20 px-2 py-1 text-xs text-foreground/80">
+              {tc('deleteConfirmBody')}
+            </div>
+            {deleteDialog.error ? (
+              <div className="mt-2 rounded border border-rose-500/20 bg-rose-500/10 px-2 py-1 text-2xs text-rose-300">
+                {deleteDialog.error}
+              </div>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <Button size="sm" variant="secondary" onClick={() => setDeleteDialog({ open: false, id: null, error: null })}>
+                {tc('cancel')}
+              </Button>
+              <Button
+                size="sm"
+                className="bg-rose-500/20 text-rose-200 border border-rose-500/30 hover:bg-rose-500/30"
+                onClick={() => deleteDialog.id && deleteWorkspace(deleteDialog.id)}
+              >
+                {tc('deleteConfirmAction')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground max-w-xl">{t('description')}</p>
         <div className="flex items-center gap-2 shrink-0">
@@ -277,7 +313,7 @@ export function WorkspaceTab() {
                   size="sm"
                   variant="outline"
                   className="h-7 text-[11px] text-red-400/80 hover:text-red-300"
-                  onClick={() => void deleteWorkspace(ws.id)}
+                  onClick={() => setDeleteDialog({ open: true, id: ws.id, error: null })}
                 >
                   {t('delete')}
                 </Button>

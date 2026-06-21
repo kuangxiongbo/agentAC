@@ -15,13 +15,21 @@ export interface StewardRuntimeConfig {
   llm_sweep_interval_minutes?: number
   prompt_template?: string
   judge_prompt_template?: string
+  permission_judge_prompt_template?: string
   context?: StewardContextConfig
 }
 
-const DEFAULT_JUDGE_TEMPLATE = `你是人工值守判官。阅读下方 Worker 会话摘要，判断 Worker 在等什么确认或卡在哪。
-只输出一条可直接发给 Worker 的用户消息（明确选项、确认或指令），不要解释、不要前缀。
+const DEFAULT_JUDGE_TEMPLATE = `你是人工值守判官。阅读下方 Worker 结构化上下文与会话摘录，判断 Worker 在等什么确认、卡在哪一步、下一步最合理的继续指令是什么。
+只输出一条可直接发给 Worker 的用户消息。要求：
+1. 只输出给 Worker 的最终消息，不要解释、不要分析、不要前缀。
+2. 如果 Worker 明确在等待确认/选择，直接给出明确选择。
+3. 如果 Worker 需要下一步执行指令，直接给出简洁可执行指令。
+4. 如果信息不足，先要求 Worker 汇报最关键缺口。
 
-Worker 会话摘要：
+Worker 上下文：
+{context}
+
+Worker 会话摘录：
 {summary}`
 
 function isHumanWatchStewardAgentRecord(agent: Record<string, unknown>): boolean {
@@ -82,6 +90,10 @@ export function parseStewardConfigFromAgent(agent: Record<string, unknown> | nul
       typeof steward.prompt_template === 'string' ? steward.prompt_template : undefined,
     judge_prompt_template:
       typeof steward.judge_prompt_template === 'string' ? steward.judge_prompt_template : undefined,
+    permission_judge_prompt_template:
+      typeof steward.permission_judge_prompt_template === 'string'
+        ? steward.permission_judge_prompt_template
+        : undefined,
     context,
   }
 }
@@ -91,6 +103,71 @@ function flattenLine(line: HumanWatchTranscriptLine): string {
   const text = String(line.content || '').trim()
   if (!text) return ''
   return `${role}: ${text}`
+}
+
+function extractLastRoleText(
+  lines: HumanWatchTranscriptLine[],
+  role: HumanWatchTranscriptLine['role'],
+): string {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (lines[i]?.role !== role) continue
+    const text = String(lines[i]?.content || '').trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function inferWorkerNeed(lines: HumanWatchTranscriptLine[]): string {
+  const lastAssistant = extractLastRoleText(lines, 'assistant')
+  if (!lastAssistant) return '未识别到明确卡点，请结合会话摘录判断'
+  const normalized = lastAssistant.toLowerCase()
+  if (
+    normalized.includes('confirm') ||
+    normalized.includes('确认') ||
+    normalized.includes('继续吗') ||
+    normalized.includes('是否继续')
+  ) {
+    return 'Worker 正在等待确认或选择'
+  }
+  if (
+    normalized.includes('permission') ||
+    normalized.includes('approve') ||
+    normalized.includes('授权') ||
+    normalized.includes('提权')
+  ) {
+    return 'Worker 正在等待权限或审批决策'
+  }
+  if (
+    normalized.includes('blocked') ||
+    normalized.includes('受阻') ||
+    normalized.includes('卡住') ||
+    normalized.includes('无法继续')
+  ) {
+    return 'Worker 当前受阻，需要人工提供下一步决策'
+  }
+  return '请根据最近一轮 assistant 输出判断其下一步需要的确认或指令'
+}
+
+function buildWorkerContextBlock(
+  lines: HumanWatchTranscriptLine[],
+  context: StewardContextConfig = {},
+): string {
+  const maxChars = Math.min(Math.max(context.summary_max_chars ?? 32000, 500), 64000)
+  const recentUser = extractLastRoleText(lines, 'user') || '无'
+  const recentAssistant = extractLastRoleText(lines, 'assistant') || '无'
+  const recentTool = extractLastRoleText(lines, 'tool') || '无'
+  const inferredNeed = inferWorkerNeed(lines)
+  const entries = [
+    ['最近用户意图', recentUser],
+    ['最近 Assistant 输出', recentAssistant],
+    ['最近工具结果', recentTool],
+    ['推断待解决问题', inferredNeed],
+    ['值守目标', '帮助 Worker 持续推进，不要重复摘要，不要输出解释'],
+  ]
+  const block = entries
+    .map(([label, value]) => `- ${label}: ${String(value).slice(0, Math.min(maxChars, 4000))}`)
+    .join('\n')
+  return block.trim()
 }
 
 export function buildWorkerSummaryForJudge(
@@ -122,10 +199,21 @@ export function buildWorkerSummaryForJudge(
   return chunks.join('\n').trim() || '(empty transcript)'
 }
 
+export function buildWorkerJudgeContext(
+  messages: TranscriptMessage[],
+  context: StewardContextConfig = {},
+): string {
+  const lines = transcriptMessagesToHumanWatchLines(messages)
+  return buildWorkerContextBlock(lines, context)
+}
+
 export function buildStewardJudgePrompt(
   summary: string,
+  workerContext: string,
   stewardConfig: StewardRuntimeConfig,
 ): string {
   const template = stewardConfig.judge_prompt_template?.trim() || DEFAULT_JUDGE_TEMPLATE
-  return template.replace(/\{summary\}/g, summary)
+  return template
+    .replace(/\{summary\}/g, summary)
+    .replace(/\{context\}/g, workerContext)
 }

@@ -139,4 +139,29 @@ describe('human-watch-events', () => {
     expect(audit.map((item) => item.event_name)).toContain('watch_event_claimed')
     expect(audit.map((item) => item.event_name)).toContain('watch_event_closed')
   })
+
+  it('stores structured context for permission request watch events', () => {
+    createPermissionRequest(
+      {
+        id: 'pr-ctx-1',
+        workspaceId: 1,
+        clientId: 'edge-a',
+        requestType: 'local_cli_permission',
+        title: '等待审批',
+        prompt: '是否允许继续执行 rm -rf target-cache',
+        risk: 'high',
+        options: [
+          { id: 'approve', label: 'Approve', action: 'approve' },
+          { id: 'deny', label: 'Deny', action: 'deny' },
+        ],
+      },
+      db,
+    )
+
+    const event = listHumanWatchEvents({ workspaceId: 1 }, db).find((row) => row.permission_request_id === 'pr-ctx-1')
+    expect(event).toBeDefined()
+    expect(event?.context?.event_kind).toBe('permission_request')
+    expect(String(event?.context?.worker_judge_context || '')).toContain('请求标题')
+    expect(String(event?.context?.worker_summary || '')).toContain('等待审批')
+  })
 })

@@ -760,6 +760,7 @@ function AgentDetailModalPhase3({
   onWakeAgent: (name: string, sessionKey: string) => Promise<void>
   onDelete: (agentId: number, removeWorkspace: boolean) => Promise<void>
 }) {
+  const tc = useTranslations('common')
   const [agentState, setAgentState] = useState<Agent & { config?: any; working_memory?: string }>(agent as Agent & { config?: any; working_memory?: string })
   const [activeTab, setActiveTab] = useState<
     'overview' | 'soul' | 'memory' | 'config' | 'tasks' | 'activity' | 'files' | 'tools' | 'channels' | 'cron' | 'models' | 'interventions' | 'humanWatch' | 'stewardBind'
@@ -783,6 +784,8 @@ function AgentDetailModalPhase3({
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [showDeleteMenu, setShowDeleteMenu] = useState(false)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [pendingDeleteWorkspace, setPendingDeleteWorkspace] = useState(false)
   const [saveBusy, setSaveBusy] = useState(false)
   const deleteMenuRef = useRef<HTMLDivElement>(null)
   const t = useTranslations('agentDetail')
@@ -1084,13 +1087,17 @@ function AgentDetailModalPhase3({
 
   const handleDelete = async (removeWorkspace: boolean) => {
     const scope = removeWorkspace ? t('deleteScopeAgentWorkspace') : t('deleteScopeAgent')
-    const confirmed = window.confirm(t('deleteAgentConfirm', { scope, name: agentState.name }))
-    if (!confirmed) return
+    setPendingDeleteWorkspace(removeWorkspace)
+    setDeleteConfirmOpen(true)
+  }
 
+  const confirmDelete = async () => {
+    const scope = pendingDeleteWorkspace ? t('deleteScopeAgentWorkspace') : t('deleteScopeAgent')
     setDeleteBusy(true)
     setDeleteError(null)
     try {
-      await onDelete(agentState.id, removeWorkspace)
+      await onDelete(agentState.id, pendingDeleteWorkspace)
+      setDeleteConfirmOpen(false)
       onClose()
     } catch (error: any) {
       setDeleteError(error?.message || `Failed to delete ${scope}`)
@@ -1108,6 +1115,45 @@ function AgentDetailModalPhase3({
         className="bg-card border border-border/80 rounded-lg shadow-2xl shadow-black/40 max-w-5xl w-full max-h-[90vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
+        {deleteConfirmOpen ? (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4">
+            <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-2xl">
+              <div className="text-sm font-semibold text-foreground">{tc('deleteConfirmTitle')}</div>
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                {t('deleteAgentConfirm', {
+                  scope: pendingDeleteWorkspace ? t('deleteScopeAgentWorkspace') : t('deleteScopeAgent'),
+                  name: agentState.name,
+                })}
+              </p>
+              <div className="mt-2 rounded border border-border/60 bg-secondary/20 px-2 py-1 text-xs text-foreground/80">
+                {tc('deleteConfirmBody')}
+              </div>
+              {deleteError ? (
+                <div className="mt-2 rounded border border-rose-500/20 bg-rose-500/10 px-2 py-1 text-2xs text-rose-300">
+                  {deleteError}
+                </div>
+              ) : null}
+              <div className="mt-4 flex justify-end gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={deleteBusy}
+                  onClick={() => setDeleteConfirmOpen(false)}
+                >
+                  {tc('cancel')}
+                </Button>
+                <Button
+                  size="sm"
+                  className="bg-rose-500/20 text-rose-200 border border-rose-500/30 hover:bg-rose-500/30"
+                  disabled={deleteBusy}
+                  onClick={confirmDelete}
+                >
+                  {deleteBusy ? t('deleting') : tc('deleteConfirmAction')}
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         {/* Modal Header */}
         <div className="px-5 pt-5 pb-0 border-b border-border">
           <div className="flex justify-between items-center gap-4 mb-4">

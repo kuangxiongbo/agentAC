@@ -15,8 +15,6 @@ import {
   setMergedSessionsCache,
 } from '@/lib/sessions-list-cache'
 
-export { invalidateMergedSessionsCache }
-
 const LOCAL_SESSION_ACTIVE_WINDOW_MS = 90 * 60 * 1000
 const DEFAULT_SESSION_PAGE_SIZE = 40
 const MAX_SESSION_PAGE_SIZE = 100

@@ -84,6 +84,7 @@
     "costTracker": "Cost Tracker",
     "nodes": "Nodes",
     "approvals": "Approvals",
+    "humanWatch": "Human Watch",
     "office": "Office",
     "cron": "Cron",
     "webhooks": "Webhooks",
@@ -2625,5 +2626,22 @@
     "tabStatus": "Status",
     "unhealthy": "Unhealthy",
     "unreachable": "Unreachable"
+  },
+  "humanWatch": {
+    "refresh": "Refresh",
+    "eventsLoading": "Loading watch events…",
+    "eventsLoadFailed": "Failed to load watch events",
+    "eventsEmpty": "No pending watch events right now.",
+    "eventsActionFailed": "Failed to handle watch event",
+    "eventsActionSuccess": "Watch event handled",
+    "eventsViewPending": "Pending",
+    "eventsViewActive": "Active",
+    "eventsViewHistory": "History",
+    "eventsReplyAction": "Reply to Worker",
+    "eventsApproveAction": "Approve",
+    "eventsDenyAction": "Deny",
+    "eventsDismissAction": "Dismiss",
+    "eventsReplyPromptTitle": "Reply to watch event",
+    "eventsReplyPromptBody": "Send a reply back to the Worker session. The platform will keep the intervention in audit history."
   }
 }

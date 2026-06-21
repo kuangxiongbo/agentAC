@@ -36,6 +36,7 @@ import { SecurityAuditPanel } from '@/components/panels/security-audit-panel'
 import { NodesPanel } from '@/components/panels/nodes-panel'
 import { ExecApprovalPanel } from '@/components/panels/exec-approval-panel'
 import { SystemMonitorPanel } from '@/components/panels/system-monitor-panel'
+import { HumanWatchPanel } from '@/components/panels/human-watch-panel'
 import dynamic from 'next/dynamic'
 
 const ChatPagePanel = dynamic(
@@ -456,6 +457,8 @@ function ContentRouter({ tab }: { tab: string }) {
       return <NodesPanel />
     case 'security':
       return <SecurityAuditPanel />
+    case 'human-watch':
+      return <HumanWatchPanel />
     case 'debug':
       return <DebugPanel />
     case 'exec-approvals':

@@ -69,6 +69,7 @@ function getSourceLabel(source: string): string {
 }
 
 export function SkillsPanel() {
+  const tc = useTranslations('common')
   const t = useTranslations('skills')
   const { dashboardMode, skillsList, skillGroups, skillsTotal, setSkillsData, centralMode } = useAgentCenterStore()
   const [loading, setLoading] = useState(skillsList === null)
@@ -81,6 +82,7 @@ export function SkillsPanel() {
   const [draftContent, setDraftContent] = useState('')
   const [drawerLoading, setDrawerLoading] = useState(false)
   const [drawerError, setDrawerError] = useState<string | null>(null)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [createSource, setCreateSource] = useState(dashboardMode === 'full' ? 'openclaw' : 'user-codex')
   const [createName, setCreateName] = useState('')
   const [createContent, setCreateContent] = useState('# new-skill\n\nDescribe this skill.\n')
@@ -366,8 +368,6 @@ export function SkillsPanel() {
 
   const deleteSkill = async () => {
     if (!selectedSkill) return
-    const ok = window.confirm(`Delete skill "${selectedSkill.name}"? This removes it from disk.`)
-    if (!ok) return
     setSaving(true)
     setDrawerError(null)
     try {
@@ -377,6 +377,7 @@ export function SkillsPanel() {
       if (!res.ok) throw new Error(body?.error || 'Failed to delete skill')
       setSelectedSkill(null)
       setSelectedContent(null)
+      setDeleteDialogOpen(false)
       await loadSkills()
     } catch (err: any) {
       setDrawerError(err?.message || 'Failed to delete skill')
@@ -941,7 +942,7 @@ export function SkillsPanel() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <Button variant="destructive" size="sm" onClick={deleteSkill} disabled={saving || drawerLoading}>
+                <Button variant="destructive" size="sm" onClick={() => setDeleteDialogOpen(true)} disabled={saving || drawerLoading}>
                   {t('delete')}
                 </Button>
                 <Button variant="outline" size="sm" onClick={saveSkill} disabled={saving || drawerLoading}>
@@ -987,6 +988,39 @@ export function SkillsPanel() {
               )}
             </div>
           </aside>
+        </div>,
+        document.body
+      )}
+
+      {isMounted && deleteDialogOpen && selectedSkill && createPortal(
+        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-2xl">
+            <div className="text-sm font-semibold text-foreground">{tc('deleteConfirmTitle')}</div>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              Delete skill "{selectedSkill.name}"? This removes it from disk.
+            </p>
+            <div className="mt-2 rounded border border-border/60 bg-secondary/20 px-2 py-1 text-xs text-foreground/80">
+              {tc('deleteConfirmBody')}
+            </div>
+            {drawerError ? (
+              <div className="mt-2 rounded border border-rose-500/20 bg-rose-500/10 px-2 py-1 text-2xs text-rose-300">
+                {drawerError}
+              </div>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <Button size="sm" variant="secondary" disabled={saving} onClick={() => setDeleteDialogOpen(false)}>
+                {tc('cancel')}
+              </Button>
+              <Button
+                size="sm"
+                className="bg-rose-500/20 text-rose-200 border border-rose-500/30 hover:bg-rose-500/30"
+                disabled={saving}
+                onClick={() => void deleteSkill()}
+              >
+                {saving ? t('saving') : tc('deleteConfirmAction')}
+              </Button>
+            </div>
+          </div>
         </div>,
         document.body
       )}

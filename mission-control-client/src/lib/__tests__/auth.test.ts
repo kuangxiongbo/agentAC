@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { safeCompare, requireRole } from '@/lib/auth'
+import { safeCompare } from '@/lib/auth'
+import type { requireRole as RequireRole } from '@/lib/auth'
 
 // Mock dependencies that auth.ts imports
 vi.mock('@/lib/db', () => ({
@@ -46,9 +47,15 @@ describe('safeCompare', () => {
 
 describe('requireRole', () => {
   const originalEnv = process.env
+  let requireRole: typeof RequireRole
 
-  beforeEach(() => {
-    process.env = { ...originalEnv, API_KEY: 'test-api-key-secret' }
+  beforeEach(async () => {
+    // AUTH_DISABLED (config.ts) is read once at module load and defaults to
+    // true for local-client mode, so MC_DISABLE_AUTH must be set to 'false'
+    // and the module freshly re-imported for these auth-enabled assertions.
+    process.env = { ...originalEnv, API_KEY: 'test-api-key-secret', MC_DISABLE_AUTH: 'false' }
+    vi.resetModules()
+    ;({ requireRole } = await import('@/lib/auth'))
   })
 
   afterEach(() => {

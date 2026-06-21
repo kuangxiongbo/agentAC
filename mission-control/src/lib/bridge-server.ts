@@ -12,6 +12,7 @@ import { cleanupDuplicateClientAgents, reconcileClientAgentInventory } from './s
 import { decidePermissionRequest, recordWorkerHumanReply, type PermissionRequestView } from './permission-requests'
 import { forwardPermissionDecisionToExecApproval } from './permission-request-exec-bridge'
 import type { LocalCliElevationGrantContext } from './local-cli-elevation-audit'
+import type { HumanWatchEventView } from './human-watch-types'
 
 let wss: WebSocketServer | null = (global as any)._mc_bridge_server || null
 const bridgeServerMeta: { port: number | null; startedAt: number | null } =
@@ -272,6 +273,21 @@ function sendPermissionRequestToEdge(request: PermissionRequestView): void {
   }
 }
 
+function sendHumanWatchEventToEdge(eventRow: HumanWatchEventView): void {
+  const clientId = typeof eventRow.client_id === 'string' ? eventRow.client_id.trim() : ''
+  if (!clientId) return
+  try {
+    const { ws } = findConnectedEdgeBridge(clientId)
+    ws.send(JSON.stringify({
+      type: 'human_watch_event_sync',
+      event: eventRow,
+      timestamp: Date.now(),
+    }))
+  } catch (err) {
+    logger.debug({ err, eventId: eventRow.id, clientId }, '[BridgeServer] Human watch event sync skipped')
+  }
+}
+
 function initPermissionBridgeSync(): void {
   const globalState = globalThis as typeof globalThis & { __permissionBridgeSyncStarted?: boolean }
   if (globalState.__permissionBridgeSyncStarted) return
@@ -281,6 +297,18 @@ function initPermissionBridgeSync(): void {
     const request = event.data as PermissionRequestView | null
     if (!request || typeof request.id !== 'string') return
     sendPermissionRequestToEdge(request)
+  })
+}
+
+function initHumanWatchEventBridgeSync(): void {
+  const globalState = globalThis as typeof globalThis & { __humanWatchEventBridgeSyncStarted?: boolean }
+  if (globalState.__humanWatchEventBridgeSyncStarted) return
+  globalState.__humanWatchEventBridgeSyncStarted = true
+  eventBus.on('server-event', (event) => {
+    if (event.type !== 'human_watch.event') return
+    const row = event.data as HumanWatchEventView | null
+    if (!row || typeof row.id !== 'string') return
+    sendHumanWatchEventToEdge(row)
   })
 }
 
@@ -560,6 +588,7 @@ export function initBridgeServer(port: number = 5002) {
     const expectedSet = Boolean(getExpectedBridgeToken())
     logger.info({ port, authEnabled: expectedSet }, '[BridgeServer] Started WebSocket bridge server')
     initPermissionBridgeSync()
+    initHumanWatchEventBridgeSync()
 
     wss.on('connection', (ws: WebSocket) => {
       const socket = (ws as any)?._socket as { setKeepAlive?: (enable: boolean, initialDelay?: number) => void } | undefined

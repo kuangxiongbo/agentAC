@@ -18,6 +18,7 @@ const selectClass =
   'px-2 py-1 border border-border rounded bg-background text-foreground text-xs focus:outline-none focus:ring-2 focus:ring-primary/50'
 
 export function SessionDetailsPanel() {
+  const tc = useTranslations('common')
   const t = useTranslations('sessionDetails')
   const {
     sessions,
@@ -57,6 +58,15 @@ export function SessionDetailsPanel() {
 
   // Delete confirmation
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
+  const [terminateDialog, setTerminateDialog] = useState<{
+    open: boolean
+    sessionId: string | null
+    error: string | null
+  }>({
+    open: false,
+    sessionId: null,
+    error: null,
+  })
 
   const getModelInfo = (modelName: string) => {
     const matchedAlias = availableModels
@@ -186,12 +196,12 @@ export function SessionDetailsPanel() {
       })
       const data = await res.json()
       if (!res.ok) {
-        alert(data.error || `Failed: ${action}`)
+        log.error(`Session action failed: ${data.error || `Failed: ${action}`}`)
         return false
       }
       return true
     } catch {
-      alert(`Failed: ${action}`)
+      log.error(`Session action failed: ${action}`)
       return false
     } finally {
       setControllingSession(null)
@@ -301,6 +311,62 @@ export function SessionDetailsPanel() {
           </div>
         </div>
       </div>
+
+      {terminateDialog.open ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-2xl">
+            <div className="text-sm font-semibold text-foreground">{t('terminate')}</div>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              {t('confirmTerminate')}
+            </p>
+            {terminateDialog.error ? (
+              <div className="mt-2 rounded border border-rose-500/20 bg-rose-500/10 px-2 py-1 text-2xs text-rose-300">
+                {terminateDialog.error}
+              </div>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={controllingSession !== null}
+                onClick={() => setTerminateDialog({ open: false, sessionId: null, error: null })}
+              >
+                {tc('cancel')}
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={controllingSession !== null || !terminateDialog.sessionId}
+                onClick={async () => {
+                  if (!terminateDialog.sessionId) return
+                  setControllingSession(`terminate-${terminateDialog.sessionId}`)
+                  try {
+                    const res = await fetch(`/api/sessions/${terminateDialog.sessionId}/control`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ action: 'terminate' }),
+                    })
+                    const data = await res.json().catch(() => ({}))
+                    if (!res.ok) {
+                      throw new Error(data.error || t('failedTerminate'))
+                    }
+                    setTerminateDialog({ open: false, sessionId: null, error: null })
+                  } catch (error) {
+                    setTerminateDialog((prev) => ({
+                      ...prev,
+                      error: error instanceof Error ? error.message : t('failedTerminate'),
+                    }))
+                  } finally {
+                    setControllingSession(null)
+                  }
+                }}
+              >
+                {controllingSession !== null ? t('working') : t('terminate')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid lg:grid-cols-3 gap-6">
         {/* Sessions List */}
@@ -596,23 +662,11 @@ export function SessionDetailsPanel() {
                             disabled={controllingSession !== null}
                             onClick={async (e) => {
                               e.stopPropagation()
-                              if (!window.confirm(t('confirmTerminate'))) return
-                              setControllingSession(`terminate-${session.id}`)
-                              try {
-                                const res = await fetch(`/api/sessions/${session.id}/control`, {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ action: 'terminate' }),
-                                })
-                                if (!res.ok) {
-                                  const data = await res.json()
-                                  alert(data.error || t('failedTerminate'))
-                                }
-                              } catch {
-                                alert(t('failedTerminate'))
-                              } finally {
-                                setControllingSession(null)
-                              }
+                              setTerminateDialog({
+                                open: true,
+                                sessionId: session.id,
+                                error: null,
+                              })
                             }}
                           >
                             {controllingSession === `terminate-${session.id}` ? t('working') : t('terminate')}

@@ -43,6 +43,9 @@ const EVENT_MAP: Record<string, string> = {
   'task.updated': 'activity.task_updated',
   'task.deleted': 'activity.task_deleted',
   'task.status_changed': 'activity.task_status_changed',
+  'human_watch.event': 'human_watch.event',
+  'permission.requested': 'permission.requested',
+  'permission.decided': 'permission.decided',
 }
 
 /**
@@ -104,17 +107,18 @@ export function initWebhookListener() {
 
     // Also fire agent.error for error status specifically
     const isAgentError = event.type === 'agent.status_changed' && event.data?.status === 'error'
+    // Let accounts subscribe to just the high-priority subset instead of every watch event.
+    const isHighPriorityWatchEvent =
+      event.type === 'human_watch.event' && (event.data?.priority === 'high' || event.data?.priority === 'critical')
     const workspaceId = typeof event.data?.workspace_id === 'number' ? event.data.workspace_id : 1
 
-    fireWebhooksAsync(webhookEventType, event.data, workspaceId).catch((err) => {
+    const webhookEventTypes = [webhookEventType]
+    if (isAgentError) webhookEventTypes.push('agent.error')
+    if (isHighPriorityWatchEvent) webhookEventTypes.push('human_watch.event.high')
+
+    fireWebhooksAsync(webhookEventTypes, event.data, workspaceId).catch((err) => {
       logger.error({ err }, 'Webhook dispatch error')
     })
-
-    if (isAgentError) {
-      fireWebhooksAsync('agent.error', event.data, workspaceId).catch((err) => {
-        logger.error({ err }, 'Webhook dispatch error')
-      })
-    }
   })
 }
 
@@ -127,7 +131,12 @@ export function fireWebhooks(eventType: string, payload: Record<string, any>, wo
   })
 }
 
-async function fireWebhooksAsync(eventType: string, payload: Record<string, any>, workspaceId?: number) {
+async function fireWebhooksAsync(
+  eventTypes: string | string[],
+  payload: Record<string, any>,
+  workspaceId?: number,
+) {
+  const types = Array.isArray(eventTypes) ? eventTypes : [eventTypes]
   const resolvedWorkspaceId =
     workspaceId ?? (typeof payload?.workspace_id === 'number' ? payload.workspace_id : 1)
   let webhooks: Webhook[]
@@ -144,18 +153,21 @@ async function fireWebhooksAsync(eventType: string, payload: Record<string, any>
 
   if (webhooks.length === 0) return
 
-  const matchingWebhooks = webhooks.filter((wh) => {
+  const deliveries: Array<Promise<DeliveryResult>> = []
+  for (const wh of webhooks) {
+    let events: string[]
     try {
-      const events: string[] = JSON.parse(wh.events)
-      return events.includes('*') || events.includes(eventType)
+      events = JSON.parse(wh.events)
     } catch {
-      return false
+      continue
     }
-  })
+    const matchedTypes = events.includes('*') ? types : types.filter((t) => events.includes(t))
+    for (const type of matchedTypes) {
+      deliveries.push(deliverWebhook(wh, type, payload, { allowRetry: true }))
+    }
+  }
 
-  await Promise.allSettled(
-    matchingWebhooks.map((wh) => deliverWebhook(wh, eventType, payload, { allowRetry: true }))
-  )
+  await Promise.allSettled(deliveries)
 }
 
 /**

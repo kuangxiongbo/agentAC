@@ -17,10 +17,17 @@ interface HumanWatchEventRow {
   priority: string
   title: string
   summary: string
+  context?: Record<string, unknown> | null
   latest_worker_message: string | null
   permission_request_id: string | null
   suggested_action: string | null
   created_at: number
+}
+
+function readContextString(context: unknown, key: string): string {
+  if (!context || typeof context !== 'object' || Array.isArray(context)) return ''
+  const value = (context as Record<string, unknown>)[key]
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 type EventViewMode = 'pending' | 'active' | 'history'
@@ -34,6 +41,7 @@ export function HumanWatchEventsTab({
   workerLocalAgentId?: number | null
   stewardLocalAgentId?: number | null
 }) {
+  const tc = useTranslations('common')
   const t = useTranslations('humanWatch')
   const { humanWatchEvents, setHumanWatchEvents } = useAgentCenterStore()
   const [loading, setLoading] = useState(true)
@@ -41,6 +49,11 @@ export function HumanWatchEventsTab({
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<EventViewMode>('active')
+  const [replyDialog, setReplyDialog] = useState<{ open: boolean; eventId: string | null; text: string }>({
+    open: false,
+    eventId: null,
+    text: '',
+  })
 
   const visibleEvents = useMemo(() => {
     return humanWatchEvents
@@ -54,6 +67,14 @@ export function HumanWatchEventsTab({
       })
       .sort((a, b) => b.created_at - a.created_at)
   }, [humanWatchEvents, clientId, workerLocalAgentId, stewardLocalAgentId, viewMode])
+
+  const filteredEventCount = useMemo(() => (
+    humanWatchEvents
+      .filter((event) => event.client_id === clientId)
+      .filter((event) => (workerLocalAgentId != null ? event.worker_local_agent_id === workerLocalAgentId : true))
+      .filter((event) => (stewardLocalAgentId != null ? event.steward_local_agent_id === stewardLocalAgentId : true))
+      .length
+  ), [humanWatchEvents, clientId, workerLocalAgentId, stewardLocalAgentId])
 
   const load = useCallback(async () => {
     if (!clientId) {
@@ -87,6 +108,13 @@ export function HumanWatchEventsTab({
 
   useEffect(() => {
     if (!clientId) return
+    if (filteredEventCount > 0) {
+      setLoading(false)
+    }
+  }, [clientId, filteredEventCount])
+
+  useEffect(() => {
+    if (!clientId) return
     const timer = window.setInterval(() => {
       void load()
     }, 8000)
@@ -103,12 +131,7 @@ export function HumanWatchEventsTab({
     try {
       const body: Record<string, unknown> = { action }
       if (action === 'send_message_to_worker') {
-        const input = window.prompt(t('eventsReplyPrompt'))
-        if (!input?.trim()) {
-          setBusyId(null)
-          return
-        }
-        body.message = input.trim()
+        body.message = replyDialog.text.trim()
       }
       const res = await fetch(`/api/human-watch/events/${encodeURIComponent(eventId)}/action`, {
         method: 'POST',
@@ -174,11 +197,31 @@ export function HumanWatchEventsTab({
                   {event.latest_worker_message}
                 </div>
               ) : null}
+              {readContextString(event.context, 'worker_judge_context') ? (
+                <details className="rounded-md border border-border/50 bg-background/40 p-2">
+                  <summary className="cursor-pointer text-xs text-muted-foreground">
+                    {t('eventsStructuredContextLabel', { fallback: '结构化上下文' } as any)}
+                  </summary>
+                  <pre className="mt-2 whitespace-pre-wrap break-words text-[11px] text-muted-foreground/90">
+                    {readContextString(event.context, 'worker_judge_context')}
+                  </pre>
+                </details>
+              ) : null}
+              {readContextString(event.context, 'worker_summary') ? (
+                <details className="rounded-md border border-border/50 bg-background/40 p-2">
+                  <summary className="cursor-pointer text-xs text-muted-foreground">
+                    {t('eventsTranscriptSummaryLabel', { fallback: '会话摘录' } as any)}
+                  </summary>
+                  <pre className="mt-2 whitespace-pre-wrap break-words text-[11px] text-muted-foreground/90">
+                    {readContextString(event.context, 'worker_summary')}
+                  </pre>
+                </details>
+              ) : null}
               <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
                   disabled={busyId === event.id}
-                  onClick={() => void handleAction(event.id, 'send_message_to_worker')}
+                  onClick={() => setReplyDialog({ open: true, eventId: event.id, text: '' })}
                 >
                   {t('eventsReplyAction')}
                 </Button>
@@ -215,6 +258,39 @@ export function HumanWatchEventsTab({
           ))}
         </ul>
       )}
+
+      {replyDialog.open ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-2xl">
+            <div className="text-sm font-semibold text-foreground">{t('eventsReplyPromptTitle')}</div>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              {t('eventsReplyPromptBody')}
+            </p>
+            <textarea
+              rows={4}
+              className="mt-3 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+              value={replyDialog.text}
+              onChange={(e) => setReplyDialog((prev) => ({ ...prev, text: e.target.value }))}
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <Button size="sm" variant="secondary" onClick={() => setReplyDialog({ open: false, eventId: null, text: '' })}>
+                {tc('cancel')}
+              </Button>
+              <Button
+                size="sm"
+                disabled={!replyDialog.text.trim() || !replyDialog.eventId}
+                onClick={async () => {
+                  if (!replyDialog.eventId || !replyDialog.text.trim()) return
+                  await handleAction(replyDialog.eventId, 'send_message_to_worker')
+                  setReplyDialog({ open: false, eventId: null, text: '' })
+                }}
+              >
+                {t('eventsReplyAction')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

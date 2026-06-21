@@ -46,6 +46,8 @@ import { deliverAgentMessage } from './deliver-agent-message'
 import { edgeUpstreamFetch, isEdgeTlsInsecure } from './edge-upstream-fetch'
 import {
   getPermissionRequest,
+  isDangerousPermissionRequest,
+  listPermissionRequests,
   upsertPermissionRequestSnapshot,
   type PermissionRequestOption,
   type PermissionRequestRisk,
@@ -54,6 +56,24 @@ import {
 } from './permission-requests'
 import { logSecurityEvent } from './security-events'
 import { validateLocalCliElevationGrant } from './local-cli-elevation-audit'
+import type { HumanWatchEvent } from '@/store'
+
+function safeLog(
+  level: 'info' | 'warn' | 'error' | 'debug',
+  message: string,
+  payload?: Record<string, unknown>,
+) {
+  try {
+    if (payload) {
+      logger[level](payload, message)
+    } else {
+      logger[level](message)
+    }
+  } catch {
+    // Next.js dev workers can throw "the worker has exited" while writing logs
+    // from background bridge callbacks. Never let logging kill the bridge flow.
+  }
+}
 
 // We use the native ws library if available (Node 18+ has it natively via global WebSocket)
 // In Next.js server context, we use the 'ws' package for server-side WebSocket.
@@ -241,6 +261,152 @@ function syncPermissionRequestSnapshot(request: PermissionRequestView): void {
     createdAt: request.created_at,
     updatedAt: request.updated_at,
   })
+  void maybeAutoDecidePermissionRequest(request).catch((err) => {
+    safeLog('warn', '[RemoteBridge] Auto decide permission request failed', {
+      requestId: request.id,
+      err: err instanceof Error ? err.message : String(err),
+    })
+  })
+}
+
+function getPermissionBoundSteward(request: PermissionRequestView): { localAgentId: number; name: string | null } | null {
+  const localAgentId = Number(request.steward_local_agent_id)
+  if (!Number.isFinite(localAgentId) || localAgentId <= 0) return null
+  return {
+    localAgentId,
+    name: typeof request.steward_name === 'string' ? request.steward_name : null,
+  }
+}
+
+function readPermissionJudgePromptTemplate(agentDetail: Record<string, unknown> | null): string {
+  if (!agentDetail || typeof agentDetail !== 'object') return ''
+  const raw = agentDetail.config
+  let config: Record<string, unknown> = {}
+  if (typeof raw === 'string') {
+    try {
+      config = JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      config = {}
+    }
+  } else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    config = raw as Record<string, unknown>
+  }
+  const steward =
+    config.steward && typeof config.steward === 'object' && !Array.isArray(config.steward)
+      ? (config.steward as Record<string, unknown>)
+      : {}
+  return typeof steward.permission_judge_prompt_template === 'string'
+    ? steward.permission_judge_prompt_template.trim()
+    : ''
+}
+
+function buildPermissionJudgePrompt(
+  request: PermissionRequestView,
+  permissionJudgePromptTemplate?: string,
+): string {
+  const context = request.context && typeof request.context === 'object' && !Array.isArray(request.context)
+    ? request.context as Record<string, unknown>
+    : {}
+  const ctxBlock = typeof context.worker_judge_context === 'string' ? context.worker_judge_context.trim() : ''
+  const options = request.options.map((option) => `- ${option.id}: ${option.label} / ${option.action}${option.description ? ` / ${option.description}` : ''}`).join('\n')
+  const fallback = [
+    '你是人工值守审批判官。',
+    '请根据下面的权限请求判断应该 approve、deny，还是 ask_human。',
+    '只输出一行 JSON，不要解释，不要 markdown，不要前后缀。',
+    '格式必须是：{"decision":"approve|deny|ask_human","option_id":"...", "reason":"..."}',
+    '规则：',
+    '1. 如果是危险操作、删除、卸载、生产改动、提权、密钥操作，优先输出 ask_human。',
+    '2. 只有在风险可接受且信息充分时才输出 approve。',
+    '3. 如果信息不足，也输出 ask_human。',
+    '',
+    `标题: ${request.title}`,
+    `类型: ${request.request_type}`,
+    `风险: ${request.risk}`,
+    `请求内容: ${request.prompt}`,
+    '可选项:',
+    options || '- 无',
+    '',
+    '结构化上下文:',
+    ctxBlock || '(empty)',
+  ].join('\n')
+  const template = typeof permissionJudgePromptTemplate === 'string'
+    ? permissionJudgePromptTemplate.trim()
+    : ''
+  if (!template) return fallback
+  return template
+    .replace(/\{title\}/g, request.title)
+    .replace(/\{request_type\}/g, request.request_type)
+    .replace(/\{risk\}/g, request.risk)
+    .replace(/\{prompt\}/g, request.prompt)
+    .replace(/\{options\}/g, options || '- 无')
+    .replace(/\{context\}/g, ctxBlock || '(empty)')
+}
+
+function parsePermissionJudgeDecision(
+  rawReply: string,
+  request: PermissionRequestView,
+): { optionId: string; reason: string } | null {
+  const text = String(rawReply || '').trim()
+  if (!text) return null
+  try {
+    const parsed = JSON.parse(text) as { decision?: unknown; option_id?: unknown; reason?: unknown }
+    const decision = typeof parsed.decision === 'string' ? parsed.decision.trim() : ''
+    const optionId = typeof parsed.option_id === 'string' ? parsed.option_id.trim() : ''
+    const reason = typeof parsed.reason === 'string' ? parsed.reason.trim() : ''
+    if (optionId && request.options.some((option) => option.id === optionId)) {
+      return { optionId, reason }
+    }
+    if (decision === 'approve') {
+      const option = request.options.find((item) => item.action === 'approve')
+      if (option) return { optionId: option.id, reason }
+    }
+    if (decision === 'deny') {
+      const option = request.options.find((item) => item.action === 'deny')
+      if (option) return { optionId: option.id, reason }
+    }
+    if (decision === 'ask_human') {
+      const option = request.options.find((item) => item.action === 'ask_human' || item.action === 'deny')
+      if (option) return { optionId: option.id, reason: reason || 'requires_human_review' }
+    }
+  } catch {}
+  return null
+}
+
+async function maybeAutoDecidePermissionRequest(request: PermissionRequestView): Promise<void> {
+  if (request.status !== 'pending') return
+  if (!isRemoteBridgeConnected()) return
+  const steward = getPermissionBoundSteward(request)
+  if (!steward) return
+  if (isDangerousPermissionRequest(request)) return
+
+  const latest = getPermissionRequest(request.id, request.workspace_id ?? 1)
+  if (!latest || latest.status !== 'pending') return
+
+  const stewardDetail = getLocalAgentDetail(steward.localAgentId)
+  const prompt = buildPermissionJudgePrompt(latest, readPermissionJudgePromptTemplate(stewardDetail))
+  const result = await runStewardJudgeOnEdge(steward.localAgentId, prompt)
+  const decision = parsePermissionJudgeDecision(result.reply, latest)
+  if (!decision) return
+
+  pushPermissionDecisionToUpstream({
+    requestId: latest.id,
+    optionId: decision.optionId,
+    reason: decision.reason || `steward_auto_decision:${steward.localAgentId}`,
+    deciderAgentId: String(steward.localAgentId),
+  })
+}
+
+function syncHumanWatchEventSnapshot(eventRow: HumanWatchEvent): void {
+  eventBus.broadcast('human_watch.event', eventRow)
+}
+
+export function __testSetBridgeSocket(ws: WebSocket | null): void {
+  state.ws = ws
+  state.connected = Boolean(ws)
+}
+
+export function __testSyncPermissionRequestSnapshot(request: PermissionRequestView): void {
+  syncPermissionRequestSnapshot(request)
 }
 
 export function isRemoteBridgeConnected(): boolean {
@@ -495,7 +661,7 @@ async function resolveRemoteBridgeUrl(): Promise<{ wsUrl: string; discoverySourc
 
 async function handleTaskDispatch(payload: any): Promise<void> {
   if (!payload || typeof payload !== 'object') {
-    logger.warn('[RemoteBridge] Received task_dispatch with no payload')
+    safeLog('warn', '[RemoteBridge] Received task_dispatch with no payload')
     return
   }
 
@@ -509,7 +675,7 @@ async function handleTaskDispatch(payload: any): Promise<void> {
     metadata = {},
   } = payload
 
-  logger.info({ remoteTaskId, title, assignTo }, '[RemoteBridge] Received task from remote server')
+  safeLog('info', '[RemoteBridge] Received task from remote server', { remoteTaskId, title, assignTo })
 
   try {
     const db = getDatabase()
@@ -539,7 +705,7 @@ async function handleTaskDispatch(payload: any): Promise<void> {
       : undefined
 
     if (existingRow) {
-      logger.info({ taskId: existingRow.id, remoteTaskId }, '[RemoteBridge] Task already exists, skipping duplicate')
+      safeLog('info', '[RemoteBridge] Task already exists, skipping duplicate', { taskId: existingRow.id, remoteTaskId })
       safeSend(state.ws, { type: 'task_ack', taskId: remoteTaskId, status: 'duplicate', localTaskId: existingRow.id })
       return
     }
@@ -593,9 +759,9 @@ async function handleTaskDispatch(payload: any): Promise<void> {
     })
 
     bridgeEmitter.emit('task_received', { localTaskId, remoteTaskId, title })
-    logger.info({ localTaskId, remoteTaskId, assignTo: targetAgent, status }, '[RemoteBridge] Task created locally')
+    safeLog('info', '[RemoteBridge] Task created locally', { localTaskId, remoteTaskId, assignTo: targetAgent, status })
   } catch (err: any) {
-    logger.error({ err, remoteTaskId }, '[RemoteBridge] Failed to create task from remote')
+    safeLog('error', '[RemoteBridge] Failed to create task from remote', { err, remoteTaskId })
     safeSend(state.ws, { type: 'task_ack', taskId: remoteTaskId, status: 'error', error: err.message })
   }
 }
@@ -630,7 +796,7 @@ async function handleIncomingChatMessage(message: any): Promise<void> {
     // Broadcast locally so UI updates
     eventBus.broadcast('chat.message', { ...message, __from_bridge: true })
   } catch (err) {
-    logger.error({ err }, '[RemoteBridge] Failed to handle incoming chat message')
+    safeLog('error', '[RemoteBridge] Failed to handle incoming chat message', { err })
   }
 }
 
@@ -650,7 +816,7 @@ function handleCommand(payload: any): void {
       break
     }
     default:
-      logger.warn({ action }, '[RemoteBridge] Unknown command action')
+      safeLog('warn', '[RemoteBridge] Unknown command action', { action })
   }
 }
 
@@ -1123,10 +1289,10 @@ async function handleProjectsSync(payload: any): Promise<void> {
       }
     })()
 
-    logger.info({ count: projects.length }, '[RemoteBridge] Synced projects from server')
+    safeLog('info', '[RemoteBridge] Synced projects from server', { count: projects.length })
     eventBus.broadcast('project.synced' as any, { count: projects.length })
   } catch (err) {
-    logger.error({ err }, '[RemoteBridge] Failed to sync projects')
+    safeLog('error', '[RemoteBridge] Failed to sync projects', { err })
   }
 }
 
@@ -1136,7 +1302,7 @@ function handleMessage(raw: string): void {
   try {
     msg = JSON.parse(raw)
   } catch {
-    logger.warn('[RemoteBridge] Received non-JSON message, ignoring')
+    safeLog('warn', '[RemoteBridge] Received non-JSON message, ignoring')
     return
   }
 
@@ -1152,14 +1318,14 @@ function handleMessage(raw: string): void {
       break
 
     case 'welcome':
-      logger.info({ serverId: msg.serverId }, '[RemoteBridge] Server welcome received')
+      safeLog('info', '[RemoteBridge] Server welcome received', { serverId: msg.serverId })
       // Send agent status on welcome
       safeSend(state.ws, { type: 'agent_status', clientId: getLocalClientId(), clientLabel: getLocalClientLabel(), agents: getLocalAgentList(), timestamp: Date.now() })
       break
 
     case 'task_dispatch':
       handleTaskDispatch(msg.task || msg.payload).catch((e) =>
-        logger.error({ err: e }, '[RemoteBridge] task_dispatch handler failed')
+        safeLog('error', '[RemoteBridge] task_dispatch handler failed', { err: e })
       )
       break
 
@@ -1174,7 +1340,7 @@ function handleMessage(raw: string): void {
     case 'chat_message':
       if (msg.message) {
         handleIncomingChatMessage(msg.message).catch(e => 
-          logger.error({ err: e }, '[RemoteBridge] chat_message handler failed')
+          safeLog('error', '[RemoteBridge] chat_message handler failed', { err: e })
         )
       }
       break
@@ -1185,7 +1351,7 @@ function handleMessage(raw: string): void {
 
     case 'session_continue_request':
       handleSessionContinueRequest(msg).catch((e) =>
-        logger.error({ err: e }, '[RemoteBridge] session_continue_request handler failed')
+        safeLog('error', '[RemoteBridge] session_continue_request handler failed', { err: e })
       )
       break
 
@@ -1199,7 +1365,7 @@ function handleMessage(raw: string): void {
 
     case 'agent_session_update_request':
       handleAgentSessionUpdateRequest(msg).catch((e) =>
-        logger.error({ err: e }, '[RemoteBridge] agent_session_update_request handler failed')
+        safeLog('error', '[RemoteBridge] agent_session_update_request handler failed', { err: e })
       )
       break
 
@@ -1217,13 +1383,13 @@ function handleMessage(raw: string): void {
 
     case 'steward_judge_request':
       handleStewardJudgeRequest(msg).catch((e) =>
-        logger.error({ err: e }, '[RemoteBridge] steward_judge_request handler failed'),
+        safeLog('error', '[RemoteBridge] steward_judge_request handler failed', { err: e }),
       )
       break
 
     case 'agent_message_request':
       handleAgentMessageRequest(msg).catch((e) =>
-        logger.error({ err: e }, '[RemoteBridge] agent_message_request handler failed'),
+        safeLog('error', '[RemoteBridge] agent_message_request handler failed', { err: e }),
       )
       break
 
@@ -1232,19 +1398,28 @@ function handleMessage(raw: string): void {
         const request = msg?.request && typeof msg.request === 'object' ? msg.request as PermissionRequestView : null
         if (request) syncPermissionRequestSnapshot(request)
       } catch (e) {
-        logger.error({ err: e }, '[RemoteBridge] permission_request_sync handler failed')
+        safeLog('error', '[RemoteBridge] permission_request_sync handler failed', { err: e })
+      }
+      break
+
+    case 'human_watch_event_sync':
+      try {
+        const eventRow = msg?.event && typeof msg.event === 'object' ? msg.event as HumanWatchEvent : null
+        if (eventRow?.id) syncHumanWatchEventSnapshot(eventRow)
+      } catch (e) {
+        safeLog('error', '[RemoteBridge] human_watch_event_sync handler failed', { err: e })
       }
       break
 
     case 'projects_sync':
       handleProjectsSync(msg).catch(e =>
-        logger.error({ err: e }, '[RemoteBridge] projects_sync handler failed')
+        safeLog('error', '[RemoteBridge] projects_sync handler failed', { err: e })
       )
       break
 
     default:
       if (type) {
-        logger.debug({ type }, '[RemoteBridge] Unhandled message type')
+        safeLog('debug', '[RemoteBridge] Unhandled message type', { type })
       }
   }
 }
@@ -1270,12 +1445,12 @@ function startHeartbeat(): void {
     lastTickAt = now
     // setInterval pauses during system sleep — force reconnect if we missed several beats
     if (tickGap > PING_INTERVAL_MS * 2.5) {
-      logger.warn({ tickGap }, '[RemoteBridge] Heartbeat gap (possible sleep) — forcing reconnect')
+      safeLog('warn', '[RemoteBridge] Heartbeat gap (possible sleep) — forcing reconnect', { tickGap })
       state.ws.close(4000, 'Post-sleep reconnect')
       return
     }
     if (now - state.lastPong > MAX_PONG_SILENCE_MS) {
-      logger.warn('[RemoteBridge] No pong received for too long, forcing reconnect')
+      safeLog('warn', '[RemoteBridge] No pong received for too long, forcing reconnect')
       state.ws.close(4000, 'Heartbeat timeout')
       return
     }
@@ -1331,7 +1506,7 @@ async function connect(): Promise<void> {
 
   const connectTimeout = setTimeout(() => {
     if (!state.connected && state.ws === ws) {
-      logger.warn({ url: resolved.wsUrl }, '[RemoteBridge] Connection timeout (15s) — forcing close')
+      safeLog('warn', '[RemoteBridge] Connection timeout (15s) — forcing close', { url: resolved.wsUrl })
       try { ws.close(4008, 'Connect timeout') } catch {}
     }
   }, 15_000)
@@ -1342,10 +1517,11 @@ async function connect(): Promise<void> {
     state.reconnectAttempts = 0
     state.connectedAt = Date.now()
     state.lastPong = Date.now()
-    logger.info(
-      { url: resolved.wsUrl, discoverySource: resolved.discoverySource, totalReconnects: state.totalReconnects },
-      '[RemoteBridge] Connected to remote server',
-    )
+    safeLog('info', '[RemoteBridge] Connected to remote server', {
+      url: resolved.wsUrl,
+      discoverySource: resolved.discoverySource,
+      totalReconnects: state.totalReconnects,
+    })
 
     // Send hello handshake
     safeSend(ws, {
@@ -1383,7 +1559,7 @@ async function connect(): Promise<void> {
     const errMsg = (event as any)?.message || 'WebSocket error'
     state.lastError = errMsg
     state.lastErrorAt = Date.now()
-    logger.warn({ err: errMsg, url: state.resolvedUrl }, '[RemoteBridge] WebSocket error, will reconnect...')
+    safeLog('warn', '[RemoteBridge] WebSocket error, will reconnect...', { err: errMsg, url: state.resolvedUrl })
     bridgeEmitter.emit('bridge_error', { message: errMsg })
   }
 
@@ -1398,10 +1574,12 @@ async function connect(): Promise<void> {
     const handler = (ws as any)._chatHandler
     if (handler) eventBus.off('chat.message', handler)
 
-    logger.info(
-      { code: event?.code, reason: event?.reason, url: state.resolvedUrl || resolved.wsUrl, durationMs },
-      '[RemoteBridge] Disconnected from remote server',
-    )
+    safeLog('info', '[RemoteBridge] Disconnected from remote server', {
+      code: event?.code,
+      reason: event?.reason,
+      url: state.resolvedUrl || resolved.wsUrl,
+      durationMs,
+    })
     bridgeEmitter.emit('disconnected', { code: event?.code, reason: event?.reason })
 
     if (!state.isShuttingDown) {
@@ -1461,12 +1639,12 @@ function scheduleReconnect(): void {
   const jitter = base * 0.25 * Math.random()
   const delay = Math.round(base + jitter)
   state.totalReconnects++
-  logger.info({ delay, attempts, totalReconnects: state.totalReconnects }, '[RemoteBridge] Scheduling reconnect')
+  safeLog('info', '[RemoteBridge] Scheduling reconnect', { delay, attempts, totalReconnects: state.totalReconnects })
   state.reconnectAttempts += 1
   state.reconnectTimer = setTimeout(() => {
     state.reconnectTimer = null
     connect().catch((e) => {
-      logger.error({ err: e }, '[RemoteBridge] Reconnect threw')
+      safeLog('error', '[RemoteBridge] Reconnect threw', { err: e })
       scheduleReconnect()
     })
   }, Math.round(delay))
@@ -1501,7 +1679,7 @@ export function pushSessionTranscriptChangedToUpstream(
 export function startRemoteBridge(): void {
   const upstream = getRemoteUpstreamConfig()
   if (!upstream.baseUrl) {
-    logger.info('[RemoteBridge] No upstream URL (env or gateway.server_url) — bridge disabled')
+    safeLog('info', '[RemoteBridge] No upstream URL (env or gateway.server_url) — bridge disabled')
     return
   }
   state.isShuttingDown = false
@@ -1512,7 +1690,7 @@ export function startRemoteBridge(): void {
   if (_started) {
     if (!state.connected && !state.reconnectTimer) {
       connect().catch((e) => {
-        logger.error({ err: e }, '[RemoteBridge] Connect retry failed')
+        safeLog('error', '[RemoteBridge] Connect retry failed', { err: e })
         scheduleReconnect()
       })
     }
@@ -1520,9 +1698,9 @@ export function startRemoteBridge(): void {
   }
   _started = true
 
-  logger.info({ url: upstream.baseUrl, source: upstream.source }, '[RemoteBridge] Starting remote server bridge')
+  safeLog('info', '[RemoteBridge] Starting remote server bridge', { url: upstream.baseUrl, source: upstream.source })
   connect().catch((e) => {
-    logger.error({ err: e }, '[RemoteBridge] Initial connect failed')
+    safeLog('error', '[RemoteBridge] Initial connect failed', { err: e })
     scheduleReconnect()
   })
 }
@@ -1558,7 +1736,7 @@ export function stopRemoteBridge(): void {
   state.discoverySource = null
   _started = false
   state.isShuttingDown = false
-  logger.info('[RemoteBridge] Bridge stopped')
+  safeLog('info', '[RemoteBridge] Bridge stopped')
 }
 
 /**

@@ -45,6 +45,11 @@ export function ProjectManagerModal({
   onClose: () => void
   onChanged?: () => Promise<void>
 }) {
+  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; project: Project | null; error: string | null }>({
+    open: false,
+    project: null,
+    error: null,
+  })
   const [projects, setProjects] = useState<Project[]>([])
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
@@ -128,15 +133,17 @@ export function ProjectManagerModal({
   }
 
   const deleteProject = async (project: Project) => {
-    if (!confirm(`Delete project "${project.name}"? Existing tasks will be moved to General.`)) return
     try {
       const response = await fetch(`/api/projects/${project.id}?mode=delete`, { method: 'DELETE' })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'Failed to delete project')
+      setDeleteDialog({ open: false, project: null, error: null })
       await load()
       await onChanged?.()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete project')
+      const msg = err instanceof Error ? err.message : 'Failed to delete project'
+      setError(msg)
+      setDeleteDialog((prev) => ({ ...prev, error: msg }))
     }
   }
 
@@ -224,6 +231,33 @@ export function ProjectManagerModal({
 
           {error && <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded p-2">{error}</div>}
 
+          {deleteDialog.open && deleteDialog.project ? (
+            <div className="rounded-lg border border-rose-500/20 bg-rose-500/10 p-3">
+              <div className="text-sm font-semibold text-rose-300">Confirm deletion</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                Delete project "{deleteDialog.project.name}"? Existing tasks will be moved to General.
+              </div>
+              {deleteDialog.error ? (
+                <div className="mt-2 text-xs text-rose-300">{deleteDialog.error}</div>
+              ) : null}
+              <div className="mt-3 flex gap-2">
+                <Button size="sm" variant="secondary" onClick={() => setDeleteDialog({ open: false, project: null, error: null })}>
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={() => {
+                    if (!deleteDialog.project) return
+                    void deleteProject(deleteDialog.project)
+                  }}
+                >
+                  Delete
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
           <form onSubmit={createProject} className="space-y-3">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <input
@@ -307,7 +341,7 @@ export function ProjectManagerModal({
                           <Button variant="outline" size="xs" onClick={() => archiveProject(project)}>
                             {project.status === 'active' ? 'Archive' : 'Activate'}
                           </Button>
-                          <Button variant="destructive" size="xs" onClick={() => deleteProject(project)}>
+                          <Button variant="destructive" size="xs" onClick={() => setDeleteDialog({ open: true, project, error: null })}>
                             Delete
                           </Button>
                         </div>

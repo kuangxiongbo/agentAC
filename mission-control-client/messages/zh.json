@@ -84,6 +84,7 @@
     "costTracker": "费用追踪",
     "nodes": "节点",
     "approvals": "审批",
+    "humanWatch": "人工值守",
     "office": "办公室",
     "cron": "Cron",
     "webhooks": "Webhooks",
@@ -2625,5 +2626,22 @@
     "tabStatus": "Status",
     "unhealthy": "Unhealthy",
     "unreachable": "Unreachable"
+  },
+  "humanWatch": {
+    "refresh": "刷新",
+    "eventsLoading": "加载值守事件中…",
+    "eventsLoadFailed": "加载值守事件失败",
+    "eventsEmpty": "当前没有待处理值守事件。",
+    "eventsActionFailed": "处理值守事件失败",
+    "eventsActionSuccess": "值守事件已处理",
+    "eventsViewPending": "待处理",
+    "eventsViewActive": "进行中",
+    "eventsViewHistory": "历史",
+    "eventsReplyAction": "回复 Worker",
+    "eventsApproveAction": "批准",
+    "eventsDenyAction": "拒绝",
+    "eventsDismissAction": "忽略",
+    "eventsReplyPromptTitle": "回复值守事件",
+    "eventsReplyPromptBody": "输入发送给 Worker 的回复内容，平台会记录这次介入并回写到对应会话。"
   }
 }

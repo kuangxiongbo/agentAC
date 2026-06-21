@@ -52,6 +52,29 @@ function appendEventAudit(
   }
 }
 
+const HUMAN_RESOLVER_TYPES = new Set(['human_user', 'human_external'])
+
+/**
+ * Records whether a human's decision matched the judge's original suggestion, so
+ * acceptance/override rates can be reviewed later without changing judge behavior.
+ */
+function judgeSuggestionOutcomeAudit(
+  input: UpdateHumanWatchEventInput,
+  current: HumanWatchEventRow,
+  context: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (input.resolvedAction == null) return context
+  const resolvedByType = input.resolvedByType ?? current.resolved_by_type
+  if (!resolvedByType || !HUMAN_RESOLVER_TYPES.has(resolvedByType)) return context
+  const suggestedAction = current.suggested_action
+  if (!suggestedAction) return context
+  return appendEventAudit(context, 'judge_suggestion_outcome', {
+    suggested_action: suggestedAction,
+    resolved_action: input.resolvedAction,
+    accepted: suggestedAction === input.resolvedAction,
+  })
+}
+
 function rowToView(row: HumanWatchEventRow): HumanWatchEventView {
   return {
     ...row,
@@ -261,9 +284,10 @@ export function updateHumanWatchEvent(
     input.contextPatch && typeof input.contextPatch === 'object'
       ? { ...(existingContext ?? {}), ...input.contextPatch }
       : existingContext
+  const judgeFeedbackContext = judgeSuggestionOutcomeAudit(input, current, nextContext)
   const nextContextWithAudit =
     input.resolvedAction != null
-      ? appendEventAudit(nextContext, 'watch_event_closed', {
+      ? appendEventAudit(judgeFeedbackContext, 'watch_event_closed', {
           action: input.resolvedAction,
           status: input.status ?? current.status,
           resolved_by_type: input.resolvedByType ?? current.resolved_by_type,

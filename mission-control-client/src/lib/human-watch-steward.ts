@@ -60,6 +60,13 @@ function buildDefaultStewardConfig(): Record<string, unknown> {
       llm_enabled: true,
       llm_sweep_enabled: false,
       llm_sweep_interval_minutes: 30,
+      permission_judge_prompt_template: [
+        '你是人工值守审批判官。',
+        '请根据权限请求内容判断应该 approve、deny，还是 ask_human。',
+        '只输出一行 JSON，不要解释，不要 markdown。',
+        '格式必须是：{"decision":"approve|deny|ask_human","option_id":"...", "reason":"..."}',
+        '危险操作、删除、卸载、生产变更、提权、密钥操作，一律优先 ask_human。',
+      ].join('\n'),
       rules,
       binding_defaults: bindingDefaults,
     },

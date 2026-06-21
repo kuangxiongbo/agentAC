@@ -100,6 +100,7 @@ function formatDateLabel(date: Date): string {
 }
 
 export function CronManagementPanel() {
+  const tc = useTranslations('common')
   const t = useTranslations('cronManagement')
   const { cronJobs, setCronJobs, dashboardMode } = useAgentCenterStore()
   const isLocalMode = dashboardMode === 'local'
@@ -118,6 +119,8 @@ export function CronManagementPanel() {
   const [sortField, setSortField] = useState<SortField>('name')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [formErrors, setFormErrors] = useState<FormErrors>({})
+  const [deleteDialogJob, setDeleteDialogJob] = useState<CronJob | null>(null)
+  const [deleteDialogError, setDeleteDialogError] = useState<string | null>(null)
   const [runHistory, setRunHistory] = useState<RunHistoryEntry[]>([])
   const [runHistoryTotal, setRunHistoryTotal] = useState(0)
   const [runHistoryHasMore, setRunHistoryHasMore] = useState(false)
@@ -454,10 +457,6 @@ export function CronManagementPanel() {
   }
 
   const removeJob = async (job: CronJob) => {
-    if (!confirm(`Are you sure you want to remove the job "${job.name}"?`)) {
-      return
-    }
-
     try {
       const response = await fetch('/api/cron', {
         method: 'POST',
@@ -473,13 +472,14 @@ export function CronManagementPanel() {
         if (selectedJob?.name === job.name) {
           setSelectedJob(null)
         }
+        setDeleteDialogJob(null)
       } else {
         const error = await response.json()
-        alert(`Failed to remove job: ${error.error}`)
+        setDeleteDialogError(`Failed to remove job: ${error.error}`)
       }
     } catch (error) {
       log.error('Failed to remove job:', error)
-      alert('Network error occurred')
+      setDeleteDialogError('Network error occurred')
     }
   }
 
@@ -1290,7 +1290,10 @@ export function CronManagementPanel() {
                     {t('history')}
                   </Button>
                   <Button
-                    onClick={() => removeJob(selectedJob)}
+                    onClick={() => {
+                      setDeleteDialogJob(selectedJob)
+                      setDeleteDialogError(null)
+                    }}
                     disabled={selectedJob.delivery === 'local' && selectedJob.agentId === 'mission-control-local'}
                     variant="destructive"
                     size="sm"
@@ -1299,6 +1302,37 @@ export function CronManagementPanel() {
                   </Button>
                 </div>
               </div>
+
+              {deleteDialogJob ? (
+                <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4">
+                  <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-2xl">
+                    <div className="text-sm font-semibold text-foreground">{tc('deleteConfirmTitle')}</div>
+                    <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                      Are you sure you want to remove the job "{deleteDialogJob.name}"?
+                    </p>
+                    <div className="mt-2 rounded border border-border/60 bg-secondary/20 px-2 py-1 text-xs text-foreground/80">
+                      {tc('deleteConfirmBody')}
+                    </div>
+                    {deleteDialogError ? (
+                      <div className="mt-2 rounded border border-rose-500/20 bg-rose-500/10 px-2 py-1 text-2xs text-rose-300">
+                        {deleteDialogError}
+                      </div>
+                    ) : null}
+                    <div className="mt-4 flex justify-end gap-2">
+                      <Button size="sm" variant="secondary" onClick={() => setDeleteDialogJob(null)}>
+                        {tc('cancel')}
+                      </Button>
+                      <Button
+                        size="sm"
+                        className="bg-rose-500/20 text-rose-200 border border-rose-500/30 hover:bg-rose-500/30"
+                        onClick={() => void removeJob(deleteDialogJob)}
+                      >
+                        {tc('deleteConfirmAction')}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
 
               {/* Right: Logs */}
               <div>

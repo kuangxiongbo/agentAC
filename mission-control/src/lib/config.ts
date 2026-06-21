@@ -101,6 +101,7 @@ export const config = {
   clawdbotBin: process.env.CLAWDBOT_BIN || 'clawdbot',
   gatewayHost: process.env.OPENCLAW_GATEWAY_HOST || '127.0.0.1',
   gatewayPort: clampInt(Number(process.env.OPENCLAW_GATEWAY_PORT || '18789'), 1, 65535, 18789),
+  bridgePort: clampInt(Number(process.env.MC_BRIDGE_PORT || '5002'), 1, 65535, 5002),
   logsDir:
     process.env.OPENCLAW_LOG_DIR ||
     (openclawStateDir ? path.join(openclawStateDir, 'logs') : ''),

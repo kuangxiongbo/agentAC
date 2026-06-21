@@ -21,6 +21,8 @@ type ForwardInfo = {
   reason?: string
   session?: string
   runId?: string
+  sessionKind?: string
+  accepted?: boolean
 }
 
 type ToolEvent = {
@@ -522,6 +524,8 @@ export async function POST(request: NextRequest) {
               )
               forwardInfo.delivered = true
               forwardInfo.session = queued.sessionKey || undefined
+              forwardInfo.sessionKind = localSessionKind
+              forwardInfo.accepted = true
             } else if (sessionKey) {
               const acceptedPayload = await callOpenClawGateway<any>(
                 'chat.send',
@@ -537,6 +541,7 @@ export async function POST(request: NextRequest) {
               const status = String(acceptedPayload?.status || '').toLowerCase()
               forwardInfo.delivered = status === 'started' || status === 'ok' || status === 'in_flight'
               forwardInfo.session = sessionKey
+              forwardInfo.accepted = forwardInfo.delivered
               if (typeof acceptedPayload?.runId === 'string' && acceptedPayload.runId) {
                 forwardInfo.runId = acceptedPayload.runId
               }
@@ -564,6 +569,7 @@ export async function POST(request: NextRequest) {
               const acceptedPayload = parseGatewayJson(invokeResult.stdout)
               forwardInfo.delivered = true
               forwardInfo.session = openclawAgentId || undefined
+              forwardInfo.accepted = true
               if (typeof acceptedPayload?.runId === 'string' && acceptedPayload.runId) {
                 forwardInfo.runId = acceptedPayload.runId
               }
@@ -576,6 +582,7 @@ export async function POST(request: NextRequest) {
             if (maybeStdout.includes('"status": "accepted"') || maybeStdout.includes('"status":"accepted"')) {
               forwardInfo.delivered = true
               forwardInfo.session = sessionKey || openclawAgentId || undefined
+              forwardInfo.accepted = true
               if (typeof acceptedPayload?.runId === 'string' && acceptedPayload.runId) {
                 forwardInfo.runId = acceptedPayload.runId
               }
@@ -770,7 +777,21 @@ export async function POST(request: NextRequest) {
     // Broadcast to SSE clients
     eventBus.broadcast('chat.message', parsedMessage)
 
-    return NextResponse.json({ message: parsedMessage, forward: forwardInfo }, { status: 201 })
+    return NextResponse.json(
+      {
+        message: parsedMessage,
+        forward: forwardInfo,
+        accepted: Boolean(forwardInfo?.accepted),
+        delivered: Boolean(forwardInfo?.delivered),
+        session_key: forwardInfo?.session || null,
+        session_kind: forwardInfo?.sessionKind || null,
+        queued_prompt:
+          forwardInfo?.sessionKind && forwardInfo?.session
+            ? `Message from ${from}: ${content}`
+            : null,
+      },
+      { status: 201 },
+    )
   } catch (error) {
     logger.error({ err: error }, 'POST /api/chat/messages error')
     return NextResponse.json({ error: 'Failed to send message' }, { status: 500 })

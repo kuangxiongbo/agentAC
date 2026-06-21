@@ -28,7 +28,10 @@
     "updateNow": "Update Now",
     "showDetails": "Show Details",
     "hideDetails": "Hide Details",
-    "moreIssues": "+ {count} more issue{count, plural, one {} other {s}}"
+    "moreIssues": "+ {count} more issue{count, plural, one {} other {s}}",
+    "deleteConfirmTitle": "Confirm deletion",
+    "deleteConfirmBody": "This action removes the related data. Review the scope before continuing.",
+    "deleteConfirmAction": "Delete"
   },
   "auth": {
     "missionControl": "Agent Mission Control",
@@ -3112,6 +3115,8 @@
     "eventsLoadFailed": "Failed to load watch events",
     "eventsEmpty": "No pending watch events right now.",
     "eventsReplyPrompt": "Enter the intervention message to send to the Worker",
+    "eventsReplyPromptTitle": "Send intervention",
+    "eventsReplyPromptBody": "This message will be written back into the Worker session as a new user input.",
     "eventsActionFailed": "Failed to handle watch event",
     "eventsActionSuccess": "Watch action submitted",
     "eventsReplyAction": "Send intervention",
@@ -3124,6 +3129,8 @@
     "exportHint": "Admins can export intervention log:",
     "unbind": "Unbind",
     "unbindConfirm": "Remove this worker–steward binding?",
+    "unbindConfirmTitle": "Confirm unbind",
+    "unbindConfirmBody": "This removes the automatic follow-up relationship between the Worker and the steward.",
     "unbindFailed": "Failed to unbind",
     "unbindSuccess": "Binding removed",
     "saveRules": "Save rules",

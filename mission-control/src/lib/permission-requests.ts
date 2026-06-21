@@ -392,6 +392,9 @@ export function createPermissionRequest(
       ? String((watchEvent as Record<string, unknown>).source || '').trim()
       : ''
   const summary = [created.title, created.prompt].filter(Boolean).join(' - ').trim()
+  // Risk is judged centrally here against the predefined dangerous-action rules,
+  // not trusted from whatever `risk` the worker self-reported when it just asked for confirmation.
+  const isHighPriority = isDangerousPermissionRequest(created)
   createHumanWatchEvent(
     {
       workspaceId: created.workspace_id,
@@ -408,14 +411,24 @@ export function createPermissionRequest(
       permissionRequestId: created.id,
       source: watchEventSource === 'worker_tool' ? 'worker_tool' : 'permission_request',
       status: 'pending',
-      priority: created.risk === 'critical' || created.risk === 'high' ? created.risk : 'medium',
+      priority: isHighPriority ? 'high' : 'medium',
       title: created.title,
       summary: summary || created.prompt,
       context: {
+        event_kind: 'permission_request',
         permission_request_id: created.id,
         request_type: created.request_type,
         options: created.options,
-        request_risk: created.risk,
+        request_risk: isHighPriority ? 'high' : 'medium',
+        dangerous_action_keys: detectsDangerousAction(created),
+        worker_judge_context: [
+          `- 请求标题: ${created.title}`,
+          `- 请求类型: ${created.request_type}`,
+          `- 风险等级(按预定义规则判断): ${isHighPriority ? 'high' : 'medium'}`,
+          `- 待决策内容: ${created.prompt}`,
+          `- 可选动作: ${created.options.map((option) => `${option.id}:${option.label}/${option.action}`).join(' | ') || '无'}`,
+        ].join('\n'),
+        worker_summary: summary || created.prompt,
         session_kind:
           created.context && typeof created.context === 'object' && !Array.isArray(created.context)
             ? (created.context as Record<string, unknown>).session_kind ?? null

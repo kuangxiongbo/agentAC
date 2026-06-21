@@ -42,6 +42,25 @@ vi.mock('@/lib/logger', () => ({
   },
 }))
 
+// These tests cover plain local agents — never bound to a bridge-edge steward —
+// so the human-watch-on-edge branch in DELETE must fall through to local deletion.
+vi.mock('@/lib/sync-agent-index', () => ({
+  getBridgeAgentIndexById: vi.fn(() => null),
+  bridgeIndexRowToAgentListItem: vi.fn(),
+  mergeBridgeIndexIntoConfig: vi.fn(),
+}))
+
+vi.mock('@/lib/bridge-server', () => ({
+  isBridgeClientOnline: vi.fn(() => false),
+  requestBridgeClientAgentDetail: vi.fn(),
+}))
+
+vi.mock('@/lib/human-watch-remote', () => ({
+  deleteHumanWatchStewardOnEdge: vi.fn(),
+  resolveBridgeStewardHumanWatch: vi.fn(() => false),
+  updateHumanWatchStewardOnEdge: vi.fn(),
+}))
+
 describe('DELETE /api/agents/[id]', () => {
   beforeEach(() => {
     vi.resetModules()

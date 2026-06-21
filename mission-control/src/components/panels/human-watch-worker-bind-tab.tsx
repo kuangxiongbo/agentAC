@@ -38,6 +38,7 @@ export function HumanWatchWorkerBindTab({
   agent: Agent
   allAgents: Agent[]
 }) {
+  const tc = useTranslations('common')
   const t = useTranslations('humanWatch')
   const ta = useTranslations('agentSquadPhase3')
   const navigateToPanel = useNavigateToPanel()
@@ -60,6 +61,7 @@ export function HumanWatchWorkerBindTab({
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [stewardLocalId, setStewardLocalId] = useState('')
+  const [unbindConfirmOpen, setUnbindConfirmOpen] = useState(false)
 
   const stewardsForClient = useMemo(() => {
     return allAgents.filter((a) => {
@@ -162,7 +164,6 @@ export function HumanWatchWorkerBindTab({
 
   const unbind = async () => {
     if (!currentBinding) return
-    if (!window.confirm(t('unbindConfirm'))) return
     setBusy(true)
     setError(null)
     setMessage(null)
@@ -269,7 +270,7 @@ export function HumanWatchWorkerBindTab({
         <p className="text-xs text-muted-foreground">{ta('humanWatchNoStewardHint')}</p>
       ) : null}
 
-      <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
           disabled={busy || policyEnabled === false || !stewardLocalId}
@@ -283,12 +284,44 @@ export function HumanWatchWorkerBindTab({
             variant="ghost"
             className="text-rose-300"
             disabled={busy || policyEnabled === false}
-            onClick={() => void unbind()}
+            onClick={() => setUnbindConfirmOpen(true)}
           >
             {t('unbind')}
           </Button>
         ) : null}
       </div>
+
+      {unbindConfirmOpen ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-2xl">
+            <div className="text-sm font-semibold text-foreground">{t('unbindConfirmTitle')}</div>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              {t('unbindConfirmBody')}
+            </p>
+            {error ? (
+              <div className="mt-2 rounded border border-rose-500/20 bg-rose-500/10 px-2 py-1 text-2xs text-rose-300">
+                {error}
+              </div>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => setUnbindConfirmOpen(false)}>
+                {tc('cancel')}
+              </Button>
+              <Button
+                size="sm"
+                className="bg-rose-500/20 text-rose-200 border border-rose-500/30 hover:bg-rose-500/30"
+                disabled={busy}
+                onClick={async () => {
+                  await unbind()
+                  setUnbindConfirmOpen(false)
+                }}
+              >
+                {t('unbind')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

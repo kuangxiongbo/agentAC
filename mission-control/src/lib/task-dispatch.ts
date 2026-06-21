@@ -569,13 +569,26 @@ export async function requeueStaleTasks(): Promise<{ ok: boolean; message: strin
     return { ok: true, message: 'No stale tasks found' }
   }
 
+  const hasPendingPermission = db.prepare(`
+    SELECT 1 FROM permission_requests
+    WHERE workspace_id = ? AND worker_name = ? AND status = 'pending'
+    LIMIT 1
+  `)
+
   let requeued = 0
   let failed = 0
+  let skippedPendingApproval = 0
 
   for (const task of staleTasks) {
     // Only requeue if the agent is offline or unknown
     const agentOffline = !task.agent_status || task.agent_status === 'offline'
     if (!agentOffline) continue
+
+    // Don't mistake "blocked waiting on human-watch approval" for a dead session.
+    if (task.assigned_to && hasPendingPermission.get(task.workspace_id, task.assigned_to)) {
+      skippedPendingApproval++
+      continue
+    }
 
     const newAttempts = (task.dispatch_attempts ?? 0) + 1
 
@@ -615,11 +628,12 @@ export async function requeueStaleTasks(): Promise<{ ok: boolean; message: strin
   }
 
   const total = requeued + failed
+  const pendingNote = skippedPendingApproval > 0 ? `, ${skippedPendingApproval} awaiting human approval` : ''
   return {
     ok: true,
     message: total === 0
-      ? `Found ${staleTasks.length} stale task(s) but agents still online`
-      : `Requeued ${requeued}, failed ${failed} of ${staleTasks.length} stale task(s)`,
+      ? `Found ${staleTasks.length} stale task(s) but agents still online${pendingNote}`
+      : `Requeued ${requeued}, failed ${failed} of ${staleTasks.length} stale task(s)${pendingNote}`,
   }
 }
 

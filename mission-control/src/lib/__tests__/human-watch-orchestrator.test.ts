@@ -243,9 +243,53 @@ describe.sequential('human-watch-orchestrator', () => {
     )
 
     expect(runJudge).toHaveBeenCalled()
+    expect(runJudge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining('Worker 上下文：'),
+      }),
+    )
+    expect(runJudge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining('Worker 会话摘录：'),
+      }),
+    )
     expect(sendContinue).toHaveBeenCalledWith(
       expect.objectContaining({ prompt: 'Pick option A and continue.' }),
     )
+  })
+
+  it('persists structured worker context into created watch event', async () => {
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    const stale = new Date(Date.now() - 120_000).toISOString()
+    fetchTranscript.mockResolvedValue({
+      messages: [
+        {
+          role: 'user',
+          parts: [{ type: 'text', text: '请继续处理端口冲突' }],
+          timestamp: stale,
+        },
+        {
+          role: 'assistant',
+          parts: [{ type: 'text', text: '我当前受阻，请确认是否继续 kill 旧进程。' }],
+          timestamp: stale,
+        },
+      ],
+    })
+    runJudge.mockResolvedValue({ reply: '继续 kill 旧进程，然后重新启动。', sessionId: 'judge-2', source: 'test' })
+    sendContinue.mockResolvedValue({ accepted: true })
+
+    await evaluateHumanWatchBinding(
+      db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any,
+      { sessionId: 'sess-worker-1', sessionKind: 'claude-code' },
+      defaultDeps(),
+    )
+
+    const event = db
+      .prepare(`SELECT context_json FROM human_watch_events ORDER BY id DESC LIMIT 1`)
+      .get() as { context_json: string | null }
+    const context = event?.context_json ? JSON.parse(event.context_json) as Record<string, unknown> : {}
+    expect(String(context.worker_judge_context || '')).toContain('最近用户意图')
+    expect(String(context.worker_summary || '')).toContain('ASSISTANT:')
   })
 
   it('skips send when steward judge returns empty reply', async () => {

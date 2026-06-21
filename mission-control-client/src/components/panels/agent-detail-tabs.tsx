@@ -20,6 +20,7 @@ import {
 import { getAgentDisplayName, isHumanWatchAgent } from '@/lib/agent-card-helpers'
 import { useNavigateToPanel } from '@/lib/navigation'
 import { useAgentCenterStore } from '@/store'
+import { HumanWatchEventsTab } from './human-watch-events-tab'
 
 const log = createClientLogger('AgentDetailTabs')
 
@@ -94,6 +95,21 @@ const statusIcons: Record<string, string> = {
   idle: 'o',
   busy: '~',
   error: '!',
+}
+
+interface HumanWatchEventRow {
+  id: string
+  client_id: string
+  worker_name: string | null
+  worker_session_id: string | null
+  steward_name: string | null
+  status: string
+  priority: string
+  title: string
+  summary: string
+  latest_worker_message: string | null
+  permission_request_id: string | null
+  created_at: number
 }
 
 function Dialog({
@@ -675,6 +691,23 @@ export function OverviewTab({
           </form>
         </div>
       </div>
+
+      {isStewardAgent && (
+        <div className="mt-5 rounded-lg border border-cyan-500/20 bg-cyan-500/[0.04] p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h4 className="text-sm font-medium text-foreground">待介入值守事件</h4>
+              <p className="text-[11px] text-cyan-200/80 mt-1">服务端创建的结构化值守事件会同步到这里，本地可直接查看并介入。</p>
+            </div>
+            <Button size="sm" variant="secondary" onClick={() => navigateToPanel('chat')}>
+              打开聊天
+            </Button>
+          </div>
+          <div className="mt-3">
+            <HumanWatchEventsTab stewardLocalAgentId={agent.id} />
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -823,11 +856,13 @@ export function MemoryTab({
   workingMemory: string
   onSave: (content: string, append?: boolean) => Promise<void>
 }) {
+  const tc = useTranslations('common')
   const t = useTranslations('agentDetail')
   const [editing, setEditing] = useState(false)
   const [content, setContent] = useState(workingMemory)
   const [appendMode, setAppendMode] = useState(false)
   const [newEntry, setNewEntry] = useState('')
+  const [clearDialogOpen, setClearDialogOpen] = useState(false)
 
   useEffect(() => {
     setContent(workingMemory)
@@ -845,11 +880,10 @@ export function MemoryTab({
   }
 
   const handleClear = async () => {
-    if (confirm(t('confirmClearMemory'))) {
-      await onSave('')
-      setContent('')
-      setEditing(false)
-    }
+    await onSave('')
+    setContent('')
+    setEditing(false)
+    setClearDialogOpen(false)
   }
 
   return (
@@ -880,10 +914,43 @@ export function MemoryTab({
               >
                 {t('editMemory')}
               </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setClearDialogOpen(true)}
+              >
+                {t('clear')}
+              </Button>
             </>
           )}
         </div>
       </div>
+
+      {clearDialogOpen ? (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-2xl">
+            <div className="text-sm font-semibold text-foreground">{tc('deleteConfirmTitle')}</div>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              {t('confirmClearMemory')}
+            </p>
+            <div className="mt-2 rounded border border-border/60 bg-secondary/20 px-2 py-1 text-xs text-foreground/80">
+              {tc('deleteConfirmBody')}
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button size="sm" variant="secondary" onClick={() => setClearDialogOpen(false)}>
+                {tc('cancel')}
+              </Button>
+              <Button
+                size="sm"
+                className="bg-rose-500/20 text-rose-200 border border-rose-500/30 hover:bg-rose-500/30"
+                onClick={() => void handleClear()}
+              >
+                {tc('deleteConfirmAction')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Info Banner */}
       <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3 text-xs text-blue-300">

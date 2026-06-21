@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildStewardJudgePrompt,
+  buildWorkerJudgeContext,
   buildWorkerSummaryForJudge,
   parseStewardConfigFromAgent,
 } from '@/lib/human-watch-judge'
@@ -46,7 +47,25 @@ describe('human-watch-judge', () => {
   })
 
   it('substitutes summary into judge prompt template', () => {
-    const prompt = buildStewardJudgePrompt('line-1', { judge_prompt_template: 'Go: {summary}' })
-    expect(prompt).toBe('Go: line-1')
+    const prompt = buildStewardJudgePrompt('line-1', 'ctx-1', {
+      judge_prompt_template: 'Go: {context} // {summary}',
+    })
+    expect(prompt).toBe('Go: ctx-1 // line-1')
+  })
+
+  it('builds structured worker judge context', () => {
+    const ctx = buildWorkerJudgeContext(
+      [
+        { role: 'user', parts: [{ type: 'text', text: '请继续排查端口占用问题' }], timestamp: '2026-01-01T00:00:00Z' },
+        { role: 'assistant', parts: [{ type: 'text', text: '[tool_result] lsof 显示 5101 被占用' }], timestamp: '2026-01-01T00:02:00Z' },
+        { role: 'assistant', parts: [{ type: 'text', text: '我当前受阻，请确认是否继续 kill 旧进程。' }], timestamp: '2026-01-01T00:03:00Z' },
+      ],
+      {},
+    )
+    expect(ctx).toContain('最近用户意图')
+    expect(ctx).toContain('最近 Assistant 输出')
+    expect(ctx).toContain('最近工具结果')
+    expect(ctx).toContain('推断待解决问题')
+    expect(ctx).toContain('等待确认或选择')
   })
 })

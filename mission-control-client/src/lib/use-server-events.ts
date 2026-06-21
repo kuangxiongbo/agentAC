@@ -44,6 +44,7 @@ export function useServerEvents() {
     addNotification,
     addActivity,
     upsertPermissionRequest,
+    upsertHumanWatchEvent,
   } = useAgentCenterStore()
 
   useEffect(() => {
@@ -203,6 +204,11 @@ export function useServerEvents() {
             upsertPermissionRequest(event.data)
           }
           break
+        case 'human_watch.event':
+          if (event.data?.id) {
+            upsertHumanWatchEvent(event.data)
+          }
+          break
       }
     }
 
@@ -228,5 +234,6 @@ export function useServerEvents() {
     addNotification,
     addActivity,
     upsertPermissionRequest,
+    upsertHumanWatchEvent,
   ])
 }

@@ -53,6 +53,7 @@ const findClaudeSessionProjectPath = vi.fn()
 const findClaudeSessionFilePath = vi.fn()
 const readLastClaudeSessionReply = vi.fn()
 const syncClaudeSessions = vi.fn().mockResolvedValue({ ok: true, message: 'ok' })
+const readLocalSessionTranscriptPage = vi.fn()
 
 vi.mock('@/lib/claude-sessions', () => ({
   findClaudeSessionProjectPath,
@@ -60,6 +61,10 @@ vi.mock('@/lib/claude-sessions', () => ({
   readLastClaudeSessionReply,
   syncClaudeSessions,
   invalidateClaudeSessionSync: vi.fn(),
+}))
+
+vi.mock('@/lib/session-transcript', () => ({
+  readLocalSessionTranscriptPage,
 }))
 
 vi.mock('@/lib/db', () => ({
@@ -82,6 +87,7 @@ describe('local-session-executor', () => {
     findClaudeSessionFilePath.mockReset()
     readLastClaudeSessionReply.mockReset()
     syncClaudeSessions.mockReset().mockResolvedValue({ ok: true, message: 'ok' })
+    readLocalSessionTranscriptPage.mockReset()
     otherAgentsSessionKeys = []
     getDatabase.mockClear()
     prepare.mockClear()
@@ -112,6 +118,21 @@ describe('local-session-executor', () => {
     const result = await executeLocalSessionPrompt('claude-code', 'claude-session-1', 'hello')
     expect(runCommand).toHaveBeenCalledWith('claude', ['--print', '--resume', 'claude-session-1', 'hello'], cmdOpts())
     expect(result.reply).toBe('done')
+  })
+
+  it('falls back to codex transcript reply when command returns no structured text', async () => {
+    runCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 })
+    readLocalSessionTranscriptPage.mockReturnValue({
+      messages: [
+        { role: 'assistant', parts: [{ type: 'text', text: 'judge recovered reply' }], timestamp: new Date().toISOString() },
+      ],
+    })
+
+    const { executeLocalSessionPrompt } = await import('@/lib/local-session-executor')
+    const result = await executeLocalSessionPrompt('codex-cli', 'codex-session-1', 'hello')
+
+    expect(readLocalSessionTranscriptPage).toHaveBeenCalled()
+    expect(result.reply).toBe('judge recovered reply')
   })
 
   it('resumes claude sessions using the JSONL project cwd when agent workspace differs', async () => {
@@ -389,7 +410,20 @@ describe('local-session-executor', () => {
     expect(runCommand).toHaveBeenNthCalledWith(
       1,
       codexBin,
-      ['exec', expect.stringContaining('Now respond to the following user message in character:'), '--skip-git-repo-check', '--json', '-o', expect.stringMatching(/^\/tmp\/mc-codex-start-/)],
+      [
+        '-c',
+        expect.stringContaining('mcp_servers.mission_control.command='),
+        '-c',
+        expect.stringContaining('mcp_servers.mission_control.args='),
+        '-c',
+        expect.stringContaining('mcp_servers.mission_control.env='),
+        'exec',
+        expect.stringContaining('Now respond to the following user message in character:'),
+        '--skip-git-repo-check',
+        '--json',
+        '-o',
+        expect.stringMatching(/^\/tmp\/mc-codex-start-/),
+      ],
       cmdOpts({ cwd: dedicatedCwd }),
     )
     expect(result.sessionId).toBe('new-session')
@@ -439,7 +473,10 @@ describe('local-session-executor', () => {
     expect(agentRow.session_key).toBe('fresh-session')
     expect(
       runCommand.mock.calls.some(
-        (call) => call[1]?.[0] === 'exec' && String(call[1]?.[1] || '').includes('Now respond to the following user message'),
+        (call) =>
+          Array.isArray(call[1])
+          && call[1].includes('exec')
+          && call[1].some((arg: unknown) => String(arg || '').includes('Now respond to the following user message')),
       ),
     ).toBe(true)
   })

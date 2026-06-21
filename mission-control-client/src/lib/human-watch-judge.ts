@@ -5,6 +5,9 @@ import {
   getLocalSessionKindForFramework,
 } from './local-session-executor'
 import { isHumanWatchAgent } from './human-watch-helpers'
+import { readLocalSessionTranscriptPage } from './session-transcript'
+
+const EMPTY_SESSION_REPLY = 'Session continued, but no text response was returned.'
 
 export async function runStewardJudgeOnEdge(
   localAgentId: number,
@@ -46,9 +49,13 @@ export async function runStewardJudgeOnEdge(
 
   logger.info({ agentId: agent.id, kind, sessionKey }, '[HumanWatch] Running steward judge on edge')
 
+  const baselineReply = readLatestAssistantText(kind, sessionKey)
   const result = await executeLocalSessionPrompt(kind, sessionKey, trimmedPrompt)
-  const reply = String(result.reply || '').trim()
-  if (!reply) {
+  let reply = String(result.reply || '').trim()
+  if (!reply || reply === EMPTY_SESSION_REPLY || reply === baselineReply) {
+    reply = await waitForNewAssistantReply(kind, sessionKey, baselineReply)
+  }
+  if (!reply || reply === EMPTY_SESSION_REPLY) {
     throw new Error('Judge session returned empty reply')
   }
 
@@ -56,4 +63,38 @@ export async function runStewardJudgeOnEdge(
     reply,
     sessionId: result.sessionId || sessionKey,
   }
+}
+
+function readLatestAssistantText(
+  kind: ReturnType<typeof getLocalSessionKindForFramework>,
+  sessionKey: string,
+): string {
+  if (kind !== 'codex-cli') return ''
+  const page = readLocalSessionTranscriptPage('codex-cli', sessionKey, { limit: 12 })
+  const lastAssistant = [...page.messages].reverse().find((message) => {
+    if (message.role !== 'assistant') return false
+    return message.parts.some((part) => part.type === 'text' && part.text.trim())
+  })
+  if (!lastAssistant) return ''
+  return lastAssistant.parts
+    .map((part) => (part.type === 'text' ? part.text : null))
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+}
+
+async function waitForNewAssistantReply(
+  kind: ReturnType<typeof getLocalSessionKindForFramework>,
+  sessionKey: string,
+  baselineReply: string,
+): Promise<string> {
+  if (kind !== 'codex-cli') return ''
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const next = readLatestAssistantText(kind, sessionKey)
+    if (next && next !== baselineReply && next !== EMPTY_SESSION_REPLY) {
+      return next
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+  return ''
 }

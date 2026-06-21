@@ -483,6 +483,7 @@ function ModeBadge({
   onReconnect: () => void
 }) {
   const { dashboardMode, centralMode } = useAgentCenterStore()
+  const tc = useTranslations('common')
   const th = useTranslations('header')
   const isLocal = dashboardMode === 'local'
   const isServiceMode = isLocal && centralMode
@@ -502,6 +503,22 @@ function ModeBadge({
       }>
     }
   } | null>(null)
+  const [deleteClientDialog, setDeleteClientDialog] = useState<{
+    open: boolean
+    clientId: string
+    clientName: string
+    confirmText: string
+    submitting: boolean
+    error: string | null
+  }>({
+    open: false,
+    clientId: '',
+    clientName: '',
+    confirmText: '',
+    submitting: false,
+    error: null,
+  })
+  const [serviceFeedback, setServiceFeedback] = useState<string | null>(null)
 
   const fetchServiceStatus = useCallback(async () => {
     try {
@@ -517,10 +534,6 @@ function ModeBadge({
   }, [])
 
   const deleteOfflineClient = useCallback(async (clientId: string) => {
-    const confirmation = window.prompt(
-      `${th('deleteClientConfirmTitle')}\n${th('deleteClientConfirmBody')}\n${th('deleteClientConfirmAction')}`,
-    )
-    if ((confirmation || '').trim() !== 'delete-client-data') return
     const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/cleanup?confirm=delete-client-data`, {
       method: 'DELETE',
     })
@@ -529,6 +542,7 @@ function ModeBadge({
       throw new Error(data.error || th('deleteClientBlocked'))
     }
     await fetchServiceStatus()
+    setServiceFeedback(th('deleteClientSuccess'))
   }, [fetchServiceStatus, th])
 
   const formatLastSeen = useCallback((timestamp?: number) => {
@@ -659,11 +673,14 @@ function ModeBadge({
                             type="button"
                             className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-2xs text-rose-300 hover:bg-rose-500/20"
                             onClick={async () => {
-                              try {
-                                await deleteOfflineClient(client.client_id)
-                              } catch (error) {
-                                console.error(error)
-                              }
+                              setDeleteClientDialog({
+                                open: true,
+                                clientId: client.client_id,
+                                clientName: client.client_name || client.client_id,
+                                confirmText: '',
+                                submitting: false,
+                                error: null,
+                              })
                             }}
                           >
                             {th('deleteClient')}
@@ -677,9 +694,87 @@ function ModeBadge({
                 <div className="text-muted-foreground">{th('noClientsConnected')}</div>
               )}
             </div>
+            {serviceFeedback ? (
+              <div className="mt-2 rounded border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-2xs text-emerald-300">
+                {serviceFeedback}
+              </div>
+            ) : null}
             <EdgeDownloadTooltipLink />
           </div>
         )}
+
+        {deleteClientDialog.open ? (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4">
+            <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-2xl">
+              <div className="text-sm font-semibold text-foreground">{th('deleteClientConfirmTitle')}</div>
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                {th('deleteClientConfirmBody')}
+              </p>
+              <div className="mt-2 rounded border border-border/60 bg-secondary/20 px-2 py-1 text-xs text-foreground/80">
+                {deleteClientDialog.clientName}
+              </div>
+              <label className="mt-3 block text-2xs text-muted-foreground">
+                {th('deleteClientConfirmAction')}
+                <input
+                  className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+                  value={deleteClientDialog.confirmText}
+                  onChange={(e) => setDeleteClientDialog((prev) => ({ ...prev, confirmText: e.target.value, error: null }))}
+                />
+              </label>
+              {deleteClientDialog.error ? (
+                <div className="mt-2 rounded border border-rose-500/20 bg-rose-500/10 px-2 py-1 text-2xs text-rose-300">
+                  {deleteClientDialog.error}
+                </div>
+              ) : null}
+              <div className="mt-4 flex justify-end gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={deleteClientDialog.submitting}
+                  onClick={() =>
+                    setDeleteClientDialog({
+                      open: false,
+                      clientId: '',
+                      clientName: '',
+                      confirmText: '',
+                      submitting: false,
+                      error: null,
+                    })
+                  }
+                >
+                  {tc('cancel')}
+                </Button>
+                <Button
+                  size="sm"
+                  className="bg-rose-500/20 text-rose-200 border border-rose-500/30 hover:bg-rose-500/30"
+                  disabled={deleteClientDialog.submitting || deleteClientDialog.confirmText.trim() !== 'delete-client-data'}
+                  onClick={async () => {
+                    setDeleteClientDialog((prev) => ({ ...prev, submitting: true, error: null }))
+                    try {
+                      await deleteOfflineClient(deleteClientDialog.clientId)
+                      setDeleteClientDialog({
+                        open: false,
+                        clientId: '',
+                        clientName: '',
+                        confirmText: '',
+                        submitting: false,
+                        error: null,
+                      })
+                    } catch (error) {
+                      setDeleteClientDialog((prev) => ({
+                        ...prev,
+                        submitting: false,
+                        error: error instanceof Error ? error.message : th('deleteClientBlocked'),
+                      }))
+                    }
+                  }}
+                >
+                  {th('deleteClient')}
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     )
   }

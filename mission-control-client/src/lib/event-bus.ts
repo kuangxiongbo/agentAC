@@ -30,6 +30,7 @@ export type EventType =
   | 'agent.synced'
   | 'permission.requested'
   | 'permission.decided'
+  | 'human_watch.event'
   | 'agent.status_changed'
   | 'audit.security'
   | 'security.event'

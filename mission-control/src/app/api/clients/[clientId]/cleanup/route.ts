@@ -59,9 +59,9 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
 
     const sessionCount = (db.prepare(`
       SELECT COUNT(*) as c
-      FROM session_sync
-      WHERE workspace_id = ? AND client_id = ?
-    `).get(workspaceId, clientId) as { c: number } | undefined)?.c || 0
+      FROM sync_sessions
+      WHERE client_id = ?
+    `).get(clientId) as { c: number } | undefined)?.c || 0
 
     const clientAgentRows = db.prepare(`
       SELECT id, name
@@ -72,7 +72,7 @@ export async function DELETE(request: NextRequest, context: RouteContext) {
     const tx = db.transaction(() => {
       db.prepare(`DELETE FROM sync_clients WHERE workspace_id = ? AND client_id = ?`).run(workspaceId, clientId)
       db.prepare(`DELETE FROM sync_agent_index WHERE client_id = ?`).run(clientId)
-      db.prepare(`DELETE FROM session_sync WHERE workspace_id = ? AND client_id = ?`).run(workspaceId, clientId)
+      db.prepare(`DELETE FROM sync_sessions WHERE client_id = ?`).run(clientId)
       db.prepare(`DELETE FROM agents WHERE workspace_id = ? AND source = 'client' AND node_id = ?`).run(workspaceId, clientId)
     })
     tx()
