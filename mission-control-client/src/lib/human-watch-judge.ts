@@ -1,7 +1,7 @@
 import { getDatabase } from './db'
 import { logger } from './logger'
 import {
-  executeLocalSessionPrompt,
+  executeBoundLocalAgentPrompt,
   getLocalSessionKindForFramework,
 } from './local-session-executor'
 import { isHumanWatchAgent } from './human-watch-helpers'
@@ -15,14 +15,24 @@ export async function runStewardJudgeOnEdge(
 ): Promise<{ reply: string; sessionId: string }> {
   const db = getDatabase()
   const agent = db
-    .prepare(`SELECT id, name, role, framework, session_key, config FROM agents WHERE id = ? AND hidden = 0 LIMIT 1`)
+    .prepare(`
+      SELECT id, name, role, soul_content, framework, session_key, config, workspace_path, source, parent_id, status
+      FROM agents
+      WHERE id = ? AND hidden = 0
+      LIMIT 1
+    `)
     .get(localAgentId) as {
       id: number
       name: string
       role: string
+      soul_content: string | null
       framework: string | null
       session_key: string | null
       config: string | null
+      workspace_path: string | null
+      source: string | null
+      parent_id: number | null
+      status: string | null
     } | undefined
 
   if (!agent) {
@@ -30,11 +40,6 @@ export async function runStewardJudgeOnEdge(
   }
   if (!isHumanWatchAgent({ role: agent.role, config: agent.config })) {
     throw new Error('Agent is not a human-watch steward')
-  }
-
-  const sessionKey = String(agent.session_key || '').trim()
-  if (!sessionKey) {
-    throw new Error('Steward has no dedicated judge session yet; wait for provisioning')
   }
 
   const kind = getLocalSessionKindForFramework(agent.framework)
@@ -47,13 +52,15 @@ export async function runStewardJudgeOnEdge(
     throw new Error('judge prompt is required (max 6000 chars)')
   }
 
-  logger.info({ agentId: agent.id, kind, sessionKey }, '[HumanWatch] Running steward judge on edge')
+  const sessionKey = String(agent.session_key || '').trim()
+  logger.info({ agentId: agent.id, kind, sessionKey: sessionKey || null }, '[HumanWatch] Running steward judge on edge')
 
   const baselineReply = readLatestAssistantText(kind, sessionKey)
-  const result = await executeLocalSessionPrompt(kind, sessionKey, trimmedPrompt)
+  const result = await executeBoundLocalAgentPrompt(agent, trimmedPrompt)
   let reply = String(result.reply || '').trim()
-  if (!reply || reply === EMPTY_SESSION_REPLY || reply === baselineReply) {
-    reply = await waitForNewAssistantReply(kind, sessionKey, baselineReply)
+  const resultSessionId = String(result.sessionId || sessionKey || '').trim()
+  if (!reply || reply === EMPTY_SESSION_REPLY || (baselineReply && reply === baselineReply)) {
+    reply = await waitForNewAssistantReply(kind, resultSessionId, baselineReply)
   }
   if (!reply || reply === EMPTY_SESSION_REPLY) {
     throw new Error('Judge session returned empty reply')
@@ -61,7 +68,7 @@ export async function runStewardJudgeOnEdge(
 
   return {
     reply,
-    sessionId: result.sessionId || sessionKey,
+    sessionId: resultSessionId,
   }
 }
 

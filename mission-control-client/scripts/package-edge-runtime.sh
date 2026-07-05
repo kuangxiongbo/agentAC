@@ -32,6 +32,8 @@ echo "==> build standalone (mission-control-client)"
 cd "$PROJECT_ROOT"
 rm -rf "$PROJECT_ROOT/dist/edge-runtime-staging-$VERSION-$PLATFORM"
 pnpm install --frozen-lockfile
+pnpm rebuild better-sqlite3
+node -e "require('better-sqlite3'); console.log('better-sqlite3 ABI OK for', process.version)"
 NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=8192}" pnpm build
 
 STANDALONE="$PROJECT_ROOT/.next/standalone"
@@ -97,6 +99,9 @@ repair_next_compiled_runtime() {
   fi
 }
 repair_next_compiled_runtime "$STAGING/runtime"
+
+echo "==> verify native runtime modules"
+node -e "require('$STAGING/runtime/node_modules/better-sqlite3'); console.log('staged better-sqlite3 ABI OK for', process.version)"
 
 echo "==> remove development-only runtime files"
 find "$STAGING/runtime" -maxdepth 2 \( \
