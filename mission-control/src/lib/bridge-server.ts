@@ -288,6 +288,24 @@ function sendHumanWatchEventToEdge(eventRow: HumanWatchEventView): void {
   }
 }
 
+export function sendEdgeMessageWakeup(clientIdInput: string, detail: Record<string, unknown> = {}): boolean {
+  const clientId = String(clientIdInput || '').trim()
+  if (!clientId) return false
+  try {
+    const { ws } = findConnectedEdgeBridge(clientId)
+    ws.send(JSON.stringify({
+      type: 'edge_message_wakeup',
+      detail,
+      timestamp: Date.now(),
+    }))
+    bridgeServerMetrics.totalMessagesSent++
+    return true
+  } catch (err) {
+    logger.debug({ err, clientId }, '[BridgeServer] Edge message wakeup skipped')
+    return false
+  }
+}
+
 function initPermissionBridgeSync(): void {
   const globalState = globalThis as typeof globalThis & { __permissionBridgeSyncStarted?: boolean }
   if (globalState.__permissionBridgeSyncStarted) return
@@ -681,7 +699,16 @@ export function initBridgeServer(port: number = 5002) {
                 agentCount: Array.isArray(msg.agents) ? msg.agents.length : 0,
               })
               logger.info({ clientId, clientLabel, capabilities: msg.capabilities }, '[BridgeServer] Client hello received')
-              ws.send(JSON.stringify({ type: 'welcome', serverId: 'master-server' }))
+              ws.send(JSON.stringify({
+                type: 'welcome',
+                serverId: 'master-server',
+                capabilities: [
+                  'reliable_edge_messages',
+                  'human_watch_assist_v2',
+                  'permission_decision_relay',
+                  'serial_session_continue',
+                ],
+              }))
               if (Array.isArray(msg.agents)) {
                 await ingestBridgeAgentList(clientId, clientLabel, msg.agents)
               }

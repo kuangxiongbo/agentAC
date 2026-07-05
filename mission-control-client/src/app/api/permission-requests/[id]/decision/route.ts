@@ -8,6 +8,7 @@ import {
 } from '@/lib/permission-requests'
 import { pushPermissionDecisionToUpstream } from '@/lib/remote-server-bridge'
 import { forwardPermissionDecisionToExecApproval } from '@/lib/permission-request-exec-bridge'
+import { enqueuePermissionDecisionSync } from '@/lib/local-mailbox'
 
 export const dynamic = 'force-dynamic'
 
@@ -46,16 +47,18 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
   try {
     if (deciderType === 'steward_agent') {
+      const reason = typeof body.reason === 'string' ? body.reason : null
+      const deciderAgentId =
+        typeof body.deciderAgentId === 'string'
+          ? body.deciderAgentId
+          : typeof body.decider_agent_id === 'string'
+            ? body.decider_agent_id
+            : null
       const pushed = pushPermissionDecisionToUpstream({
         requestId,
         optionId,
-        reason: typeof body.reason === 'string' ? body.reason : null,
-        deciderAgentId:
-          typeof body.deciderAgentId === 'string'
-            ? body.deciderAgentId
-            : typeof body.decider_agent_id === 'string'
-              ? body.decider_agent_id
-              : null,
+        reason,
+        deciderAgentId,
       })
       if (pushed) {
         return NextResponse.json({
@@ -64,6 +67,20 @@ export async function POST(request: NextRequest, context: RouteContext) {
           request: current,
         })
       }
+      enqueuePermissionDecisionSync({
+        requestId,
+        optionId,
+        reason,
+        deciderType,
+        deciderAgentId,
+        decisionSource: 'edge_decision_route',
+        idempotencyKey:
+          typeof body.idempotencyKey === 'string'
+            ? body.idempotencyKey
+            : typeof body.idempotency_key === 'string'
+              ? body.idempotency_key
+              : null,
+      })
     }
 
     const decided = decidePermissionRequest({

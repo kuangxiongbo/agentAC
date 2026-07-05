@@ -23,6 +23,7 @@ export async function GET(request: NextRequest) {
         status: client.status,
         connectedAt: client.connectedAt,
         agentCount: client.agentCount,
+        capabilities: client.capabilities,
       })
     }
   }

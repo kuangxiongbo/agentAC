@@ -1321,6 +1321,9 @@ function handleMessage(raw: string): void {
       safeLog('info', '[RemoteBridge] Server welcome received', { serverId: msg.serverId })
       // Send agent status on welcome
       safeSend(state.ws, { type: 'agent_status', clientId: getLocalClientId(), clientLabel: getLocalClientLabel(), agents: getLocalAgentList(), timestamp: Date.now() })
+      import('./local-mailbox')
+        .then(({ drainLocalMailbox }) => drainLocalMailbox())
+        .catch((err) => safeLog('warn', '[RemoteBridge] welcome mailbox drain failed', { err }))
       break
 
     case 'task_dispatch':
@@ -1409,6 +1412,12 @@ function handleMessage(raw: string): void {
       } catch (e) {
         safeLog('error', '[RemoteBridge] human_watch_event_sync handler failed', { err: e })
       }
+      break
+
+    case 'edge_message_wakeup':
+      import('./local-mailbox')
+        .then(({ drainLocalMailbox }) => drainLocalMailbox())
+        .catch((err) => safeLog('warn', '[RemoteBridge] Edge message wakeup drain failed', { err }))
       break
 
     case 'projects_sync':
@@ -1529,7 +1538,25 @@ async function connect(): Promise<void> {
       clientId,
       clientLabel,
       version: '1.0',
-      capabilities: ['task_receive', 'agent_status', 'agent_detail', 'agents_by_session', 'agent_session_update', 'heartbeat', 'chat_sync', 'session_transcript', 'session_continue', 'steward_create', 'steward_update', 'steward_delete', 'steward_judge'],
+      capabilities: [
+        'task_receive',
+        'agent_status',
+        'agent_detail',
+        'agents_by_session',
+        'agent_session_update',
+        'heartbeat',
+        'chat_sync',
+        'session_transcript',
+        'session_continue',
+        'steward_create',
+        'steward_update',
+        'steward_delete',
+        'steward_judge',
+        'reliable_mailbox',
+        'human_watch_assist_v2',
+        'permission_decision_relay',
+        'serial_session_continue',
+      ],
       agents: getLocalAgentList(),
       timestamp: Date.now(),
     })

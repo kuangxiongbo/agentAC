@@ -49,7 +49,7 @@ export interface HumanWatchAssistResult {
   sessionId: string | null
 }
 
-function findBinding(input: HumanWatchAssistInput, database?: Database.Database): HumanWatchBindingRow | null {
+export function resolveHumanWatchAssistBinding(input: HumanWatchAssistInput, database?: Database.Database): HumanWatchBindingRow | null {
   if (input.bindingId != null) {
     const bindings = listHumanWatchBindings({ workspaceId: input.workspaceId }, database)
     return bindings.find((binding) => binding.id === input.bindingId) ?? null
@@ -120,7 +120,7 @@ export async function triggerHumanWatchAssist(
   const prompt = String(input.prompt || '').trim()
   if (!prompt) throw new Error('prompt is required')
 
-  const binding = findBinding(input, database)
+  const binding = resolveHumanWatchAssistBinding(input, database)
   if (!binding) throw new Error('Human-watch binding not found for worker session')
   if (!binding.enabled) throw new Error('Human-watch binding is disabled')
   if (!binding.steward_local_agent_id) throw new Error('Human-watch steward is not configured')

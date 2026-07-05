@@ -21,6 +21,20 @@ pub fn handle_tray_menu(app: &AppHandle, id: &str) {
             let _ = super::set_activation_policy_regular(app);
             let _ = open_connection_setup(app.clone());
         }
+        "mailbox_status" => {
+            let cfg = load_config();
+            match crate::mailbox::fetch_status(&cfg) {
+                Ok(status) => show_notice(&crate::mailbox::summarize_status(&status)),
+                Err(e) => show_notice(&e),
+            }
+        }
+        "mailbox_drain" => {
+            let cfg = load_config();
+            std::thread::spawn(move || match crate::mailbox::drain(&cfg) {
+                Ok(result) => show_notice(&crate::mailbox::summarize_drain(&result)),
+                Err(e) => show_notice(&e),
+            });
+        }
         "restart" => {
             let cfg = load_config();
             if !config::is_setup_complete(&cfg) {

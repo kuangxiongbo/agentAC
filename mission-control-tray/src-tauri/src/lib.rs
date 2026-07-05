@@ -2,6 +2,7 @@ mod bootstrap;
 mod config;
 mod http_client;
 mod keep_awake;
+mod mailbox;
 mod node_path;
 mod process;
 mod runtime;
@@ -217,6 +218,12 @@ fn create_tray_icon(app: &tauri::App) -> Result<TrayIcon, String> {
         None::<&str>,
     )
     .map_err(|e| e.to_string())?;
+    let mailbox_status_i =
+        MenuItem::with_id(app, "mailbox_status", "消息队列状态…", true, None::<&str>)
+            .map_err(|e| e.to_string())?;
+    let mailbox_drain_i =
+        MenuItem::with_id(app, "mailbox_drain", "立即处理消息队列", true, None::<&str>)
+            .map_err(|e| e.to_string())?;
     let uninstall_i =
         MenuItem::with_id(app, "uninstall", "卸载并清除数据…", true, None::<&str>)
             .map_err(|e| e.to_string())?;
@@ -227,6 +234,9 @@ fn create_tray_icon(app: &tauri::App) -> Result<TrayIcon, String> {
         &[
             &open_local_i,
             &connection_i,
+            &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
+            &mailbox_status_i,
+            &mailbox_drain_i,
             &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
             &uninstall_i,
             &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
@@ -246,6 +256,20 @@ fn create_tray_icon(app: &tauri::App) -> Result<TrayIcon, String> {
             "open_local" => open_web_console(app),
             "connection_setup" => {
                 let _ = setup::open_connection_setup(app.clone());
+            }
+            "mailbox_status" => {
+                let cfg = load_config();
+                match crate::mailbox::fetch_status(&cfg) {
+                    Ok(status) => show_notice(&crate::mailbox::summarize_status(&status)),
+                    Err(e) => show_notice(&e),
+                }
+            }
+            "mailbox_drain" => {
+                let cfg = load_config();
+                std::thread::spawn(move || match crate::mailbox::drain(&cfg) {
+                    Ok(result) => show_notice(&crate::mailbox::summarize_drain(&result)),
+                    Err(e) => show_notice(&e),
+                });
             }
             "uninstall" => {
                 crate::uninstall::confirm_then_purge(app);

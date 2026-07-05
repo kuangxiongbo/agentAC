@@ -94,6 +94,8 @@ pub fn build_muda_tray_menu() -> Result<Menu, String> {
     let open_local = MenuItem::with_id("open_local", "打开控制台", true, None);
     let open_center = MenuItem::with_id("open_center", "打开服务中心", true, None);
     let connection = MenuItem::with_id("connection_setup", "连接设置…", true, None);
+    let mailbox_status = MenuItem::with_id("mailbox_status", "消息队列状态…", true, None);
+    let mailbox_drain = MenuItem::with_id("mailbox_drain", "立即处理消息队列", true, None);
     let restart = MenuItem::with_id("restart", "重启服务", true, None);
     let check_update = MenuItem::with_id("check_update", "检查更新…", true, None);
     let uninstall = MenuItem::with_id("uninstall", "卸载并清除数据…", true, None);
@@ -101,17 +103,21 @@ pub fn build_muda_tray_menu() -> Result<Menu, String> {
     let sep1 = PredefinedMenuItem::separator();
     let sep2 = PredefinedMenuItem::separator();
     let sep3 = PredefinedMenuItem::separator();
+    let sep4 = PredefinedMenuItem::separator();
 
     Menu::with_items(&[
         &open_local,
         &open_center,
         &connection,
         &sep1,
+        &mailbox_status,
+        &mailbox_drain,
+        &sep2,
         &restart,
         &check_update,
-        &sep2,
-        &uninstall,
         &sep3,
+        &uninstall,
+        &sep4,
         &quit,
     ])
     .map_err(|e| e.to_string())
@@ -127,6 +133,12 @@ pub fn build_tray_menu(app: &AppHandle) -> Result<tauri::menu::Menu<Wry>, String
             .map_err(|e| e.to_string())?;
     let connection_i =
         MenuItem::with_id(app, "connection_setup", "连接设置…", true, None::<&str>)
+            .map_err(|e| e.to_string())?;
+    let mailbox_status_i =
+        MenuItem::with_id(app, "mailbox_status", "消息队列状态…", true, None::<&str>)
+            .map_err(|e| e.to_string())?;
+    let mailbox_drain_i =
+        MenuItem::with_id(app, "mailbox_drain", "立即处理消息队列", true, None::<&str>)
             .map_err(|e| e.to_string())?;
     let restart_i = MenuItem::with_id(app, "restart", "重启服务", true, None::<&str>)
         .map_err(|e| e.to_string())?;
@@ -145,6 +157,9 @@ pub fn build_tray_menu(app: &AppHandle) -> Result<tauri::menu::Menu<Wry>, String
             &open_local_i,
             &open_center_i,
             &connection_i,
+            &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
+            &mailbox_status_i,
+            &mailbox_drain_i,
             &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
             &restart_i,
             &check_update_i,

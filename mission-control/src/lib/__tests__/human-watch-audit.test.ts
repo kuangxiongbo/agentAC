@@ -47,6 +47,8 @@ describe('human-watch-audit', () => {
         promptPreview: 'Please continue with option A',
         outcome: 'success',
         bridgeRequestId: 'req-1',
+        messageId: 'edge-msg-1',
+        correlationId: 'hw-assist:1:sess-abc:1',
       },
       db,
     )
@@ -54,10 +56,13 @@ describe('human-watch-audit', () => {
     expect(row).not.toBeNull()
     expect(row?.event_type).toBe('intervention_completed')
     expect(row?.prompt_preview).toContain('option A')
+    expect(row?.message_id).toBe('edge-msg-1')
+    expect(row?.correlation_id).toBe('hw-assist:1:sess-abc:1')
 
     const listed = listHumanWatchInterventions({ workspaceId: 1, clientId: 'mac-1' }, db)
     expect(listed).toHaveLength(1)
     expect(listed[0]?.fingerprint).toBe('fp-1')
+    expect(listed[0]?.message_id).toBe('edge-msg-1')
   })
 
   it('dedupes successful intervention_completed for same fingerprint', () => {

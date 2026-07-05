@@ -63,6 +63,8 @@ export interface LogHumanWatchInterventionInput {
   outcome?: HumanWatchInterventionOutcome | null
   errorMessage?: string | null
   bridgeRequestId?: string | null
+  messageId?: string | null
+  correlationId?: string | null
   llmSweep?: boolean
   skipReason?: string | null
 }
@@ -89,6 +91,8 @@ export interface HumanWatchInterventionRow {
   outcome: HumanWatchInterventionOutcome | null
   error_message: string | null
   bridge_request_id: string | null
+  message_id: string | null
+  correlation_id: string | null
   llm_sweep: number
   skip_reason: string | null
   created_at: number

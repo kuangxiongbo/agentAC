@@ -67,14 +67,14 @@ export function logHumanWatchIntervention(
         steward_sync_index_id, steward_local_agent_id, steward_name,
         worker_session_id, event_type, decision, rules_hit, fingerprint,
         prompt_preview, prompt_sha256, outcome, error_message, bridge_request_id,
-        llm_sweep, skip_reason, created_at
+        message_id, correlation_id, llm_sweep, skip_reason, created_at
       ) VALUES (
         ?, ?, ?, ?,
         ?, ?, ?,
         ?, ?, ?,
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
-        ?, ?, unixepoch()
+        ?, ?, ?, ?, unixepoch()
       )`,
     )
     .run(
@@ -98,6 +98,8 @@ export function logHumanWatchIntervention(
       input.outcome ?? null,
       input.errorMessage ?? null,
       input.bridgeRequestId ?? null,
+      input.messageId ?? null,
+      input.correlationId ?? null,
       input.llmSweep ? 1 : 0,
       input.skipReason ?? null,
     )

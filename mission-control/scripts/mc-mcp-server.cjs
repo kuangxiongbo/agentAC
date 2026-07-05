@@ -86,6 +86,30 @@ function withWorkerContext(args) {
   };
 }
 
+function buildWatchAssistPayload(args) {
+  return {
+    ...withWorkerContext(args),
+    title: args.title || 'Worker requests human-watch reply',
+    delivery_mode: args.delivery_mode || 'auto',
+    queue_if_offline: args.queue_if_offline !== false,
+  };
+}
+
+function normalizeWatchAssistResponse(result) {
+  const delivery = result && typeof result === 'object' ? result.delivery : null;
+  if (delivery && typeof delivery === 'object' && delivery.queued) {
+    return {
+      ...result,
+      queued: true,
+      delivered: false,
+      message_id: delivery.message_id,
+      correlation_id: delivery.correlation_id,
+      status_text: `Human-watch assist queued. message_id=${delivery.message_id || 'unknown'}, correlation_id=${delivery.correlation_id || 'unknown'}`,
+    };
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
@@ -533,6 +557,8 @@ const TOOLS = [
         steward_name: { type: 'string' },
         context: { type: 'object' },
         expires_at: { type: 'number' },
+        delivery_mode: { type: 'string', enum: ['auto', 'queue', 'sync'], description: 'Delivery mode for steward assist. Defaults to auto so offline clients queue reliably.' },
+        queue_if_offline: { type: 'boolean', description: 'Whether to queue when the Edge client is offline. Defaults to true.' },
       },
       required: ['prompt'],
     },
@@ -544,10 +570,8 @@ const TOOLS = [
           title: args.title || 'Worker requests a decision',
         });
       }
-      return api('POST', '/api/human-watch/assist', {
-        ...withWorkerContext(args),
-        title: args.title || 'Worker requests human-watch reply',
-      });
+      const result = await api('POST', '/api/human-watch/assist', buildWatchAssistPayload(args));
+      return normalizeWatchAssistResponse(result);
     },
   },
   {
@@ -866,7 +890,7 @@ for (const tool of TOOLS) {
 
 const SERVER_INFO = {
   name: 'mission-control',
-  version: '2.1.18',
+  version: '2.1.19',
 };
 
 const CAPABILITIES = {

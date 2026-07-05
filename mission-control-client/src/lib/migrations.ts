@@ -1624,6 +1624,110 @@ const migrations: Migration[] = [
       db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_events_worker_session
         ON human_watch_events(worker_session_id, status, created_at DESC)`)
     }
+  },
+  {
+    id: '056_local_mailbox',
+    up(db: Database.Database) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS local_message_inbox (
+          message_id TEXT PRIMARY KEY,
+          client_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          idempotency_key TEXT NOT NULL,
+          serial_key TEXT,
+          payload_json TEXT NOT NULL,
+          result_json TEXT,
+          lease_owner TEXT,
+          lease_expires_at INTEGER,
+          received_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          started_at INTEGER,
+          completed_at INTEGER,
+          last_error TEXT
+        )
+      `)
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS local_message_outbox (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          message_id TEXT NOT NULL,
+          action TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          sent_at INTEGER,
+          last_error TEXT
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_local_inbox_status_received
+        ON local_message_inbox(status, received_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_local_inbox_client_status
+        ON local_message_inbox(client_id, status)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_local_inbox_serial_status
+        ON local_message_inbox(serial_key, status, received_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_local_outbox_status_next
+        ON local_message_outbox(status, next_attempt_at, created_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_local_outbox_message
+        ON local_message_outbox(message_id, created_at)`)
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS local_message_executions (
+          idempotency_key TEXT PRIMARY KEY,
+          message_id TEXT NOT NULL,
+          serial_key TEXT,
+          type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          result_json TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_local_message_executions_serial
+        ON local_message_executions(serial_key, updated_at)`)
+    }
+  },
+  {
+    id: '057_local_mailbox_serial_execution',
+    up(db: Database.Database) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS local_message_inbox (
+          message_id TEXT PRIMARY KEY,
+          client_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          idempotency_key TEXT NOT NULL,
+          serial_key TEXT,
+          payload_json TEXT NOT NULL,
+          result_json TEXT,
+          lease_owner TEXT,
+          lease_expires_at INTEGER,
+          received_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          started_at INTEGER,
+          completed_at INTEGER,
+          last_error TEXT
+        )
+      `)
+      const inboxCols = db.prepare(`PRAGMA table_info(local_message_inbox)`).all() as Array<{ name: string }>
+      if (!inboxCols.some((col) => col.name === 'serial_key')) {
+        db.exec(`ALTER TABLE local_message_inbox ADD COLUMN serial_key TEXT`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_local_inbox_serial_status
+        ON local_message_inbox(serial_key, status, received_at)`)
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS local_message_executions (
+          idempotency_key TEXT PRIMARY KEY,
+          message_id TEXT NOT NULL,
+          serial_key TEXT,
+          type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          result_json TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_local_message_executions_serial
+        ON local_message_executions(serial_key, updated_at)`)
+    }
   }
 ]
 

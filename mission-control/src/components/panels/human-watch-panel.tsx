@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl'
 import { Loader } from '@/components/ui/loader'
 import { useAgentCenterStore } from '@/store'
 import { HumanWatchEventsTab } from '@/components/panels/human-watch-events-tab'
+import { HumanWatchMailboxPanel } from '@/components/panels/human-watch-mailbox-panel'
 
 interface BindingRow {
   id: number
@@ -124,6 +125,12 @@ export function HumanWatchPanel() {
         <h2 className="text-sm font-semibold">{t('eventsTitle')}</h2>
         <p className="text-xs text-muted-foreground">{t('eventsDescription')}</p>
         <HumanWatchEventsTab />
+      </section>
+
+      <section className="rounded-xl border border-border/70 bg-card p-4 space-y-3">
+        <h2 className="text-sm font-semibold">可靠消息队列</h2>
+        <p className="text-xs text-muted-foreground">查看人工值守、会话续写和权限决策的 pending、leased、failed 和 dead-letter 消息。</p>
+        <HumanWatchMailboxPanel />
       </section>
     </div>
   )

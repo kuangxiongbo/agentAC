@@ -243,6 +243,42 @@ describe('permission-requests', () => {
     expect(denied.status).toBe('denied')
   })
 
+  it.each(['high', 'critical'] as const)(
+    'prevents steward agents from approving %s dangerous requests',
+    (risk) => {
+      const requestId = `danger-${risk}`
+      createPermissionRequest(
+        {
+          id: requestId,
+          workspaceId: 1,
+          requestType: 'local_cli_permission',
+          title: `${risk} destructive request`,
+          prompt: 'Worker requests rm -rf /tmp/build-cache.',
+          risk,
+          options: [
+            { id: 'approve_delete', label: 'Approve delete', action: 'approve' },
+            { id: 'deny', label: 'Deny', action: 'deny' },
+          ],
+        },
+        db,
+      )
+
+      expect(() =>
+        decidePermissionRequest(
+          {
+            requestId,
+            workspaceId: 1,
+            optionId: 'approve_delete',
+            deciderType: 'steward_agent',
+            deciderAgentId: 'steward-9',
+          },
+          db,
+        ),
+      ).toThrow('dangerous action')
+      expect(getPermissionRequest(requestId, 1, db)?.status).toBe('pending')
+    },
+  )
+
   it('records masked notification targets for dangerous action escalation', () => {
     createPermissionRequest(
       {

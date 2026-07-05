@@ -1643,6 +1643,8 @@ const migrations: Migration[] = [
           outcome TEXT,
           error_message TEXT,
           bridge_request_id TEXT,
+          message_id TEXT,
+          correlation_id TEXT,
           llm_sweep INTEGER NOT NULL DEFAULT 0,
           skip_reason TEXT,
           created_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -1655,6 +1657,10 @@ const migrations: Migration[] = [
         ON human_watch_interventions(binding_id, created_at DESC)`)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_interventions_client
         ON human_watch_interventions(client_id, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_interventions_message
+        ON human_watch_interventions(message_id, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_interventions_correlation
+        ON human_watch_interventions(correlation_id, created_at DESC)`)
       db.exec(`
         CREATE UNIQUE INDEX IF NOT EXISTS idx_hw_interventions_idempotent_success
         ON human_watch_interventions(binding_id, fingerprint)
@@ -1815,6 +1821,73 @@ const migrations: Migration[] = [
         ON human_watch_events(workspace_id, client_id, dedupe_key)
         WHERE dedupe_key IS NOT NULL
           AND status IN ('pending', 'visible', 'claimed')`)
+    },
+  },
+  {
+    id: '067_edge_messages',
+    up(db: Database.Database) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS edge_messages (
+          id TEXT PRIMARY KEY,
+          schema_version INTEGER NOT NULL DEFAULT 1,
+          workspace_id INTEGER NOT NULL,
+          tenant_id INTEGER,
+          client_id TEXT NOT NULL,
+          direction TEXT NOT NULL,
+          type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          correlation_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          agent_ref_json TEXT,
+          session_ref_json TEXT,
+          payload_json TEXT NOT NULL,
+          result_json TEXT,
+          lease_owner TEXT,
+          lease_expires_at INTEGER,
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          max_attempts INTEGER NOT NULL DEFAULT 5,
+          next_attempt_at INTEGER,
+          last_error_code TEXT,
+          last_error_message TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          completed_at INTEGER,
+          cancelled_at INTEGER
+        )
+      `)
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS edge_message_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          message_id TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          from_status TEXT,
+          to_status TEXT,
+          detail_json TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (message_id) REFERENCES edge_messages(id) ON DELETE CASCADE
+        )
+      `)
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_edge_messages_idempotency
+        ON edge_messages(tenant_id, client_id, idempotency_key)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_edge_messages_pull
+        ON edge_messages(client_id, status, next_attempt_at, created_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_edge_messages_correlation
+        ON edge_messages(correlation_id, created_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_edge_message_events_message
+        ON edge_message_events(message_id, created_at)`)
+    },
+  },
+  {
+    id: '068_human_watch_intervention_message_trace',
+    up(db: Database.Database) {
+      const cols = db.prepare(`PRAGMA table_info(human_watch_interventions)`).all() as Array<{ name: string }>
+      const hasCol = (name: string) => cols.some((col) => col.name === name)
+      if (!hasCol('message_id')) db.exec(`ALTER TABLE human_watch_interventions ADD COLUMN message_id TEXT`)
+      if (!hasCol('correlation_id')) db.exec(`ALTER TABLE human_watch_interventions ADD COLUMN correlation_id TEXT`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_interventions_message
+        ON human_watch_interventions(message_id, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_interventions_correlation
+        ON human_watch_interventions(correlation_id, created_at DESC)`)
     },
   },
 ]

@@ -1,4 +1,4 @@
-use crate::{bootstrap, config, process, runtime};
+use crate::{bootstrap, config, mailbox, process, runtime};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -7,12 +7,14 @@ const HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 const STARTUP_DELAY: Duration = Duration::from_secs(20);
 const MIN_RECOVERY_GAP: Duration = Duration::from_secs(30);
 const RUNTIME_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);
+const MAILBOX_DRAIN_INTERVAL: Duration = Duration::from_secs(60);
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 
 lazy_static::lazy_static! {
     static ref LAST_RECOVERY: Mutex<Option<Instant>> = Mutex::new(None);
     static ref LAST_RUNTIME_UPDATE_CHECK: Mutex<Option<Instant>> = Mutex::new(None);
+    static ref LAST_MAILBOX_DRAIN: Mutex<Option<Instant>> = Mutex::new(None);
 }
 
 fn can_recover(force: bool) -> bool {
@@ -47,6 +49,45 @@ fn should_check_runtime_update(force: bool) -> bool {
     }
     *guard = Some(Instant::now());
     true
+}
+
+fn should_drain_mailbox(force: bool) -> bool {
+    if force {
+        *LAST_MAILBOX_DRAIN.lock().unwrap() = Some(Instant::now());
+        return true;
+    }
+    let mut guard = LAST_MAILBOX_DRAIN.lock().unwrap();
+    if guard
+        .map(|last| last.elapsed() < MAILBOX_DRAIN_INTERVAL)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    *guard = Some(Instant::now());
+    true
+}
+
+fn drain_mailbox_if_due(cfg: &config::EdgeConfig, force: bool, reason: &str) {
+    if !should_drain_mailbox(force) {
+        return;
+    }
+    match mailbox::drain(cfg) {
+        Ok(result) => {
+            if result.pulled > 0
+                || result.executed > 0
+                || result.failed > 0
+                || result.outbox_sent > 0
+                || result.outbox_failed > 0
+                || result.pull_error.is_some()
+            {
+                eprintln!(
+                    "[E-Agent Edge] mailbox drain ({reason}): {}",
+                    mailbox::summarize_drain(&result)
+                );
+            }
+        }
+        Err(e) => eprintln!("[E-Agent Edge] mailbox drain skipped ({reason}): {e}"),
+    }
 }
 
 fn runtime_update_target(cfg: &config::EdgeConfig, force: bool) -> Result<Option<String>, String> {
@@ -88,6 +129,7 @@ pub fn recover_edge_runtime(reason: &str, force: bool) -> Result<(), String> {
                     if let Err(e) = bootstrap::push_tray_credentials_to_local(&refreshed) {
                         eprintln!("[E-Agent Edge] supervisor: bridge reconnect apply failed: {e}");
                     }
+                    drain_mailbox_if_due(&refreshed, true, "runtime-updated");
                 }
                 mark_recovery();
             }
@@ -113,6 +155,7 @@ pub fn recover_edge_runtime(reason: &str, force: bool) -> Result<(), String> {
         if let Err(e) = bootstrap::push_tray_credentials_to_local(&refreshed) {
             eprintln!("[E-Agent Edge] supervisor: bridge reconnect apply failed: {e}");
         }
+        drain_mailbox_if_due(&refreshed, true, "runtime-recovered");
     }
     mark_recovery();
     eprintln!("[E-Agent Edge] supervisor: recovery complete ({reason})");
@@ -128,6 +171,10 @@ pub fn start_background_supervisor() {
         loop {
             if let Err(e) = recover_edge_runtime("periodic-health", false) {
                 eprintln!("[E-Agent Edge] supervisor: periodic recovery failed: {e}");
+            }
+            let cfg = config::load_config();
+            if config::is_setup_complete(&cfg) && process::is_healthy(&cfg) {
+                drain_mailbox_if_due(&cfg, false, "periodic-health");
             }
             std::thread::sleep(HEALTH_INTERVAL);
         }
