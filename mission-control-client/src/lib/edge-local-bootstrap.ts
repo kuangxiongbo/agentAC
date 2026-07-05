@@ -27,6 +27,10 @@ function sanitizeClientName(hostname: string): string {
 }
 
 function stableClientId(deviceId: string, enrollToken: string, hostname: string): string {
+  const trimmed = deviceId.trim()
+  if (/^mc-edge-[a-z0-9-]+$/i.test(trimmed)) {
+    return trimmed
+  }
   const seed = `${enrollToken}:${deviceId || hostname}`
   const hash = createHash('sha256').update(seed).digest('hex').slice(0, 12)
   return `mc-edge-${hash}`
