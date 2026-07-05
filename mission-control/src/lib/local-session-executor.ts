@@ -53,6 +53,8 @@ interface LocalSessionExecutionOptions {
   permissionMode?: LocalCliPermissionMode | null
   agent?: LocalRuntimeAgentRef | null
   managedByPlatform?: boolean
+  workerSessionId?: string | null
+  sessionKind?: LocalSessionKind | null
 }
 
 export interface LocalRuntimeAgentRef {
@@ -445,8 +447,8 @@ function buildPlatformManagedOperatingRules(mode: LocalCliPermissionMode): strin
     '1. This session was started or continued by E-Agent-Client. Treat E-Agent-Client as the execution proxy for this session only.',
     '2. Do not ask the user to modify global Codex, shell, PATH, or MCP configuration unless the user explicitly requests environment setup.',
     '3. If this turn is marked as elevated/full local CLI permission, proceed with command-style work directly instead of saying that a separate local approval is needed.',
-    '4. When you need human confirmation, authorization, allow/deny, continue/cancel, or a permission choice, call mc_create_watch_event or mc_create_permission_request and then mc_wait_permission_request. Do not rely on a free-form chat message for the decision.',
-    '5. Continue the blocked action only when the permission request returns an approved option. If a human replies inside this Worker session instead of the platform approval page, call mc_record_worker_human_reply with the selected option so the platform can close the approval. If it is denied, expired, or cancelled, stop that action and report the structured result.',
+    '4. When your reply needs a follow-up confirmation, clarification, or user-style response so you can continue, call mc_create_watch_event with the current question/context; the platform will route it to the bound human-watch steward and send the steward reply back into this Worker session.',
+    '5. When you need a structured allow/deny/ask_human permission choice for a blocked or risky action, call mc_create_permission_request and then mc_wait_permission_request. Continue only when the permission request returns an approved option. If a human replies inside this Worker session instead of the platform approval page, call mc_record_worker_human_reply with the selected option so the platform can close the approval.',
     mode === 'full'
       ? '6. Elevated mode is active for this turn; use the available CLI capability to complete the requested command work.'
       : '6. Standard mode is active; stay within the normal local CLI constraints for this session.',
@@ -767,6 +769,8 @@ function buildAgentExecutionOptions(
   agent: LocalRuntimeAgentRef,
   workingDirectory?: string,
   permissionModeOverride?: LocalCliPermissionMode | null,
+  workerSessionId?: string | null,
+  sessionKind?: LocalSessionKind | null,
 ): LocalSessionExecutionOptions {
   const permissionMode = resolveLocalCliPermissionMode(agent, permissionModeOverride)
   return {
@@ -774,6 +778,8 @@ function buildAgentExecutionOptions(
     permissionMode,
     agent,
     managedByPlatform: true,
+    workerSessionId,
+    sessionKind,
   }
 }
 
@@ -786,6 +792,8 @@ async function runCodexExecCommand(
     managedByPlatform: options.managedByPlatform,
     agentId: options.agent?.id,
     agentName: options.agent?.name ?? null,
+    workerSessionId: options.workerSessionId,
+    sessionKind: options.sessionKind,
     permissionMode,
   })
   const finalArgs = withLocalCliPermissionArgs('codex', mcpArgs, permissionMode)
@@ -818,6 +826,8 @@ function buildCommandEnv(options?: LocalSessionExecutionOptions): NodeJS.Process
     ...(options?.managedByPlatform ? {
       MC_PLATFORM_MANAGED_SESSION: '1',
       MC_LOCAL_CLI_PERMISSION_MODE: resolveExecutionPermissionMode(options),
+      ...(options.workerSessionId ? { MC_WORKER_SESSION_ID: options.workerSessionId } : {}),
+      ...(options.sessionKind ? { MC_SESSION_KIND: options.sessionKind } : {}),
       ...(options.agent?.id != null ? { MC_AGENT_ID: String(options.agent.id) } : {}),
       ...(options.agent?.name ? { MC_AGENT_NAME: String(options.agent.name) } : {}),
     } : {}),
@@ -1322,8 +1332,8 @@ async function executeBoundLocalAgentPromptCore(
       return EMPTY_EXECUTION_RESULT
     }
     const permissionMode = resolveLocalCliPermissionMode(freshAgent, options.permissionMode)
-    const agentExecOptions = (cwd?: string) =>
-      buildAgentExecutionOptions(freshAgent, cwd ?? workingDirectory, permissionMode)
+    const agentExecOptions = (cwd?: string, workerSessionId?: string | null) =>
+      buildAgentExecutionOptions(freshAgent, cwd ?? workingDirectory, permissionMode, workerSessionId, kind)
     let activeSessionKey = getExistingAgentSessionKey(freshAgent)
     const roleHash = computeAgentRoleHash(freshAgent)
     const parsedConfig = getParsedLocalAgentSessionConfig(freshAgent)
@@ -1390,7 +1400,7 @@ async function executeBoundLocalAgentPromptCore(
                 kind,
                 activeSessionKey,
                 combinedBootstrap,
-                agentExecOptions(executionWorkingDirectory),
+                agentExecOptions(executionWorkingDirectory, activeSessionKey),
               )
               persistAgentSessionBinding(freshAgent, {
                 sessionKey: bootstrapResult.sessionId || activeSessionKey,
@@ -1440,7 +1450,7 @@ async function executeBoundLocalAgentPromptCore(
           kind,
           reboundSessionKey,
           prompt,
-          agentExecOptions(reboundCwd),
+          agentExecOptions(reboundCwd, reboundSessionKey),
         )
         persistAgentSessionBinding(reboundAgent, {
           sessionKey: result.sessionId || reboundSessionKey,
@@ -1736,7 +1746,7 @@ export async function executeBoundLocalAgentPrompt(
       kind,
       overrideSessionKey,
       prompt,
-      buildAgentExecutionOptions(agentInput, workingDirectory, options.permissionMode),
+      buildAgentExecutionOptions(agentInput, workingDirectory, options.permissionMode, overrideSessionKey, kind),
     )
   }
 
@@ -1835,7 +1845,7 @@ export function enqueueBoundLocalAgentPrompt(
       kind,
       overrideSessionKey,
       prompt,
-      buildAgentExecutionOptions(freshAgent, executionCwd, options.permissionMode),
+      buildAgentExecutionOptions(freshAgent, executionCwd, options.permissionMode, overrideSessionKey, kind),
     )
     : () => executeBoundLocalAgentPromptCore(freshAgent, prompt, kind, workingDirectory, options)
 
@@ -1892,6 +1902,8 @@ export function enqueueLocalSessionPrompt(
     () => executeLocalSessionPrompt(kind, sessionId, prompt, {
       ...options,
       workingDirectory: executionCwd,
+      workerSessionId: options.workerSessionId || sessionId,
+      sessionKind: options.sessionKind || kind,
     }),
     prompt,
     null,

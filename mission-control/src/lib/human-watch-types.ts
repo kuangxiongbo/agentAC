@@ -38,6 +38,7 @@ export interface HumanWatchRulesHit {
   idle_timeout?: boolean
   pending_tool?: boolean
   confirmation_text?: boolean
+  awaiting_user_response?: boolean
   [key: string]: unknown
 }
 

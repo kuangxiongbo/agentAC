@@ -629,10 +629,11 @@ export async function requeueStaleTasks(): Promise<{ ok: boolean; message: strin
 
   const total = requeued + failed
   const pendingNote = skippedPendingApproval > 0 ? `, ${skippedPendingApproval} awaiting human approval` : ''
+  const onlineNote = total === 0 && skippedPendingApproval < staleTasks.length ? ' but agents still online' : ''
   return {
     ok: true,
     message: total === 0
-      ? `Found ${staleTasks.length} stale task(s) but agents still online${pendingNote}`
+      ? `Found ${staleTasks.length} stale task(s)${onlineNote}${pendingNote}`
       : `Requeued ${requeued}, failed ${failed} of ${staleTasks.length} stale task(s)${pendingNote}`,
   }
 }

@@ -1519,6 +1519,111 @@ const migrations: Migration[] = [
       db.exec(`CREATE INDEX IF NOT EXISTS idx_permission_requests_steward ON permission_requests(steward_local_agent_id, created_at DESC)`)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_permission_decisions_request ON permission_request_decisions(request_id, created_at DESC)`)
     }
+  },
+  {
+    id: '055_human_watch_local_tables',
+    up(db: Database.Database) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS human_watch_bindings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id INTEGER NOT NULL,
+          tenant_id INTEGER,
+          client_id TEXT NOT NULL,
+          worker_sync_index_id INTEGER,
+          worker_local_agent_id INTEGER,
+          worker_name TEXT,
+          steward_sync_index_id INTEGER,
+          steward_local_agent_id INTEGER,
+          steward_name TEXT,
+          worker_session_id TEXT,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          mode TEXT NOT NULL DEFAULT 'auto_send',
+          rules_override TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_human_watch_bindings_workspace ON human_watch_bindings(workspace_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_human_watch_bindings_client ON human_watch_bindings(client_id)`)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS human_watch_interventions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id INTEGER NOT NULL,
+          tenant_id INTEGER,
+          client_id TEXT NOT NULL,
+          binding_id INTEGER,
+          worker_sync_index_id INTEGER,
+          worker_local_agent_id INTEGER,
+          worker_name TEXT,
+          steward_sync_index_id INTEGER,
+          steward_local_agent_id INTEGER,
+          steward_name TEXT,
+          worker_session_id TEXT,
+          event_type TEXT NOT NULL,
+          decision TEXT,
+          rules_hit TEXT,
+          fingerprint TEXT,
+          prompt_preview TEXT,
+          prompt_sha256 TEXT,
+          outcome TEXT,
+          error_message TEXT,
+          bridge_request_id TEXT,
+          llm_sweep INTEGER NOT NULL DEFAULT 0,
+          skip_reason TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_interventions_workspace_created
+        ON human_watch_interventions(workspace_id, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_interventions_binding
+        ON human_watch_interventions(binding_id, created_at DESC)`)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS human_watch_events (
+          id TEXT PRIMARY KEY,
+          workspace_id INTEGER NOT NULL,
+          tenant_id INTEGER,
+          client_id TEXT NOT NULL,
+          binding_id INTEGER,
+          worker_sync_index_id INTEGER,
+          worker_local_agent_id INTEGER,
+          worker_name TEXT,
+          worker_session_id TEXT,
+          steward_sync_index_id INTEGER,
+          steward_local_agent_id INTEGER,
+          steward_name TEXT,
+          permission_request_id TEXT,
+          source TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          priority TEXT NOT NULL DEFAULT 'medium',
+          title TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          context_json TEXT,
+          latest_worker_message TEXT,
+          suggested_action TEXT,
+          claimed_by_type TEXT,
+          claimed_by_user_id INTEGER,
+          claimed_by_agent_id TEXT,
+          claimed_at INTEGER,
+          resolved_action TEXT,
+          resolved_note TEXT,
+          resolved_by_type TEXT,
+          resolved_by_user_id INTEGER,
+          resolved_by_agent_id TEXT,
+          resolved_at INTEGER,
+          dedupe_key TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_events_workspace_status_created
+        ON human_watch_events(workspace_id, status, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_events_client_status_created
+        ON human_watch_events(client_id, status, created_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_events_worker_session
+        ON human_watch_events(worker_session_id, status, created_at DESC)`)
+    }
   }
 ]
 

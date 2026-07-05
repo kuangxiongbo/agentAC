@@ -3128,6 +3128,7 @@
     "ruleStuckSignalsRequired": "请至少勾选一种卡住信号",
     "ruleSignalPendingTool": "L2：待处理工具",
     "ruleSignalConfirmation": "L3：确认类话术",
+    "ruleSignalAwaitingUserResponse": "L3：等待用户回复",
     "ruleConfirmationPatterns": "确认话术关键词",
     "ruleConfirmationPatternsPlaceholder": "每行一条，匹配 Worker 最后一条助手消息（不区分大小写）",
     "ruleConfirmationPatternsHint": "例如：请确认、请选择、please confirm、which option",

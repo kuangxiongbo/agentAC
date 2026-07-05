@@ -1,10 +1,10 @@
 import { DEFAULT_HUMAN_WATCH_RULE_CONFIG, type HumanWatchRuleConfig } from './human-watch-rules'
 
 export const DEFAULT_INTERVENTION_PROMPT =
-  '任务似乎已停滞。请继续下一步，或在受阻时简要说明需要确认的内容。'
+  '任务似乎需要继续确认或回复。请结合上下文给出明确回复，帮助 Worker 继续推进。'
 
 export const DEFAULT_INTERVENTION_PROMPT_EN =
-  'The task appears stalled. Please continue with the next step, or ask a brief clarifying question if you are blocked.'
+  'The task appears to need a confirmation or reply. Respond clearly from the context so the Worker can continue.'
 
 export const MAX_INTERVENTIONS_PER_HOUR_DEFAULT = 6
 export const DEFAULT_GRACE_AFTER_PROMPT_SECONDS = 30

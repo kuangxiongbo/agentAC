@@ -70,6 +70,22 @@ async function api(method, route, body) {
   }
 }
 
+function numberFromEnv(name) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function withWorkerContext(args) {
+  return {
+    ...args,
+    worker_local_agent_id: args.worker_local_agent_id ?? numberFromEnv('MC_AGENT_ID'),
+    worker_name: args.worker_name || process.env.MC_AGENT_NAME || undefined,
+    worker_session_id: args.worker_session_id || process.env.MC_WORKER_SESSION_ID || undefined,
+    session_kind: args.session_kind || process.env.MC_SESSION_KIND || undefined,
+    client_id: args.client_id || process.env.MC_CLIENT_ID || undefined,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
@@ -498,26 +514,41 @@ const TOOLS = [
   },
   {
     name: 'mc_create_watch_event',
-    description: 'Alias for mc_create_permission_request. Create a structured watch event when a Worker needs an external decision.',
+    description: 'Ask the bound human-watch steward to reply to this Worker session. Use when the Worker has replied and needs a continued confirmation, clarification, or next user-style response. If options are supplied, this falls back to a structured permission request.',
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'Optional stable request ID for idempotency' },
-        request_type: { type: 'string', description: 'Type, e.g. local_cli_approval, handoff_approval, browser_confirmation' },
-        title: { type: 'string', description: 'Short title shown to human/steward approvers' },
-        prompt: { type: 'string', description: 'Detailed question and action context' },
+        id: { type: 'string', description: 'Optional stable request ID when creating a permission request fallback' },
+        request_type: { type: 'string', description: 'Optional type. Use needs_reply/watch_reply for steward replies, or approval types with options for permission requests.' },
+        title: { type: 'string', description: 'Short title shown in human-watch events' },
+        prompt: { type: 'string', description: 'Worker question, confirmation need, or context to send to the steward judge' },
         risk: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Risk level, default medium' },
-        options: { type: 'array', description: 'Decision options' },
-        client_id: { type: 'string' },
-        worker_name: { type: 'string' },
-        worker_session_id: { type: 'string' },
+        options: { type: 'array', description: 'Decision options. Supplying options creates a permission request instead of steward assist.' },
+        client_id: { type: 'string', description: 'Edge client id. Usually optional when worker_session_id is bound.' },
+        binding_id: { type: 'number', description: 'Human-watch binding id, if known' },
+        worker_local_agent_id: { type: 'number', description: 'Worker local agent id, if known' },
+        worker_name: { type: 'string', description: 'Worker agent name' },
+        worker_session_id: { type: 'string', description: 'Worker session id' },
+        session_kind: { type: 'string', description: 'Session kind: claude-code, codex-cli, hermes' },
         steward_name: { type: 'string' },
         context: { type: 'object' },
         expires_at: { type: 'number' },
       },
-      required: ['request_type', 'title', 'prompt', 'options'],
+      required: ['prompt'],
     },
-    handler: async (args) => api('POST', '/api/permission-requests', args),
+    handler: async (args) => {
+      if (Array.isArray(args.options) && args.options.length > 0) {
+        return api('POST', '/api/permission-requests', {
+          ...withWorkerContext(args),
+          request_type: args.request_type || 'watch_permission',
+          title: args.title || 'Worker requests a decision',
+        });
+      }
+      return api('POST', '/api/human-watch/assist', {
+        ...withWorkerContext(args),
+        title: args.title || 'Worker requests human-watch reply',
+      });
+    },
   },
   {
     name: 'mc_wait_permission_request',
@@ -835,7 +866,7 @@ for (const tool of TOOLS) {
 
 const SERVER_INFO = {
   name: 'mission-control',
-  version: '2.1.17',
+  version: '2.1.18',
 };
 
 const CAPABILITIES = {

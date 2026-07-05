@@ -13,7 +13,7 @@ export interface HumanWatchRuleConfig {
   idle_timeout_seconds?: number
   /** 已检测到确认/工具受阻时使用的更短空闲阈值 */
   idle_timeout_with_stuck_seconds?: number
-  stuck_signals?: Array<'pending_tool' | 'confirmation_text'>
+  stuck_signals?: Array<'pending_tool' | 'confirmation_text' | 'awaiting_user_response'>
   /** 强确认话术（最近 2 条 assistant 内匹配） */
   confirmation_patterns?: string[]
   /** 弱话术（仅最后一条 assistant，降低误触） */
@@ -64,11 +64,33 @@ const DEFAULT_STRONG_CONFIRMATION_PATTERNS = [
 /** 弱信号：仅匹配最后一条 assistant，避免技术长文误触 */
 const DEFAULT_WEAK_CONFIRMATION_PATTERNS = ['继续吗', '请告诉我', '下一步怎么做']
 
+const DEFAULT_AWAITING_USER_RESPONSE_PATTERNS = [
+  '?',
+  '？',
+  'what do you',
+  'which',
+  'please tell me',
+  'let me know',
+  'tell me',
+  '请选择',
+  '请告诉我',
+  '你希望',
+  '你想',
+  '你要',
+  '需要我',
+  '是否',
+  '哪一',
+  '哪个',
+  '还是',
+  '可以吗',
+  '要不要',
+]
+
 export const DEFAULT_HUMAN_WATCH_RULE_CONFIG: HumanWatchRuleConfig = {
   enabled: true,
   idle_timeout_seconds: 50,
   idle_timeout_with_stuck_seconds: 30,
-  stuck_signals: ['pending_tool', 'confirmation_text'],
+  stuck_signals: ['pending_tool', 'confirmation_text', 'awaiting_user_response'],
   confirmation_patterns: DEFAULT_STRONG_CONFIRMATION_PATTERNS,
   confirmation_patterns_weak: DEFAULT_WEAK_CONFIRMATION_PATTERNS,
   require_combination: true,
@@ -152,6 +174,16 @@ function hasConfirmationText(
 ): boolean {
   const { strong, weak } = detectConfirmationSignals(lines, config)
   return strong || weak
+}
+
+function hasAwaitingUserResponseSignal(lines: HumanWatchTranscriptLine[]): boolean {
+  const last = lastNonSystemMessage(lines)
+  if (!last || normalizeRole(last.role) !== 'assistant') return false
+  const content = normalizeContent(last)
+  if (!content) return false
+  return DEFAULT_AWAITING_USER_RESPONSE_PATTERNS.some((pattern) =>
+    content.includes(pattern.toLowerCase()),
+  )
 }
 
 /** Last message activity epoch seconds; 0 if transcript lines lack timestamps. */
@@ -241,9 +273,13 @@ export function evaluateHumanWatchRules(
     if (confirmSignals.weak) rulesHit.confirmation_weak = true
   }
 
-  const l2or3 = Boolean(rulesHit.pending_tool || rulesHit.confirmation_text)
+  if (stuckSignals.includes('awaiting_user_response') && hasAwaitingUserResponseSignal(lines)) {
+    rulesHit.awaiting_user_response = true
+  }
+
+  const l2or3 = Boolean(rulesHit.pending_tool || rulesHit.confirmation_text || rulesHit.awaiting_user_response)
   const highConfidenceStuck = Boolean(
-    rulesHit.pending_tool || confirmSignals.strong,
+    rulesHit.pending_tool || confirmSignals.strong || rulesHit.awaiting_user_response,
   )
   const effectiveIdleTimeout = l2or3 ? Math.min(baseIdleTimeout, stuckIdleTimeout) : baseIdleTimeout
 

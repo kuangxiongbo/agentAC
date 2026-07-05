@@ -57,6 +57,23 @@ describe('human-watch-rules', () => {
     expect(result.rulesHit.idle_timeout).toBe(true)
   })
 
+  it('matches awaiting user response question after idle', () => {
+    const result = evaluateHumanWatchRules(
+      [
+        {
+          role: 'assistant',
+          content: '我可以继续处理这个问题。你希望我先检查服务端日志还是本地托盘日志？',
+          createdAt: now - 120,
+        },
+      ],
+      { idle_timeout_seconds: 60, require_combination: true },
+      now,
+    )
+    expect(result.matched).toBe(true)
+    expect(result.rulesHit.awaiting_user_response).toBe(true)
+    expect(result.rulesHit.idle_timeout).toBe(true)
+  })
+
   it('matches strong signal when transcript has no timestamps', () => {
     const result = evaluateHumanWatchRules(
       [{ role: 'assistant', content: '你确认后我再继续。' }],

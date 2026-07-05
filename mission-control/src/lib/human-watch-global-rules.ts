@@ -86,10 +86,11 @@ export function mergeGlobalRulesWithDefaults(
 }
 
 function normalizeStuckSignals(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return ['pending_tool', 'confirmation_text']
-  const allowed = new Set(['pending_tool', 'confirmation_text'])
+  const defaults = ['pending_tool', 'confirmation_text', 'awaiting_user_response']
+  if (!Array.isArray(raw)) return defaults
+  const allowed = new Set(defaults)
   const picked = raw.map(String).filter((v) => allowed.has(v))
-  return picked.length > 0 ? picked : ['pending_tool', 'confirmation_text']
+  return picked.length > 0 ? picked : defaults
 }
 
 function normalizeConfirmationPatterns(raw: unknown): string[] {

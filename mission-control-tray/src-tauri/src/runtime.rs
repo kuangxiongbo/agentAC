@@ -554,9 +554,8 @@ where
     let zip_path = home.join(format!("client-runtime-{target_version}-{key}.zip.download"));
     let extract_parent = home.join(format!("staging-{target_version}-{key}"));
 
-    if zip_path.exists() {
-        fs::remove_file(&zip_path).map_err(|e| e.to_string())?;
-    }
+    // Note: do NOT delete an existing partial .zip.download here — download_file_with_progress
+    // resumes from it (HTTP Range) when present, instead of restarting from byte 0.
     let artifact_url = resolve_artifact_url(cfg, &artifact.url);
     on_progress(
         RuntimeProgress::new(
@@ -632,6 +631,11 @@ where
     Ok(format!("已安装 runtime {target_version} ({key})"))
 }
 
+const DOWNLOAD_MAX_ATTEMPTS: u32 = 5;
+
+/// Resumable download with truncation detection and bounded retries.
+/// Resumes from an existing partial file via HTTP Range when the server supports it
+/// (falls back to a full restart when it doesn't, or when the partial is stale/oversized).
 fn download_file_with_progress<F>(
     cfg: &EdgeConfig,
     url: &str,
@@ -641,18 +645,86 @@ fn download_file_with_progress<F>(
 where
     F: FnMut(RuntimeProgress),
 {
-    let client = http_client::build_http_client(cfg, Duration::from_secs(600))?;
-    let mut resp = client
-        .get(url)
-        .send()
-        .map_err(|e| format!("下载失败 ({url}): {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("下载 HTTP {} ({url})", resp.status()));
+    let mut last_err: Option<String> = None;
+    for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
+        match download_file_attempt(cfg, url, dest, attempt, DOWNLOAD_MAX_ATTEMPTS, &mut on_progress) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                eprintln!(
+                    "[E-Agent Edge] 下载尝试 {attempt}/{DOWNLOAD_MAX_ATTEMPTS} 失败: {e}"
+                );
+                last_err = Some(e);
+                if attempt < DOWNLOAD_MAX_ATTEMPTS {
+                    std::thread::sleep(Duration::from_secs((2 * attempt).min(10) as u64));
+                }
+            }
+        }
     }
-    let total = resp.content_length();
-    let mut out = File::create(dest).map_err(|e| e.to_string())?;
+    Err(last_err.unwrap_or_else(|| "下载失败".to_string()))
+}
+
+fn download_file_attempt<F>(
+    cfg: &EdgeConfig,
+    url: &str,
+    dest: &Path,
+    attempt: u32,
+    max_attempts: u32,
+    on_progress: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(RuntimeProgress),
+{
+    let client = http_client::build_http_client(cfg, Duration::from_secs(600))?;
+    let existing_len = fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+
+    let mut req = client.get(url);
+    if existing_len > 0 {
+        req = req.header("Range", format!("bytes={existing_len}-"));
+    }
+    let mut resp = req.send().map_err(|e| format!("下载失败 ({url}): {e}"))?;
+    let status = resp.status();
+
+    // Range not satisfiable: local partial is stale/oversized relative to the server's
+    // copy. Drop it and retry fresh on the next attempt.
+    if existing_len > 0 && status.as_u16() == 416 {
+        let _ = fs::remove_file(dest);
+        return Err("本地分片文件与服务器不匹配（416），已清除，将重新下载".to_string());
+    }
+
+    let resumed = existing_len > 0 && status.as_u16() == 206;
+    if existing_len > 0 && !resumed && !status.is_success() {
+        return Err(format!("下载 HTTP {status} ({url})"));
+    }
+    if existing_len == 0 && !status.is_success() {
+        return Err(format!("下载 HTTP {status} ({url})"));
+    }
+
+    let mut out = if resumed {
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dest)
+            .map_err(|e| e.to_string())?
+    } else {
+        // Fresh download, or server ignored Range (200) — (re)write from byte 0.
+        File::create(dest).map_err(|e| e.to_string())?
+    };
+    let mut downloaded = if resumed { existing_len } else { 0u64 };
+    let body_len = resp.content_length();
+    let total = if resumed {
+        body_len.map(|b| b + existing_len)
+    } else {
+        body_len
+    };
+
+    if attempt > 1 {
+        eprintln!(
+            "[E-Agent Edge] 下载{}（第 {attempt}/{max_attempts} 次尝试，已有 {}）",
+            if resumed { "续传" } else { "重试" },
+            format_bytes(downloaded)
+        );
+    }
+
     let mut buf = [0u8; 65536];
-    let mut downloaded = 0u64;
     let mut last_percent: Option<u8> = None;
     let mut last_emit = Instant::now();
     loop {
@@ -685,6 +757,21 @@ where
             last_emit = Instant::now();
         }
     }
+    drop(out);
+
+    // The read loop exits cleanly on EOF even if the server/proxy cut the connection
+    // early — without this check a truncated download is silently treated as
+    // "complete" and only surfaces later as a confusing SHA256 mismatch on every retry.
+    if let Some(t) = total {
+        if downloaded != t {
+            return Err(format!(
+                "下载不完整: 期望 {}，实际 {}（连接可能被中途截断，将于下次尝试续传）",
+                format_bytes(t),
+                format_bytes(downloaded)
+            ));
+        }
+    }
+
     let detail = if let Some(total) = total {
         format!("{} / {}", format_bytes(downloaded), format_bytes(total))
     } else {

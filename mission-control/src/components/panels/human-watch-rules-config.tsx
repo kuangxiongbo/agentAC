@@ -7,13 +7,13 @@ import { Loader } from '@/components/ui/loader'
 import { buildDefaultGlobalRules } from '@/lib/human-watch-defaults'
 
 type RulesOverride = Record<string, unknown>
-type StuckSignal = 'pending_tool' | 'confirmation_text'
+type StuckSignal = 'pending_tool' | 'confirmation_text' | 'awaiting_user_response'
 
-const DEFAULT_STUCK: StuckSignal[] = ['pending_tool', 'confirmation_text']
+const DEFAULT_STUCK: StuckSignal[] = ['pending_tool', 'confirmation_text', 'awaiting_user_response']
 
 function normalizeStuckSignals(raw: unknown): StuckSignal[] {
   if (!Array.isArray(raw)) return [...DEFAULT_STUCK]
-  const allowed = new Set<StuckSignal>(['pending_tool', 'confirmation_text'])
+  const allowed = new Set<StuckSignal>(['pending_tool', 'confirmation_text', 'awaiting_user_response'])
   const picked = raw.filter((v): v is StuckSignal => allowed.has(v as StuckSignal))
   return picked.length > 0 ? picked : [...DEFAULT_STUCK]
 }
@@ -39,6 +39,7 @@ function buildSummaryRows(
   const signals = normalizeStuckSignals(rules.stuck_signals)
   if (signals.includes('pending_tool')) stuck.push(t('ruleSignalPendingTool'))
   if (signals.includes('confirmation_text')) stuck.push(t('ruleSignalConfirmation'))
+  if (signals.includes('awaiting_user_response')) stuck.push(t('ruleSignalAwaitingUserResponse'))
   const patterns = Array.isArray(rules.confirmation_patterns)
     ? (rules.confirmation_patterns as string[]).length
     : 0
@@ -86,6 +87,7 @@ export function HumanWatchRulesConfig({
   const [toolExcludeSec, setToolExcludeSec] = useState('120')
   const [signalPendingTool, setSignalPendingTool] = useState(true)
   const [signalConfirmation, setSignalConfirmation] = useState(true)
+  const [signalAwaitingUserResponse, setSignalAwaitingUserResponse] = useState(true)
   const [requireCombination, setRequireCombination] = useState(true)
   const [patternsText, setPatternsText] = useState('')
   const [graceSec, setGraceSec] = useState('30')
@@ -101,6 +103,7 @@ export function HumanWatchRulesConfig({
     const stuck = normalizeStuckSignals(merged.stuck_signals)
     setSignalPendingTool(stuck.includes('pending_tool'))
     setSignalConfirmation(stuck.includes('confirmation_text'))
+    setSignalAwaitingUserResponse(stuck.includes('awaiting_user_response'))
     setRequireCombination(merged.require_combination !== false)
     setPatternsText(patternsToText(merged.confirmation_patterns))
     setGraceSec(String(merged.grace_after_prompt_seconds ?? 30))
@@ -137,6 +140,7 @@ export function HumanWatchRulesConfig({
       const stuck_signals: StuckSignal[] = []
       if (signalPendingTool) stuck_signals.push('pending_tool')
       if (signalConfirmation) stuck_signals.push('confirmation_text')
+      if (signalAwaitingUserResponse) stuck_signals.push('awaiting_user_response')
       if (stuck_signals.length === 0) {
         setError(t('ruleStuckSignalsRequired'))
         return
@@ -254,6 +258,14 @@ export function HumanWatchRulesConfig({
                 onChange={(e) => setSignalConfirmation(e.target.checked)}
               />
               {t('ruleSignalConfirmation')}
+            </label>
+            <label className="flex items-center gap-2 text-foreground">
+              <input
+                type="checkbox"
+                checked={signalAwaitingUserResponse}
+                onChange={(e) => setSignalAwaitingUserResponse(e.target.checked)}
+              />
+              {t('ruleSignalAwaitingUserResponse')}
             </label>
           </fieldset>
 

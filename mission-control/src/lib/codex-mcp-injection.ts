@@ -9,6 +9,8 @@ export interface CodexMcpInjectionOptions {
   managedByPlatform?: boolean
   agentId?: number | string | null
   agentName?: string | null
+  workerSessionId?: string | null
+  sessionKind?: string | null
   permissionMode?: LocalCliPermissionMode | null
 }
 
@@ -49,6 +51,8 @@ export function buildCodexMcpConfigArgs(options: CodexMcpInjectionOptions): stri
   }
   if (options.agentId != null) env.MC_AGENT_ID = String(options.agentId)
   if (options.agentName) env.MC_AGENT_NAME = options.agentName
+  if (options.workerSessionId) env.MC_WORKER_SESSION_ID = options.workerSessionId
+  if (options.sessionKind) env.MC_SESSION_KIND = options.sessionKind
 
   return [
     '-c',

@@ -3153,6 +3153,7 @@
     "ruleStuckSignalsRequired": "Select at least one stuck signal",
     "ruleSignalPendingTool": "L2: pending tool",
     "ruleSignalConfirmation": "L3: confirmation phrases",
+    "ruleSignalAwaitingUserResponse": "L3: awaiting user response",
     "ruleConfirmationPatterns": "Confirmation keywords",
     "ruleConfirmationPatternsPlaceholder": "One pattern per line; matched against the last assistant message (case insensitive)",
     "ruleConfirmationPatternsHint": "e.g. 请确认, 请选择, please confirm, which option",
