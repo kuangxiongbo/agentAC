@@ -6,7 +6,7 @@ export const DEFAULT_INTERVENTION_PROMPT =
 export const DEFAULT_INTERVENTION_PROMPT_EN =
   'The task appears to need a confirmation or reply. Respond clearly from the context so the Worker can continue.'
 
-export const MAX_INTERVENTIONS_PER_HOUR_DEFAULT = 6
+export const MAX_INTERVENTIONS_PER_HOUR_DEFAULT = 60
 export const DEFAULT_GRACE_AFTER_PROMPT_SECONDS = 30
 
 /** 租户级全局值守判断规则默认值（所有 Worker 绑定共用） */
