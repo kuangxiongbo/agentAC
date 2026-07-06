@@ -51,9 +51,9 @@ export function replaceBridgeAgentIndex(
       remote_name = excluded.remote_name,
       role = excluded.role,
       status = excluded.status,
-      framework = excluded.framework,
-      parent_local_id = excluded.parent_local_id,
-      session_key = excluded.session_key,
+      framework = COALESCE(excluded.framework, sync_agent_index.framework),
+      parent_local_id = COALESCE(excluded.parent_local_id, sync_agent_index.parent_local_id),
+      session_key = COALESCE(excluded.session_key, sync_agent_index.session_key),
       updated_at = excluded.updated_at
   `)
 

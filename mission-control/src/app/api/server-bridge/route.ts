@@ -42,7 +42,11 @@ export async function POST(request: NextRequest) {
     case 'status_push': {
       const { getDatabase } = await import('@/lib/db')
       const db = getDatabase()
-      const agents = db.prepare(`SELECT id, name, role, status FROM agents WHERE hidden = 0 ORDER BY name`).all()
+      const agents = db
+        .prepare(
+          `SELECT id, name, role, status, framework, parent_id, session_key FROM agents WHERE hidden = 0 ORDER BY name`,
+        )
+        .all()
       const clientId = (db.prepare(`SELECT value FROM settings WHERE key = 'device.client_id'`).get() as { value?: string } | undefined)?.value || 'mc-node-static'
       const clientLabel = (db.prepare(`SELECT value FROM settings WHERE key = 'gateway.client_name'`).get() as { value?: string } | undefined)?.value || clientId
       const sent = sendBridgeEvent('agent_status', { clientId, clientLabel, agents })

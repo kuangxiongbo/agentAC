@@ -115,4 +115,36 @@ describe('sync-agent-index bridge hybrid', () => {
     expect(getBridgeAgentIndexByRecipient('程序+人工值守测试')?.local_agent_id).toBe(7)
     expect(getBridgeAgentIndexByRecipient('missing')).toBeUndefined()
   })
+
+  it('preserves session metadata when a legacy status push omits optional fields', async () => {
+    const { replaceBridgeAgentIndex, listBridgeAgentIndex } = await import('@/lib/sync-agent-index')
+
+    replaceBridgeAgentIndex('mac001', 'Mac', [
+      {
+        id: 44,
+        name: '程序+人工值守测试',
+        role: 'builder engineer',
+        status: 'busy',
+        framework: 'codex',
+        parent_id: 3,
+        session_key: '019e3a22-47cb',
+      },
+    ])
+
+    replaceBridgeAgentIndex('mac001', 'Mac', [
+      {
+        id: 44,
+        name: '程序+人工值守测试',
+        role: 'builder engineer',
+        status: 'idle',
+      },
+    ])
+
+    expect(listBridgeAgentIndex('mac001')[0]).toMatchObject({
+      status: 'idle',
+      framework: 'codex',
+      parent_local_id: 3,
+      session_key: '019e3a22-47cb',
+    })
+  })
 })
