@@ -31,6 +31,17 @@ OUT_ZIP="$OUT_DIR/$ZIP_NAME"
 echo "==> build standalone (mission-control-client)"
 cd "$PROJECT_ROOT"
 rm -rf "$PROJECT_ROOT/dist/edge-runtime-staging-$VERSION-$PLATFORM"
+NODE_ABI="$(node -p "process.versions.modules")"
+NODE_VERSION="$(node -p "process.version")"
+if [[ "$NODE_ABI" != "127" ]]; then
+  cat >&2 <<EOF
+error: Edge runtime must be packaged with the tray Node ABI 127 (Node 22.x).
+current node: $NODE_VERSION ABI $NODE_ABI
+Use the tray/runtime Node first in PATH, for example:
+  export PATH="\$HOME/.openagents/nodejs/bin:\$PATH"
+EOF
+  exit 1
+fi
 pnpm install --frozen-lockfile
 pnpm rebuild better-sqlite3
 node -e "require('better-sqlite3'); console.log('better-sqlite3 ABI OK for', process.version)"
