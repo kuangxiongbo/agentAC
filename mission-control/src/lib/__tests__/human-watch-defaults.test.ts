@@ -13,6 +13,7 @@ describe('human-watch-defaults', () => {
     expect(rules.require_last_message_from_assistant).toBe(true)
     expect(rules.grace_after_prompt_seconds).toBe(30)
     expect(rules.max_interventions_per_hour).toBe(60)
+    expect(rules.max_interventions_window_seconds).toBe(86400)
     expect(typeof rules.prompt_template).toBe('string')
   })
 

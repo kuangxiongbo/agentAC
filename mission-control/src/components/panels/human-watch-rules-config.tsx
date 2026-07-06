@@ -60,7 +60,7 @@ function buildSummaryRows(
       value: rules.require_combination === false ? t('ruleComboAny') : t('ruleComboAll'),
     },
     { label: t('ruleGraceSeconds'), value: `${rules.grace_after_prompt_seconds ?? 30}s` },
-    { label: t('ruleMaxPerHour'), value: String(rules.max_interventions_per_hour ?? 6) },
+    { label: t('ruleMaxPerDay'), value: String(rules.max_interventions_per_hour ?? 60) },
   ]
 }
 
@@ -91,7 +91,7 @@ export function HumanWatchRulesConfig({
   const [requireCombination, setRequireCombination] = useState(true)
   const [patternsText, setPatternsText] = useState('')
   const [graceSec, setGraceSec] = useState('30')
-  const [maxHour, setMaxHour] = useState('6')
+  const [maxWindow, setMaxWindow] = useState('60')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -107,7 +107,7 @@ export function HumanWatchRulesConfig({
     setRequireCombination(merged.require_combination !== false)
     setPatternsText(patternsToText(merged.confirmation_patterns))
     setGraceSec(String(merged.grace_after_prompt_seconds ?? 30))
-    setMaxHour(String(merged.max_interventions_per_hour ?? 6))
+    setMaxWindow(String(merged.max_interventions_per_hour ?? 60))
   }, [])
 
   const load = useCallback(async () => {
@@ -154,7 +154,8 @@ export function HumanWatchRulesConfig({
         confirmation_patterns: textToPatterns(patternsText),
         require_combination: requireCombination,
         grace_after_prompt_seconds: Math.max(0, Number(graceSec) || 30),
-        max_interventions_per_hour: Math.max(1, Number(maxHour) || 6),
+        max_interventions_per_hour: Math.max(1, Number(maxWindow) || 60),
+        max_interventions_window_seconds: 24 * 60 * 60,
       }
 
       const res = await fetch('/api/human-watch/rules', {
@@ -307,13 +308,13 @@ export function HumanWatchRulesConfig({
           </label>
 
           <label className={labelClass}>
-            {t('ruleMaxPerHour')}
+            {t('ruleMaxPerDay')}
             <input
               type="number"
               min={1}
               className={inputClass}
-              value={maxHour}
-              onChange={(e) => setMaxHour(e.target.value)}
+              value={maxWindow}
+              onChange={(e) => setMaxWindow(e.target.value)}
             />
           </label>
 

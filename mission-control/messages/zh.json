@@ -3114,6 +3114,7 @@
     "ruleIdleSeconds": "L1 空闲超时（秒）",
     "ruleGraceSeconds": "干预后静默期（秒）",
     "ruleMaxPerHour": "每小时干预上限",
+    "ruleMaxPerDay": "24 小时干预上限",
     "rulePromptTemplate": "默认跟进话术",
     "ruleBindingEnabled": "启用本绑定监控",
     "ruleBindingMode": "干预模式",

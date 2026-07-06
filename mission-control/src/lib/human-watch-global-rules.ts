@@ -7,6 +7,7 @@ import type { HumanWatchRuleConfig } from './human-watch-rules'
 export type HumanWatchGlobalRules = HumanWatchRuleConfig & {
   grace_after_prompt_seconds?: number
   max_interventions_per_hour?: number
+  max_interventions_window_seconds?: number
 }
 
 function dbOr(database?: Database.Database): Database.Database {
@@ -82,6 +83,10 @@ export function mergeGlobalRulesWithDefaults(
       typeof stored.max_interventions_per_hour === 'number'
         ? stored.max_interventions_per_hour
         : (defaults.max_interventions_per_hour as number),
+    max_interventions_window_seconds:
+      typeof stored.max_interventions_window_seconds === 'number'
+        ? stored.max_interventions_window_seconds
+        : (defaults.max_interventions_window_seconds as number),
   }
 }
 
@@ -133,7 +138,12 @@ export function normalizeGlobalRulesPatch(
     confirmation_patterns: normalizeConfirmationPatterns(merged.confirmation_patterns),
     require_combination: merged.require_combination !== false,
     grace_after_prompt_seconds: numOrDefault(merged.grace_after_prompt_seconds, 30, 0),
-    max_interventions_per_hour: numOrDefault(merged.max_interventions_per_hour, 6, 1),
+    max_interventions_per_hour: numOrDefault(merged.max_interventions_per_hour, 60, 1),
+    max_interventions_window_seconds: numOrDefault(
+      merged.max_interventions_window_seconds,
+      24 * 60 * 60,
+      60,
+    ),
   }
 }
 

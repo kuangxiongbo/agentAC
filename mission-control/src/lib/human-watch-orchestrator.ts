@@ -36,7 +36,10 @@ import {
 import type { LocalSessionTranscriptKind, TranscriptMessage } from './session-transcript'
 import { getBridgeAgentIndexByLocalId } from './sync-agent-index'
 import type { SessionRealtimePayload } from './session-realtime-events'
-import { MAX_INTERVENTIONS_PER_HOUR_DEFAULT } from './human-watch-defaults'
+import {
+  DEFAULT_INTERVENTION_RATE_WINDOW_SECONDS,
+  MAX_INTERVENTIONS_PER_WINDOW_DEFAULT,
+} from './human-watch-defaults'
 import { resolveHumanWatchRulesForBinding } from './human-watch-global-rules'
 
 const EVAL_DEBOUNCE_MS = 2_000
@@ -382,10 +385,12 @@ export async function evaluateHumanWatchBinding(
       return
     }
 
-    const hourAgo = Math.floor(Date.now() / 1000) - 3600
-    const recentCount = countSuccessfulInterventionsSince(binding.id, hourAgo)
-    const maxPerHour = ruleConfig.max_interventions_per_hour ?? MAX_INTERVENTIONS_PER_HOUR_DEFAULT
-    if (recentCount >= maxPerHour) {
+    const rateWindowSeconds =
+      ruleConfig.max_interventions_window_seconds ?? DEFAULT_INTERVENTION_RATE_WINDOW_SECONDS
+    const windowStart = Math.floor(Date.now() / 1000) - rateWindowSeconds
+    const recentCount = countSuccessfulInterventionsSince(binding.id, windowStart)
+    const maxPerWindow = ruleConfig.max_interventions_per_hour ?? MAX_INTERVENTIONS_PER_WINDOW_DEFAULT
+    if (recentCount >= maxPerWindow) {
       logHumanWatchIntervention({
         ...auditBase(binding),
         eventType: 'intervention_skipped',

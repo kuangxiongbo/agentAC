@@ -3139,6 +3139,7 @@
     "ruleIdleSeconds": "L1 idle timeout (seconds)",
     "ruleGraceSeconds": "Grace after prompt (seconds)",
     "ruleMaxPerHour": "Max interventions per hour",
+    "ruleMaxPerDay": "Max interventions per 24 hours",
     "rulePromptTemplate": "Default nudge message",
     "ruleBindingEnabled": "Enable monitoring for this binding",
     "ruleBindingMode": "Intervention mode",
