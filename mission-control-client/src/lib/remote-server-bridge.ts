@@ -21,6 +21,7 @@
 
 import { EventEmitter } from 'events'
 import { getDatabase, db_helpers } from './db'
+import { resolveLocalClientId } from './edge-client-identity'
 import { eventBus } from './event-bus'
 import { logger } from './logger'
 import { REMOTE_SERVER_URL, REMOTE_SERVER_TOKEN, REMOTE_RECONNECT_MS } from './config'
@@ -144,21 +145,8 @@ export const bridgeEmitter = new EventEmitter()
 function getLocalClientId(): string {
   try {
     const db = getDatabase()
-    const row = db.prepare(`SELECT value FROM settings WHERE key = 'device.client_id'`).get() as { value: string } | undefined
-    if (row?.value) return row.value
-
-    // Generate and persist a stable client ID
     const { randomUUID } = require('crypto')
-    const id = `mc-local-${randomUUID()}`
-    try {
-      db.prepare(`INSERT OR IGNORE INTO settings (key, value, category) VALUES ('device.client_id', ?, 'device')`).run(id)
-      return id
-    } catch {
-      // If DB fails to write, use a hash of the current directory as a semi-stable ID
-      const { createHash } = require('crypto')
-      const hostHash = createHash('md5').update(process.cwd()).digest('hex').substring(0, 8)
-      return `mc-node-${hostHash}`
-    }
+    return resolveLocalClientId(db, () => `mc-local-${randomUUID()}`)
   } catch {
     // Ultimate fallback if even getDatabase fails
     return `mc-node-static`

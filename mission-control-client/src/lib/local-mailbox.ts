@@ -10,6 +10,7 @@ import {
 import { runStewardJudgeOnEdge } from './human-watch-judge'
 import { readLocalSessionTranscriptPage, type LocalSessionTranscriptKind } from './session-transcript'
 import { decidePermissionRequest, type PermissionDeciderType } from './permission-requests'
+import { resolveLocalClientId } from './edge-client-identity'
 
 export type LocalMailboxAction = 'ack' | 'fail' | 'permission_decision_sync'
 export type LocalMailboxStatus = 'pending' | 'processing' | 'completed' | 'failed'
@@ -97,7 +98,7 @@ function getSetting(db: Database.Database, key: string): string {
 }
 
 function getClientId(db: Database.Database): string {
-  return getSetting(db, 'device.client_id') || 'mc-node-static'
+  return resolveLocalClientId(db, 'mc-node-static')
 }
 
 function getGatewayToken(db: Database.Database): string {

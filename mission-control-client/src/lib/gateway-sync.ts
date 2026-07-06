@@ -5,6 +5,7 @@ import { getSyncableSessions } from './session-sync'
 import { getSyncableSkills } from './skill-sync-export'
 import { getSyncableMemoryAgents } from './memory-sync'
 import { isRemoteBridgeConnected } from './remote-server-bridge'
+import { resolveLocalClientId } from './edge-client-identity'
 
 const AGENT_REGISTER_TTL_MS = 5 * 60 * 1000
 const AGENT_REGISTRATION_CACHE_SCHEMA_VERSION = '3'
@@ -31,12 +32,7 @@ function getSetting(key: string, defaultValue: string = ''): string {
 function getOrCreateSyncClientId(): string {
   try {
     const db = getDatabase()
-    const row = db.prepare(`SELECT value FROM settings WHERE key = 'device.client_id'`).get() as { value?: string } | undefined
-    const existing = typeof row?.value === 'string' ? row.value.trim() : ''
-    if (existing) return existing
-    const created = `mc-local-${randomUUID()}`
-    db.prepare(`INSERT OR IGNORE INTO settings (key, value, category) VALUES ('device.client_id', ?, 'device')`).run(created)
-    return created
+    return resolveLocalClientId(db, () => `mc-local-${randomUUID()}`)
   } catch {
     return 'mc-local-static'
   }
