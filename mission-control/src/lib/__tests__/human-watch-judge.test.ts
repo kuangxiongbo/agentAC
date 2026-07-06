@@ -53,6 +53,12 @@ describe('human-watch-judge', () => {
     expect(prompt).toBe('Go: ctx-1 // line-1')
   })
 
+  it('bounds generated judge prompt for edge executor limits', () => {
+    const prompt = buildStewardJudgePrompt('summary\n'.repeat(1200), 'context\n'.repeat(900), {})
+    expect(prompt.length).toBeLessThanOrEqual(5900)
+    expect(prompt).toContain('[truncated]')
+  })
+
   it('builds structured worker judge context', () => {
     const ctx = buildWorkerJudgeContext(
       [

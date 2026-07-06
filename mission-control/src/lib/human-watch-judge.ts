@@ -32,6 +32,20 @@ Worker 上下文：
 Worker 会话摘录：
 {summary}`
 
+const MAX_STEWARD_JUDGE_PROMPT_CHARS = 5900
+const MIN_STEWARD_SECTION_CHARS = 800
+
+function truncateMiddle(text: string, maxChars: number): string {
+  const value = String(text || '').trim()
+  if (value.length <= maxChars) return value
+  if (maxChars <= 20) return value.slice(0, maxChars)
+  const marker = '\n...[truncated]...\n'
+  const keep = Math.max(1, maxChars - marker.length)
+  const head = Math.ceil(keep * 0.35)
+  const tail = Math.floor(keep * 0.65)
+  return `${value.slice(0, head)}${marker}${value.slice(-tail)}`
+}
+
 function isHumanWatchStewardAgentRecord(agent: Record<string, unknown>): boolean {
   const role = String(agent.role || '').trim()
   if (role === 'human-watch') return true
@@ -213,7 +227,28 @@ export function buildStewardJudgePrompt(
   stewardConfig: StewardRuntimeConfig,
 ): string {
   const template = stewardConfig.judge_prompt_template?.trim() || DEFAULT_JUDGE_TEMPLATE
-  return template
-    .replace(/\{summary\}/g, summary)
-    .replace(/\{context\}/g, workerContext)
+  const render = (nextContext: string, nextSummary: string) =>
+    template.replace(/\{summary\}/g, nextSummary).replace(/\{context\}/g, nextContext)
+
+  const fullPrompt = render(workerContext, summary)
+  if (fullPrompt.length <= MAX_STEWARD_JUDGE_PROMPT_CHARS) return fullPrompt
+
+  const fixedTemplateChars = render('', '').length
+  const available = Math.max(
+    MIN_STEWARD_SECTION_CHARS * 2,
+    MAX_STEWARD_JUDGE_PROMPT_CHARS - fixedTemplateChars,
+  )
+  const contextBudget = Math.max(
+    MIN_STEWARD_SECTION_CHARS,
+    Math.floor(Math.min(workerContext.length || MIN_STEWARD_SECTION_CHARS, available * 0.35)),
+  )
+  const summaryBudget = Math.max(MIN_STEWARD_SECTION_CHARS, available - contextBudget)
+  const boundedPrompt = render(
+    truncateMiddle(workerContext, contextBudget),
+    truncateMiddle(summary, summaryBudget),
+  )
+
+  return boundedPrompt.length <= MAX_STEWARD_JUDGE_PROMPT_CHARS
+    ? boundedPrompt
+    : truncateMiddle(boundedPrompt, MAX_STEWARD_JUDGE_PROMPT_CHARS)
 }
