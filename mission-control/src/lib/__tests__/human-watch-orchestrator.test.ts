@@ -120,6 +120,13 @@ describe.sequential('human-watch-orchestrator', () => {
       .all() as Array<{ event_type: string; outcome: string | null }>
     expect(types.some((r) => r.event_type === 'intervention_attempt')).toBe(true)
     expect(types.some((r) => r.event_type === 'intervention_completed' && r.outcome === 'success')).toBe(true)
+    const event = db
+      .prepare(`SELECT status, resolved_action, resolved_by_type, resolved_note FROM human_watch_events ORDER BY created_at DESC LIMIT 1`)
+      .get() as { status: string; resolved_action: string | null; resolved_by_type: string | null; resolved_note: string | null }
+    expect(event.status).toBe('resolved')
+    expect(event.resolved_action).toBe('send_message_to_worker')
+    expect(event.resolved_by_type).toBe('steward_agent')
+    expect(event.resolved_note).toBe('Please continue with option A.')
   })
 
   it('logs bridge_offline skip', async () => {
@@ -200,6 +207,10 @@ describe.sequential('human-watch-orchestrator', () => {
       .get() as { c: number }
     expect(skipped.c).toBeGreaterThanOrEqual(1)
     expect(sendContinue).toHaveBeenCalledTimes(1)
+    const activeEvents = db
+      .prepare(`SELECT COUNT(*) as c FROM human_watch_events WHERE status IN ('pending', 'visible', 'claimed')`)
+      .get() as { c: number }
+    expect(activeEvents.c).toBe(0)
   })
 
   it('logs llm_sweep when llmSweep option is set', async () => {

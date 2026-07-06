@@ -7,7 +7,8 @@ import {
   hasSuccessfulInterventionFingerprint,
   logHumanWatchIntervention,
 } from './human-watch-audit'
-import { createHumanWatchEvent } from './human-watch-events'
+import { createHumanWatchEvent, updateHumanWatchEvent } from './human-watch-events'
+import type { HumanWatchEventView } from './human-watch-types'
 import type { HumanWatchBindingRow } from './human-watch-bindings'
 import {
   listAllEnabledHumanWatchBindings,
@@ -117,7 +118,7 @@ function createPendingWatchEvent(
   messages: TranscriptMessage[],
   evaluation: { fingerprint: string; rulesHit: Record<string, unknown> },
   source: 'transcript_rule' | 'transcript_wait',
-) {
+): HumanWatchEventView {
   const lastAssistant = [...messages].reverse().find((message) => message.role === 'assistant')
   const lastUser = [...messages].reverse().find((message) => message.role === 'user')
   const summaryParts = [
@@ -135,7 +136,7 @@ function createPendingWatchEvent(
   const workerSummary = buildWorkerSummaryForJudge(messages, {})
   const workerJudgeContext = buildWorkerJudgeContext(messages, {})
 
-  createHumanWatchEvent({
+  return createHumanWatchEvent({
     workspaceId: binding.workspace_id,
     tenantId: binding.tenant_id,
     clientId: binding.client_id,
@@ -333,17 +334,19 @@ export async function evaluateHumanWatchBinding(
 
     if (!evaluation.matched) return
 
-    createPendingWatchEvent(
-      binding,
-      page.messages,
-      {
-        fingerprint: evaluation.fingerprint,
-        rulesHit: evaluation.rulesHit,
-      },
-      options.trigger === 'poll' || options.llmSweep ? 'transcript_wait' : 'transcript_rule',
-    )
+    const eventSource =
+      options.trigger === 'poll' || options.llmSweep ? 'transcript_wait' : 'transcript_rule'
 
     if (binding.mode === 'suggest_only') {
+      createPendingWatchEvent(
+        binding,
+        page.messages,
+        {
+          fingerprint: evaluation.fingerprint,
+          rulesHit: evaluation.rulesHit,
+        },
+        eventSource,
+      )
       logHumanWatchIntervention({
         ...auditBase(binding),
         eventType: 'intervention_skipped',
@@ -408,6 +411,15 @@ export async function evaluateHumanWatchBinding(
       return
     }
     const prompt = resolved.prompt
+    const watchEvent = createPendingWatchEvent(
+      binding,
+      page.messages,
+      {
+        fingerprint: evaluation.fingerprint,
+        rulesHit: evaluation.rulesHit,
+      },
+      eventSource,
+    )
 
     logHumanWatchIntervention({
       ...auditBase(binding),
@@ -433,6 +445,17 @@ export async function evaluateHumanWatchBinding(
         fingerprint: evaluation.fingerprint,
         promptPreview: prompt,
         outcome: 'success',
+      })
+      updateHumanWatchEvent(watchEvent.id, binding.workspace_id, {
+        status: 'resolved',
+        resolvedAction: 'send_message_to_worker',
+        resolvedNote: prompt,
+        resolvedByType: 'steward_agent',
+        resolvedByAgentId: String(binding.steward_local_agent_id ?? ''),
+        contextPatch: {
+          auto_send: true,
+          intervention_fingerprint: evaluation.fingerprint,
+        },
       })
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Bridge continue failed'
