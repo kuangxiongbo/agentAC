@@ -176,10 +176,14 @@ function hasConfirmationText(
   return strong || weak
 }
 
-function hasAwaitingUserResponseSignal(lines: HumanWatchTranscriptLine[]): boolean {
+function lastAssistantContent(lines: HumanWatchTranscriptLine[]): string {
   const last = lastNonSystemMessage(lines)
-  if (!last || normalizeRole(last.role) !== 'assistant') return false
-  const content = normalizeContent(last)
+  if (!last || normalizeRole(last.role) !== 'assistant') return ''
+  return normalizeContent(last)
+}
+
+function hasAwaitingUserResponseSignal(lines: HumanWatchTranscriptLine[]): boolean {
+  const content = lastAssistantContent(lines)
   if (!content) return false
   return DEFAULT_AWAITING_USER_RESPONSE_PATTERNS.some((pattern) =>
     content.includes(pattern.toLowerCase()),
@@ -211,6 +215,12 @@ function recentToolActivity(
 export function buildHumanWatchFingerprint(rulesHit: HumanWatchRulesHit): string {
   const payload = JSON.stringify(rulesHit)
   return createHash('sha256').update(payload, 'utf8').digest('hex').slice(0, 24)
+}
+
+function contentFingerprint(content: string): string | undefined {
+  const normalized = content.replace(/\s+/g, ' ').trim()
+  if (!normalized) return undefined
+  return createHash('sha256').update(normalized, 'utf8').digest('hex').slice(0, 16)
 }
 
 /** Evaluate L1–L3 shallow rules on a transcript slice. */
@@ -275,6 +285,8 @@ export function evaluateHumanWatchRules(
 
   if (stuckSignals.includes('awaiting_user_response') && hasAwaitingUserResponseSignal(lines)) {
     rulesHit.awaiting_user_response = true
+    const contentHash = contentFingerprint(lastAssistantContent(lines))
+    if (contentHash) rulesHit.awaiting_user_response_hash = contentHash
   }
 
   const l2or3 = Boolean(rulesHit.pending_tool || rulesHit.confirmation_text || rulesHit.awaiting_user_response)

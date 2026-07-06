@@ -54,6 +54,7 @@ RUN pnpm build
 FROM node:22.22.0-slim AS runtime
 
 ARG MC_VERSION=dev
+ARG APT_MIRROR=mirrors.aliyun.com
 LABEL org.opencontainers.image.source="https://github.com/builderz-labs/mission-control"
 LABEL org.opencontainers.image.description="E-AgentCenter - operations dashboard"
 LABEL org.opencontainers.image.licenses="MIT"
@@ -62,9 +63,24 @@ LABEL org.opencontainers.image.version="${MC_VERSION}"
 WORKDIR /app
 ENV NODE_ENV=production
 # status/monitor panels invoke ps, uptime, free; slim image omits procps by default
-RUN apt-get -o Acquire::Retries=5 update && \
-    apt-get -o Acquire::Retries=5 install -y --no-install-recommends procps && \
-    rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    elif [ -f /etc/apt/sources.list ]; then \
+      sed -i "s|deb.debian.org|${APT_MIRROR}|g; s|security.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list; \
+    fi; \
+    export DEBIAN_FRONTEND=noninteractive; \
+    for attempt in 1 2 3 4 5; do \
+      apt-get clean; \
+      rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/partial/*; \
+      if apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true update && \
+         apt-get -o Acquire::Retries=5 -o Acquire::http::No-Cache=true install -y --no-install-recommends procps; then \
+        break; \
+      fi; \
+      if [ "$attempt" = "5" ]; then exit 1; fi; \
+      sleep $((attempt * 5)); \
+    done; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/partial/*
 RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static

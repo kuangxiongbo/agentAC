@@ -74,6 +74,37 @@ describe('human-watch-rules', () => {
     expect(result.rulesHit.idle_timeout).toBe(true)
   })
 
+  it('uses latest awaiting-user content in the fingerprint', () => {
+    const first = evaluateHumanWatchRules(
+      [
+        {
+          role: 'assistant',
+          content: '你希望我先检查服务端日志还是本地托盘日志？',
+          createdAt: now - 120,
+        },
+      ],
+      { idle_timeout_seconds: 60, require_combination: true },
+      now,
+    )
+    const second = evaluateHumanWatchRules(
+      [
+        {
+          role: 'assistant',
+          content: '你希望我先修复规则还是先验证生产链路？',
+          createdAt: now - 120,
+        },
+      ],
+      { idle_timeout_seconds: 60, require_combination: true },
+      now,
+    )
+
+    expect(first.matched).toBe(true)
+    expect(second.matched).toBe(true)
+    expect(first.rulesHit.awaiting_user_response_hash).toBeTypeOf('string')
+    expect(second.rulesHit.awaiting_user_response_hash).toBeTypeOf('string')
+    expect(first.fingerprint).not.toBe(second.fingerprint)
+  })
+
   it('matches strong signal when transcript has no timestamps', () => {
     const result = evaluateHumanWatchRules(
       [{ role: 'assistant', content: '你确认后我再继续。' }],
