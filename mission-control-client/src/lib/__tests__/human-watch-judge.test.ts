@@ -70,4 +70,37 @@ describe('human-watch-judge', () => {
       sessionId: 'new-judge-session',
     })
   })
+
+  it('accepts repeated steward text when a new assistant message was added', async () => {
+    agentRow = {
+      ...agentRow,
+      framework: 'codex',
+      session_key: 'judge-session-1',
+    }
+    readLocalSessionTranscriptPage
+      .mockReturnValueOnce({
+        messages: [
+          { role: 'assistant', parts: [{ type: 'text', text: '继续' }] },
+        ],
+      })
+      .mockReturnValueOnce({
+        messages: [
+          { role: 'assistant', parts: [{ type: 'text', text: '继续' }] },
+          { role: 'user', parts: [{ type: 'text', text: 'judge prompt' }] },
+          { role: 'assistant', parts: [{ type: 'text', text: '继续' }] },
+        ],
+      })
+    executeBoundLocalAgentPrompt.mockResolvedValue({
+      reply: '继续',
+      sessionId: 'judge-session-1',
+    })
+
+    const { runStewardJudgeOnEdge } = await import('@/lib/human-watch-judge')
+    const result = await runStewardJudgeOnEdge(9, 'Worker 需要确认下一步。')
+
+    expect(result).toEqual({
+      reply: '继续',
+      sessionId: 'judge-session-1',
+    })
+  })
 })

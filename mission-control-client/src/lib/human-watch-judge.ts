@@ -55,12 +55,17 @@ export async function runStewardJudgeOnEdge(
   const sessionKey = String(agent.session_key || '').trim()
   logger.info({ agentId: agent.id, kind, sessionKey: sessionKey || null }, '[HumanWatch] Running steward judge on edge')
 
-  const baselineReply = readLatestAssistantText(kind, sessionKey)
+  const baseline = readLatestAssistantState(kind, sessionKey)
   const result = await executeBoundLocalAgentPrompt(agent, trimmedPrompt)
   let reply = String(result.reply || '').trim()
   const resultSessionId = String(result.sessionId || sessionKey || '').trim()
-  if (!reply || reply === EMPTY_SESSION_REPLY || (baselineReply && reply === baselineReply)) {
-    reply = await waitForNewAssistantReply(kind, resultSessionId, baselineReply)
+  if (!reply || reply === EMPTY_SESSION_REPLY || (baseline.text && reply === baseline.text)) {
+    const current = readLatestAssistantState(kind, resultSessionId)
+    if (current.count > baseline.count && current.text && current.text !== EMPTY_SESSION_REPLY) {
+      reply = current.text
+    } else {
+      reply = await waitForNewAssistantReply(kind, resultSessionId, baseline)
+    }
   }
   if (!reply || reply === EMPTY_SESSION_REPLY) {
     throw new Error('Judge session returned empty reply')
@@ -72,34 +77,38 @@ export async function runStewardJudgeOnEdge(
   }
 }
 
-function readLatestAssistantText(
+function readLatestAssistantState(
   kind: ReturnType<typeof getLocalSessionKindForFramework>,
   sessionKey: string,
-): string {
-  if (kind !== 'codex-cli') return ''
+): { text: string; count: number } {
+  if (kind !== 'codex-cli') return { text: '', count: 0 }
   const page = readLocalSessionTranscriptPage('codex-cli', sessionKey, { limit: 12 })
-  const lastAssistant = [...page.messages].reverse().find((message) => {
+  const assistantMessages = page.messages.filter((message) => message.role === 'assistant')
+  const lastAssistant = [...assistantMessages].reverse().find((message) => {
     if (message.role !== 'assistant') return false
     return message.parts.some((part) => part.type === 'text' && part.text.trim())
   })
-  if (!lastAssistant) return ''
-  return lastAssistant.parts
-    .map((part) => (part.type === 'text' ? part.text : null))
-    .filter(Boolean)
-    .join('\n')
-    .trim()
+  if (!lastAssistant) return { text: '', count: assistantMessages.length }
+  return {
+    text: lastAssistant.parts
+      .map((part) => (part.type === 'text' ? part.text : null))
+      .filter(Boolean)
+      .join('\n')
+      .trim(),
+    count: assistantMessages.length,
+  }
 }
 
 async function waitForNewAssistantReply(
   kind: ReturnType<typeof getLocalSessionKindForFramework>,
   sessionKey: string,
-  baselineReply: string,
+  baseline: { text: string; count: number },
 ): Promise<string> {
   if (kind !== 'codex-cli') return ''
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const next = readLatestAssistantText(kind, sessionKey)
-    if (next && next !== baselineReply && next !== EMPTY_SESSION_REPLY) {
-      return next
+    const next = readLatestAssistantState(kind, sessionKey)
+    if (next.count > baseline.count && next.text && next.text !== EMPTY_SESSION_REPLY) {
+      return next.text
     }
     await new Promise((resolve) => setTimeout(resolve, 1000))
   }
