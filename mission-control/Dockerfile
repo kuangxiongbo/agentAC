@@ -1,4 +1,5 @@
-FROM node:22.22.0-slim AS base
+ARG NODE_IMAGE=docker.m.daocloud.io/library/node:22.22.0-slim
+FROM ${NODE_IMAGE} AS base
 # Pin pnpm 9.x: pnpm 10+ blocks dependency install scripts unless explicitly approved,
 # which breaks native modules (better-sqlite3, sharp, @swc/core, etc.) in this image.
 RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
@@ -54,7 +55,7 @@ COPY . .
 ENV NODE_TLS_REJECT_UNAUTHORIZED=0
 RUN pnpm build
 
-FROM node:22.22.0-slim AS runtime
+FROM ${NODE_IMAGE} AS runtime
 
 ARG MC_VERSION=dev
 ARG APT_MIRROR=mirrors.aliyun.com
