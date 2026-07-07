@@ -35,36 +35,28 @@ function buildSummaryRows(
   rules: RulesOverride,
   t: (key: string, values?: Record<string, string | number | Date>) => string,
 ) {
-  const stuck: string[] = []
-  const signals = normalizeStuckSignals(rules.stuck_signals)
-  if (signals.includes('pending_tool')) stuck.push(t('ruleSignalPendingTool'))
-  if (signals.includes('confirmation_text')) stuck.push(t('ruleSignalConfirmation'))
-  if (signals.includes('awaiting_user_response')) stuck.push(t('ruleSignalAwaitingUserResponse'))
-  const patterns = Array.isArray(rules.confirmation_patterns)
-    ? (rules.confirmation_patterns as string[]).length
-    : 0
+  const fallbackEnabled = rules.enabled === false ? t('ruleOff') : t('ruleOn')
   return [
     {
-      label: t('ruleSummaryRulesEnabled'),
-      value: rules.enabled === false ? t('ruleOff') : t('ruleOn'),
+      label: t('ruleSummaryTriggerSource'),
+      value: t('ruleSummaryTriggerValue'),
     },
-    { label: t('ruleIdleSeconds'), value: `${rules.idle_timeout_seconds ?? 90}s` },
     {
-      label: t('ruleToolExcludeSeconds'),
-      value: `${rules.exclude_if_tool_active_within_seconds ?? 120}s`,
+      label: t('ruleSummaryFlow'),
+      value: t('ruleSummaryFlowValue'),
     },
-    { label: t('ruleStuckSignals'), value: stuck.length ? stuck.join(', ') : '—' },
-    { label: t('ruleConfirmationPatterns'), value: t('rulePatternCount', { count: patterns }) },
     {
-      label: t('ruleRequireCombination'),
-      value: rules.require_combination === false ? t('ruleComboAny') : t('ruleComboAll'),
+      label: t('ruleSummaryStewardDecision'),
+      value: t('ruleSummaryStewardDecisionValue'),
     },
-    { label: t('ruleGraceSeconds'), value: `${rules.grace_after_prompt_seconds ?? 30}s` },
-    { label: t('ruleMaxPerDay'), value: String(rules.max_interventions_per_hour ?? 60) },
+    {
+      label: t('ruleSummaryFallbackScan'),
+      value: t('ruleSummaryFallbackScanValue', { status: fallbackEnabled }),
+    },
   ]
 }
 
-/** 租户全局值守判断规则（L1–L3 + 节流），所有 Worker 绑定共用。 */
+/** 人工值守配置：MCP 主动事件为主，旧 L1–L3 扫描仅作为兜底。 */
 export function HumanWatchRulesConfig({
   compact = false,
   editable = true,
@@ -218,6 +210,7 @@ export function HumanWatchRulesConfig({
           ) : null}
 
           <p className="text-2xs font-medium text-foreground/90">{t('ruleSectionTrigger')}</p>
+          <p className="text-2xs text-muted-foreground/80">{t('ruleFallbackScanHint')}</p>
 
           <label className={labelClass}>
             {t('ruleIdleSeconds')}
