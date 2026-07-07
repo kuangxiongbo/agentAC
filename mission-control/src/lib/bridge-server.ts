@@ -147,8 +147,8 @@ function isLiveEdgeConnection(client: BridgeServerClientState): boolean {
   return Boolean(ws && ws.readyState === WebSocket.OPEN)
 }
 
-/** 3 missed pings = stale (3 × 30s = 90s) */
-const BRIDGE_PONG_STALE_MS = BRIDGE_KEEPALIVE_SWEEP_MS * 3
+/** Allow long-running local steward/model work without closing an otherwise live edge socket. */
+const BRIDGE_PONG_STALE_MS = 5 * 60_000
 
 function pingEdgeClients() {
   const now = Date.now()
@@ -1176,7 +1176,7 @@ export async function requestBridgeClientSessionContinue(input: {
 }): Promise<{ reply: string; sessionId: string | null; source: string }> {
   const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
   const requestId = randomUUID()
-  const timeoutMs = Math.max(5000, input.timeoutMs || 180000)
+  const timeoutMs = Math.max(5000, input.timeoutMs || 11 * 60_000)
 
   return await new Promise<{ reply: string; sessionId: string | null; source: string }>((resolve, reject) => {
     const timeout = makePendingTimeout(requestId, 'continue', input.clientId, timeoutMs, reject)

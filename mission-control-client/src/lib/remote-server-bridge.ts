@@ -1114,6 +1114,17 @@ async function handleStewardJudgeRequest(message: any): Promise<void> {
     return
   }
 
+  if (activeStewardJudgeAgentIds.has(localAgentId)) {
+    safeSend(state.ws, {
+      type: 'steward_judge_response',
+      requestId,
+      ok: false,
+      error: 'Steward judge already running for this agent',
+    })
+    return
+  }
+
+  activeStewardJudgeAgentIds.add(localAgentId)
   try {
     const result = await runStewardJudgeOnEdge(localAgentId, prompt)
     safeSend(state.ws, {
@@ -1131,6 +1142,8 @@ async function handleStewardJudgeRequest(message: any): Promise<void> {
       ok: false,
       error: err?.message || 'Steward judge failed',
     })
+  } finally {
+    activeStewardJudgeAgentIds.delete(localAgentId)
   }
 }
 
@@ -1469,7 +1482,8 @@ function handleMessage(raw: string): void {
 // ---------------------------------------------------------------------------
 
 const PING_INTERVAL_MS = 25_000
-const MAX_PONG_SILENCE_MS = 90_000 // 3 missed pings
+const MAX_PONG_SILENCE_MS = 5 * 60_000
+const activeStewardJudgeAgentIds = new Set<number>()
 
 function startHeartbeat(): void {
   stopHeartbeat()

@@ -8,6 +8,7 @@ import { isHumanWatchAgent } from './human-watch-helpers'
 import { readLocalSessionTranscriptPage } from './session-transcript'
 
 const EMPTY_SESSION_REPLY = 'Session continued, but no text response was returned.'
+const STEWARD_JUDGE_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000
 
 export async function runStewardJudgeOnEdge(
   localAgentId: number,
@@ -56,7 +57,9 @@ export async function runStewardJudgeOnEdge(
   logger.info({ agentId: agent.id, kind, sessionKey: sessionKey || null }, '[HumanWatch] Running steward judge on edge')
 
   const baseline = readLatestAssistantState(kind, sessionKey)
-  const result = await executeBoundLocalAgentPrompt(agent, trimmedPrompt)
+  const result = await executeBoundLocalAgentPrompt(agent, trimmedPrompt, {
+    timeoutMs: STEWARD_JUDGE_EXECUTION_TIMEOUT_MS,
+  })
   let reply = String(result.reply || '').trim()
   const resultSessionId = String(result.sessionId || sessionKey || '').trim()
   if (!reply || reply === EMPTY_SESSION_REPLY || (baseline.text && reply === baseline.text)) {

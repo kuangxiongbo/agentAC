@@ -61,6 +61,7 @@ interface LocalSessionExecutionOptions {
   managedByPlatform?: boolean
   workerSessionId?: string | null
   sessionKind?: LocalSessionKind | null
+  timeoutMs?: number | null
 }
 
 export interface LocalRuntimeAgentRef {
@@ -917,8 +918,11 @@ function buildCommandEnv(options?: LocalSessionExecutionOptions): NodeJS.Process
 }
 
 function buildCommandOptions(options: LocalSessionExecutionOptions) {
+  const requestedTimeoutMs = Number(options.timeoutMs)
   const commandOptions: { timeoutMs: number; cwd?: string; env?: NodeJS.ProcessEnv } = {
-    timeoutMs: EXECUTION_TIMEOUT_MS,
+    timeoutMs: Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0
+      ? Math.max(10_000, Math.floor(requestedTimeoutMs))
+      : EXECUTION_TIMEOUT_MS,
     env: buildCommandEnv(options),
   }
   const cwd = resolveWorkingDirectory(options.workingDirectory)

@@ -64,6 +64,7 @@ describe('human-watch-judge', () => {
     expect(executeBoundLocalAgentPrompt).toHaveBeenCalledWith(
       expect.objectContaining({ id: 9, session_key: null, role: 'human-watch' }),
       'Worker 需要确认下一步。',
+      expect.objectContaining({ timeoutMs: 600000 }),
     )
     expect(result).toEqual({
       reply: '继续执行下一步。',
