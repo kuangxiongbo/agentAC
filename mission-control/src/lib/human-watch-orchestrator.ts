@@ -102,6 +102,10 @@ function resolveSessionKindForBinding(
   if (isBindableSessionKind(hint) && (hint === 'claude-code' || hint === 'codex-cli' || hint === 'hermes')) {
     return hint
   }
+  const storedKind = binding.worker_session_kind
+  if (storedKind === 'claude-code' || storedKind === 'codex-cli' || storedKind === 'hermes') {
+    return storedKind
+  }
   const indexRow = binding.worker_local_agent_id
     ? getBridgeAgentIndexByLocalId(binding.client_id, binding.worker_local_agent_id)
     : undefined

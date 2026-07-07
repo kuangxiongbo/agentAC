@@ -8,6 +8,7 @@ import {
   getBridgeAgentIndexById,
   getBridgeAgentIndexByLocalId,
 } from './sync-agent-index'
+import { getSyncedSession } from './sync-sessions'
 import { isBridgeClientOnline, requestBridgeClientAgentDetail } from './bridge-server'
 import { isHumanWatchAgent, normalizeHumanWatchFramework } from './human-watch-helpers'
 import type { HumanWatchBindingMode } from './human-watch-types'
@@ -24,6 +25,7 @@ export interface HumanWatchBindingRow {
   steward_local_agent_id: number | null
   steward_name: string | null
   worker_session_id: string | null
+  worker_session_kind: string | null
   enabled: number
   mode: HumanWatchBindingMode
   rules_override: string | null
@@ -46,6 +48,7 @@ export interface CreateHumanWatchBindingInput {
   stewardSyncIndexId?: number | null
   stewardLocalAgentId?: number | null
   workerSessionId?: string | null
+  workerSessionKind?: string | null
   enabled?: boolean
   mode?: HumanWatchBindingMode
   rulesOverride?: Record<string, unknown> | null
@@ -56,6 +59,7 @@ export interface UpdateHumanWatchBindingInput {
   mode?: HumanWatchBindingMode
   rulesOverride?: Record<string, unknown> | null
   workerSessionId?: string | null
+  workerSessionKind?: string | null
   workerSyncIndexId?: number | null
   workerLocalAgentId?: number | null
   stewardSyncIndexId?: number | null
@@ -68,6 +72,29 @@ function dbOr(database?: Database.Database): Database.Database {
 
 function rowToBinding(row: HumanWatchBindingRow): HumanWatchBindingRow {
   return row
+}
+
+function resolveWorkerSessionKind(input: {
+  clientId: string
+  workerSessionId?: string | null
+  workerFramework?: string | null
+  hint?: string | null
+}): 'claude-code' | 'codex-cli' | 'hermes' | null {
+  const hinted = String(input.hint || '').trim()
+  if (hinted === 'claude-code' || hinted === 'codex-cli' || hinted === 'hermes') return hinted
+
+  const sessionId = String(input.workerSessionId || '').trim()
+  if (sessionId) {
+    const syncedKind = getSyncedSession(input.clientId, sessionId)?.session_kind
+    if (syncedKind === 'claude-code' || syncedKind === 'codex-cli' || syncedKind === 'hermes') {
+      return syncedKind
+    }
+  }
+
+  const frameworkKind = getAgentLocalSessionKind(input.workerFramework)
+  return frameworkKind === 'claude-code' || frameworkKind === 'codex-cli' || frameworkKind === 'hermes'
+    ? frameworkKind
+    : null
 }
 
 export function listEnabledBindingsForWorkerSession(
@@ -382,6 +409,13 @@ export async function createHumanWatchBinding(
   const mode = input.mode || 'auto_send'
   const rulesOverride =
     input.rulesOverride != null ? JSON.stringify(input.rulesOverride) : null
+  const workerSessionId = input.workerSessionId?.trim() || validated.worker.sessionKey
+  const workerSessionKind = resolveWorkerSessionKind({
+    clientId: input.clientId,
+    workerSessionId,
+    workerFramework: validated.worker.framework,
+    hint: input.workerSessionKind,
+  })
 
   try {
     const result = db
@@ -390,9 +424,9 @@ export async function createHumanWatchBinding(
           workspace_id, tenant_id, client_id,
           worker_sync_index_id, worker_local_agent_id, worker_name,
           steward_sync_index_id, steward_local_agent_id, steward_name,
-          worker_session_id, enabled, mode, rules_override,
+          worker_session_id, worker_session_kind, enabled, mode, rules_override,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.workspaceId,
@@ -404,7 +438,8 @@ export async function createHumanWatchBinding(
         validated.steward.syncIndexId,
         validated.steward.localAgentId,
         validated.steward.name,
-        input.workerSessionId?.trim() || validated.worker.sessionKey,
+        workerSessionId,
+        workerSessionKind,
         enabled,
         mode,
         rulesOverride,
@@ -441,6 +476,12 @@ export function updateHumanWatchBinding(
     patch.workerSessionId !== undefined
       ? patch.workerSessionId
       : existing.worker_session_id
+  const workerSessionKind = resolveWorkerSessionKind({
+    clientId: existing.client_id,
+    workerSessionId,
+    workerFramework: getBridgeAgentIndexByLocalId(existing.client_id, existing.worker_local_agent_id ?? -1)?.framework,
+    hint: patch.workerSessionKind ?? existing.worker_session_kind,
+  })
   const rulesOverride =
     patch.rulesOverride !== undefined
       ? patch.rulesOverride
@@ -450,9 +491,9 @@ export function updateHumanWatchBinding(
 
   db.prepare(
     `UPDATE human_watch_bindings
-     SET enabled = ?, mode = ?, worker_session_id = ?, rules_override = ?, updated_at = ?
+     SET enabled = ?, mode = ?, worker_session_id = ?, worker_session_kind = ?, rules_override = ?, updated_at = ?
      WHERE id = ? AND workspace_id = ?`,
-  ).run(enabled, mode, workerSessionId, rulesOverride, now, id, workspaceId)
+  ).run(enabled, mode, workerSessionId, workerSessionKind, rulesOverride, now, id, workspaceId)
 
   return getHumanWatchBinding(id, workspaceId, db)
 }
@@ -504,6 +545,12 @@ export async function patchHumanWatchBinding(
       patch.workerSessionId !== undefined
         ? patch.workerSessionId
         : validated.worker.sessionKey ?? existing.worker_session_id
+    const workerSessionKind = resolveWorkerSessionKind({
+      clientId: existing.client_id,
+      workerSessionId,
+      workerFramework: validated.worker.framework,
+      hint: patch.workerSessionKind ?? existing.worker_session_kind,
+    })
     const rulesOverride =
       patch.rulesOverride !== undefined
         ? patch.rulesOverride
@@ -515,7 +562,7 @@ export async function patchHumanWatchBinding(
       `UPDATE human_watch_bindings SET
         worker_sync_index_id = ?, worker_local_agent_id = ?, worker_name = ?,
         steward_sync_index_id = ?, steward_local_agent_id = ?, steward_name = ?,
-        worker_session_id = ?, enabled = ?, mode = ?, rules_override = ?, updated_at = ?
+        worker_session_id = ?, worker_session_kind = ?, enabled = ?, mode = ?, rules_override = ?, updated_at = ?
        WHERE id = ? AND workspace_id = ?`,
     ).run(
       validated.worker.syncIndexId,
@@ -525,6 +572,7 @@ export async function patchHumanWatchBinding(
       validated.steward.localAgentId,
       validated.steward.name,
       workerSessionId,
+      workerSessionKind,
       enabled,
       mode,
       rulesOverride,
@@ -596,7 +644,7 @@ export function syncHumanWatchBindingSessionIds(
   const now = Math.floor(Date.now() / 1000)
   const bindings = db
     .prepare(
-      `SELECT id, worker_local_agent_id, worker_session_id
+      `SELECT id, worker_local_agent_id, worker_session_id, worker_session_kind
        FROM human_watch_bindings
        WHERE workspace_id = ? AND client_id = ? AND enabled = 1 AND worker_local_agent_id IS NOT NULL`,
     )
@@ -604,17 +652,25 @@ export function syncHumanWatchBindingSessionIds(
     id: number
     worker_local_agent_id: number
     worker_session_id: string | null
+    worker_session_kind: string | null
   }>
 
   const update = db.prepare(
-    `UPDATE human_watch_bindings SET worker_session_id = ?, updated_at = ? WHERE id = ?`,
+    `UPDATE human_watch_bindings SET worker_session_id = ?, worker_session_kind = ?, updated_at = ? WHERE id = ?`,
   )
   let updated = 0
   for (const row of bindings) {
     const indexRow = getBridgeAgentIndexByLocalId(cid, row.worker_local_agent_id)
     const sessionKey = String(indexRow?.session_key || '').trim()
-    if (!sessionKey || sessionKey === row.worker_session_id) continue
-    update.run(sessionKey, now, row.id)
+    if (!sessionKey) continue
+    const sessionKind = resolveWorkerSessionKind({
+      clientId: cid,
+      workerSessionId: sessionKey,
+      workerFramework: indexRow?.framework,
+      hint: row.worker_session_kind,
+    })
+    if (sessionKey === row.worker_session_id && sessionKind === row.worker_session_kind) continue
+    update.run(sessionKey, sessionKind, now, row.id)
     updated++
   }
   return updated

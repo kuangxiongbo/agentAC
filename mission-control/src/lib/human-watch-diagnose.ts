@@ -30,6 +30,8 @@ export type HumanWatchDiagnoseResult = {
 }
 
 function resolveSessionKind(binding: HumanWatchBindingRow): LocalSessionTranscriptKind | null {
+  const storedKind = binding.worker_session_kind
+  if (storedKind === 'claude-code' || storedKind === 'codex-cli' || storedKind === 'hermes') return storedKind
   const indexRow = binding.worker_local_agent_id
     ? getBridgeAgentIndexByLocalId(binding.client_id, binding.worker_local_agent_id)
     : undefined
@@ -126,7 +128,7 @@ export async function diagnoseHumanWatchBinding(
     ok: Boolean(sessionKind),
     value: sessionKind,
     detail: sessionKind
-      ? `framework=${indexRow?.framework ?? '?'} → ${sessionKind}`
+      ? `stored=${binding.worker_session_kind ?? '(空)'}, framework=${indexRow?.framework ?? '?'} → ${sessionKind}`
       : `framework=${indexRow?.framework ?? '(空)'} 无法映射会话类型`,
   })
 

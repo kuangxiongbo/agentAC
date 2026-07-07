@@ -22,6 +22,7 @@ function serializeBinding(row: {
   steward_local_agent_id: number | null
   steward_name: string | null
   worker_session_id: string | null
+  worker_session_kind: string | null
   enabled: number
   mode: string
   rules_override: string | null
@@ -112,6 +113,7 @@ export async function POST(request: NextRequest) {
     stewardSyncIndexId: numOrNull(body.steward_sync_index_id),
     stewardLocalAgentId: numOrNull(body.steward_local_agent_id),
     workerSessionId: typeof body.worker_session_id === 'string' ? body.worker_session_id : null,
+    workerSessionKind: typeof body.worker_session_kind === 'string' ? body.worker_session_kind : null,
     enabled: body.enabled !== false,
     mode,
     rulesOverride:

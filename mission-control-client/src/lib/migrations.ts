@@ -1536,6 +1536,7 @@ const migrations: Migration[] = [
           steward_local_agent_id INTEGER,
           steward_name TEXT,
           worker_session_id TEXT,
+          worker_session_kind TEXT,
           enabled INTEGER NOT NULL DEFAULT 1,
           mode TEXT NOT NULL DEFAULT 'auto_send',
           rules_override TEXT,
@@ -1727,6 +1728,17 @@ const migrations: Migration[] = [
       `)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_local_message_executions_serial
         ON local_message_executions(serial_key, updated_at)`)
+    }
+  },
+  {
+    id: '058_human_watch_binding_session_kind',
+    up(db: Database.Database) {
+      const cols = db.prepare(`PRAGMA table_info(human_watch_bindings)`).all() as Array<{ name: string }>
+      if (!cols.some((col) => col.name === 'worker_session_kind')) {
+        db.exec(`ALTER TABLE human_watch_bindings ADD COLUMN worker_session_kind TEXT`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_human_watch_bindings_session_kind
+        ON human_watch_bindings(client_id, worker_session_id, worker_session_kind)`)
     }
   }
 ]

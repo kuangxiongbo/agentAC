@@ -19,7 +19,7 @@ describe('syncHumanWatchBindingSessionIds', () => {
     vi.restoreAllMocks()
   })
 
-  it('updates worker_session_id from sync_agent_index session_key', async () => {
+  it('updates worker_session_id and worker_session_kind from sync_agent_index session_key', async () => {
     const { replaceBridgeAgentIndex } = await import('@/lib/sync-agent-index')
     const { syncHumanWatchBindingSessionIds } = await import('@/lib/human-watch-bindings')
 
@@ -45,8 +45,9 @@ describe('syncHumanWatchBindingSessionIds', () => {
     expect(updated).toBe(1)
 
     const row = db
-      .prepare(`SELECT worker_session_id FROM human_watch_bindings WHERE id = 1`)
-      .get() as { worker_session_id: string }
+      .prepare(`SELECT worker_session_id, worker_session_kind FROM human_watch_bindings WHERE id = 1`)
+      .get() as { worker_session_id: string; worker_session_kind: string | null }
     expect(row.worker_session_id).toBe('codex-session-uuid')
+    expect(row.worker_session_kind).toBe('codex-cli')
   })
 })

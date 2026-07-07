@@ -1607,6 +1607,7 @@ const migrations: Migration[] = [
           steward_local_agent_id INTEGER,
           steward_name TEXT,
           worker_session_id TEXT,
+          worker_session_kind TEXT,
           enabled INTEGER NOT NULL DEFAULT 1,
           mode TEXT NOT NULL DEFAULT 'auto_send',
           rules_override TEXT,
@@ -1888,6 +1889,52 @@ const migrations: Migration[] = [
         ON human_watch_interventions(message_id, created_at DESC)`)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_hw_interventions_correlation
         ON human_watch_interventions(correlation_id, created_at DESC)`)
+    },
+  },
+  {
+    id: '069_human_watch_binding_session_kind',
+    up(db: Database.Database) {
+      const cols = db.prepare(`PRAGMA table_info(human_watch_bindings)`).all() as Array<{ name: string }>
+      if (!cols.some((col) => col.name === 'worker_session_kind')) {
+        db.exec(`ALTER TABLE human_watch_bindings ADD COLUMN worker_session_kind TEXT`)
+      }
+      db.exec(`
+        UPDATE human_watch_bindings
+        SET worker_session_kind = (
+          SELECT ss.session_kind
+          FROM sync_sessions ss
+          WHERE ss.client_id = human_watch_bindings.client_id
+            AND ss.session_id = human_watch_bindings.worker_session_id
+            AND ss.session_kind IN ('claude-code', 'codex-cli', 'hermes')
+          ORDER BY ss.updated_at DESC
+          LIMIT 1
+        )
+        WHERE (worker_session_kind IS NULL OR worker_session_kind = '')
+          AND worker_session_id IS NOT NULL
+          AND worker_session_id != ''
+      `)
+      db.exec(`
+        UPDATE human_watch_bindings
+        SET worker_session_kind = (
+          SELECT CASE lower(coalesce(sai.framework, ''))
+            WHEN 'claude' THEN 'claude-code'
+            WHEN 'claude-code' THEN 'claude-code'
+            WHEN 'claude-sdk' THEN 'claude-code'
+            WHEN 'codex' THEN 'codex-cli'
+            WHEN 'codex-cli' THEN 'codex-cli'
+            WHEN 'openai' THEN 'codex-cli'
+            WHEN 'hermes' THEN 'hermes'
+            ELSE NULL
+          END
+          FROM sync_agent_index sai
+          WHERE sai.client_id = human_watch_bindings.client_id
+            AND sai.local_agent_id = human_watch_bindings.worker_local_agent_id
+          LIMIT 1
+        )
+        WHERE (worker_session_kind IS NULL OR worker_session_kind = '')
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_human_watch_bindings_session_kind
+        ON human_watch_bindings(client_id, worker_session_id, worker_session_kind)`)
     },
   },
 ]
