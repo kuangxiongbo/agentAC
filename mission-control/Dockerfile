@@ -18,6 +18,9 @@ FROM base AS deps
 COPY package.json ./
 COPY pnpm-lock.yaml* ./
 COPY .npmrc ./
+# Official Node images already include matching headers under /usr/local/include/node.
+# Point node-gyp at them so native modules do not depend on live nodejs.org downloads.
+ENV npm_config_nodedir=/usr/local
 # better-sqlite3 requires native compilation tools
 RUN set -eux; \
     export DEBIAN_FRONTEND=noninteractive; \
