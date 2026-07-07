@@ -2641,6 +2641,8 @@
     "eventsApproveAction": "Approve",
     "eventsDenyAction": "Deny",
     "eventsDismissAction": "Dismiss",
+    "eventsStructuredContextLabel": "Structured context",
+    "eventsTranscriptSummaryLabel": "Transcript excerpt",
     "eventsReplyPromptTitle": "Reply to watch event",
     "eventsReplyPromptBody": "Send a reply back to the Worker session. The platform will keep the intervention in audit history."
   }

@@ -168,3 +168,51 @@ export function listSyncedSessions() {
       runtimeGroup: row.runtime_group || undefined,
     }))
 }
+
+export function getSyncedSession(clientId: string, sessionId: string) {
+  const cid = String(clientId || '').trim()
+  const sid = String(sessionId || '').trim()
+  if (!cid || !sid) return null
+  const db = getDatabase()
+  const row = db.prepare(`
+    SELECT
+      client_id,
+      client_name,
+      session_id,
+      session_key,
+      session_kind,
+      runtime_group,
+      agent,
+      model,
+      tokens,
+      age,
+      active,
+      start_time,
+      last_activity,
+      working_dir,
+      last_user_prompt,
+      updated_at
+    FROM sync_sessions
+    WHERE client_id = ? AND session_id = ?
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).get(cid, sid) as {
+    client_id: string
+    client_name: string
+    session_id: string
+    session_key: string | null
+    session_kind: 'claude-code' | 'codex-cli' | 'hermes' | 'gateway'
+    runtime_group: string | null
+    agent: string | null
+    model: string | null
+    tokens: string | null
+    age: string | null
+    active: number | null
+    start_time: number | null
+    last_activity: number | null
+    working_dir: string | null
+    last_user_prompt: string | null
+    updated_at: number
+  } | undefined
+  return row ?? null
+}

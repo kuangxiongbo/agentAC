@@ -19,12 +19,15 @@ import { evaluateHumanWatchRules, type HumanWatchRuleConfig } from './human-watc
 import { transcriptMessagesToHumanWatchLines } from './human-watch-transcript'
 import type { HumanWatchBindingMode } from './human-watch-types'
 import { logger } from './logger'
+import { MEMORY_ALLOWED_PREFIXES, MEMORY_PATH } from './memory-path'
+import { searchMemory } from './memory-search'
 import {
   isBridgeClientOnline,
   requestBridgeClientAgentDetail,
   requestBridgeClientSessionContinue,
   requestBridgeClientSessionTranscript,
   requestBridgeClientStewardJudge,
+  requestBridgeClientMemorySearch,
 } from './bridge-server'
 import {
   buildWorkerJudgeContext,
@@ -35,6 +38,7 @@ import {
 } from './human-watch-judge'
 import type { LocalSessionTranscriptKind, TranscriptMessage } from './session-transcript'
 import { getBridgeAgentIndexByLocalId } from './sync-agent-index'
+import { getSyncedSession } from './sync-sessions'
 import type { SessionRealtimePayload } from './session-realtime-events'
 import {
   DEFAULT_INTERVENTION_RATE_WINDOW_SECONDS,
@@ -54,6 +58,11 @@ type EvaluateDeps = {
   sendContinue: typeof requestBridgeClientSessionContinue
   fetchAgentDetail: typeof requestBridgeClientAgentDetail
   runJudge: typeof requestBridgeClientStewardJudge
+  fetchMemoryContext?: (
+    binding: HumanWatchBindingRow,
+    messages: TranscriptMessage[],
+    stewardConfig: StewardRuntimeConfig,
+  ) => Promise<string | null>
 }
 
 const defaultDeps: EvaluateDeps = {
@@ -62,6 +71,7 @@ const defaultDeps: EvaluateDeps = {
   sendContinue: requestBridgeClientSessionContinue,
   fetchAgentDetail: requestBridgeClientAgentDetail,
   runJudge: requestBridgeClientStewardJudge,
+  fetchMemoryContext: fetchHumanWatchMemoryContext,
 }
 
 const globalState = globalThis as typeof globalThis & {
@@ -97,6 +107,9 @@ function resolveSessionKindForBinding(
     : undefined
   const kind = getAgentLocalSessionKind(indexRow?.framework)
   if (kind === 'claude-code' || kind === 'codex-cli' || kind === 'hermes') return kind
+  const synced = getSyncedSession(binding.client_id, binding.worker_session_id || '')
+  const syncedKind = synced?.session_kind
+  if (syncedKind === 'claude-code' || syncedKind === 'codex-cli' || syncedKind === 'hermes') return syncedKind
   return null
 }
 
@@ -121,6 +134,7 @@ function createPendingWatchEvent(
   messages: TranscriptMessage[],
   evaluation: { fingerprint: string; rulesHit: Record<string, unknown> },
   source: 'transcript_rule' | 'transcript_wait',
+  memoryContext?: string | null,
 ): HumanWatchEventView {
   const lastAssistant = [...messages].reverse().find((message) => message.role === 'assistant')
   const lastUser = [...messages].reverse().find((message) => message.role === 'user')
@@ -163,6 +177,7 @@ function createPendingWatchEvent(
       fingerprint: evaluation.fingerprint,
       worker_summary: workerSummary,
       worker_judge_context: workerJudgeContext,
+      steward_memory_context: memoryContext || null,
       last_user_message:
         lastUser?.parts
           ?.map((part) => (part.type === 'text' ? part.text : null))
@@ -183,6 +198,91 @@ function createPendingWatchEvent(
     suggestedAction: 'send_message_to_worker',
     dedupeKey: `transcript:${binding.id}:${binding.worker_session_id}:${evaluation.fingerprint}`,
   })
+}
+
+function messageText(message: TranscriptMessage | undefined): string {
+  if (!message) return ''
+  return message.parts
+    ?.map((part) => {
+      if (part.type === 'text') return part.text
+      if (part.type === 'thinking') return part.thinking
+      return null
+    })
+    .filter(Boolean)
+    .join(' ')
+    .trim() || ''
+}
+
+function buildMemoryQuery(messages: TranscriptMessage[]): string {
+  const lastUser = [...messages].reverse().find((message) => message.role === 'user')
+  const lastAssistant = [...messages].reverse().find((message) => message.role === 'assistant')
+  return [messageText(lastUser), messageText(lastAssistant)]
+    .filter(Boolean)
+    .join(' ')
+    .replace(/[<>{}[\]()`"'“”‘’]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240)
+}
+
+async function fetchHumanWatchMemoryContext(
+  binding: HumanWatchBindingRow,
+  messages: TranscriptMessage[],
+  stewardConfig: StewardRuntimeConfig,
+): Promise<string | null> {
+  const context = stewardConfig.context ?? {}
+  const includeMemory = (context as { include_memory?: boolean }).include_memory !== false
+  if (!includeMemory) return null
+
+  const query = buildMemoryQuery(messages)
+  if (!query) return null
+
+  try {
+    const limit = Math.min(Math.max((context as { memory_search_limit?: number }).memory_search_limit ?? 3, 1), 8)
+    const maxChars = Math.min(Math.max((context as { memory_max_chars?: number }).memory_max_chars ?? 1200, 200), 3000)
+    let rows = [] as string[]
+
+    try {
+      const edge = await requestBridgeClientMemorySearch({
+        clientId: binding.client_id,
+        query,
+        limit,
+        timeoutMs: 8000,
+      })
+      rows = edge.results
+        .slice(0, limit)
+        .map((result, index) => {
+          const agent = result.agentName ? `${result.agentName} / ` : ''
+          const snippet = String(result.snippet || '').replace(/\s+/g, ' ').trim()
+          return `${index + 1}. ${agent}${result.title || result.path} (${result.source}:${result.path}): ${snippet}`
+        })
+        .filter((line) => line.trim())
+    } catch (err) {
+      logger.debug({ err, bindingId: binding.id }, '[HumanWatch] Edge memory search unavailable')
+    }
+
+    if (rows.length === 0 && MEMORY_PATH) {
+      const response = await searchMemory(MEMORY_PATH, MEMORY_ALLOWED_PREFIXES, query, { limit })
+      rows = response.results
+      .slice(0, limit)
+      .map((result, index) => {
+        const snippet = String(result.snippet || '')
+          .replace(/<\/?mark>/g, '')
+          .replace(/\s+/g, ' ')
+          .trim()
+        return `${index + 1}. ${result.title || result.path} (${result.path}): ${snippet}`
+      })
+      .filter((line) => line.trim())
+    }
+    if (rows.length === 0) return null
+    return [
+      '以下为平台记忆库按当前 Worker 问题检索到的参考片段，只作为辅助判断；如与当前会话冲突，以当前会话和安全策略为准。',
+      ...rows,
+    ].join('\n').slice(0, maxChars)
+  } catch (err) {
+    logger.debug({ err, bindingId: binding.id }, '[HumanWatch] Memory context search failed')
+    return null
+  }
 }
 
 function withinGracePeriod(bindingId: number, graceSeconds: number): boolean {
@@ -226,7 +326,10 @@ async function resolveInterventionPrompt(
   binding: HumanWatchBindingRow,
   messages: TranscriptMessage[],
   deps: EvaluateDeps,
-): Promise<{ prompt: string } | { skipReason: 'steward_missing' | 'steward_judge_empty' | 'steward_judge_failed'; errorMessage?: string }> {
+): Promise<
+  | { prompt: string; memoryContext?: string | null }
+  | { skipReason: 'steward_missing' | 'steward_judge_empty' | 'steward_judge_failed'; errorMessage?: string }
+> {
   const stewardId = binding.steward_local_agent_id
   if (!stewardId) {
     return { skipReason: 'steward_missing' }
@@ -236,7 +339,12 @@ async function resolveInterventionPrompt(
     const stewardConfig = await getStewardConfigForBinding(binding, deps)
 
     const summary = buildWorkerSummaryForJudge(messages, stewardConfig.context)
-    const workerContext = buildWorkerJudgeContext(messages, stewardConfig.context)
+    const baseWorkerContext = buildWorkerJudgeContext(messages, stewardConfig.context)
+    const memoryContext = await deps.fetchMemoryContext?.(binding, messages, stewardConfig)
+    const workerContext = [
+      baseWorkerContext,
+      memoryContext ? `值守记忆检索:\n${memoryContext}` : '',
+    ].filter(Boolean).join('\n\n')
     const judgePrompt = buildStewardJudgePrompt(summary, workerContext, stewardConfig)
     const judge = await deps.runJudge({
       clientId: binding.client_id,
@@ -244,7 +352,7 @@ async function resolveInterventionPrompt(
       prompt: judgePrompt,
     })
     const reply = String(judge.reply || '').trim()
-    if (reply) return { prompt: reply }
+    if (reply) return { prompt: reply, memoryContext }
     return { skipReason: 'steward_judge_empty' }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Steward judge failed'
@@ -424,6 +532,7 @@ export async function evaluateHumanWatchBinding(
         rulesHit: evaluation.rulesHit,
       },
       eventSource,
+      resolved.memoryContext,
     )
 
     logHumanWatchIntervention({

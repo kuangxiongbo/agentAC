@@ -6,6 +6,7 @@ const fetchTranscript = vi.fn()
 const sendContinue = vi.fn()
 const fetchAgentDetail = vi.fn()
 const runJudge = vi.fn()
+const fetchMemoryContext = vi.fn()
 
 const dbRef = vi.hoisted(() => ({ current: null as Database.Database | null }))
 
@@ -51,6 +52,7 @@ describe.sequential('human-watch-orchestrator', () => {
     sendContinue.mockReset()
     fetchAgentDetail.mockReset()
     runJudge.mockReset()
+    fetchMemoryContext.mockReset()
     fetchAgentDetail.mockResolvedValue({
       agent: {
         role: 'human-watch',
@@ -67,6 +69,7 @@ describe.sequential('human-watch-orchestrator', () => {
     sendContinue,
     fetchAgentDetail,
     runJudge,
+    fetchMemoryContext,
   })
 
   afterEach(() => {
@@ -127,6 +130,44 @@ describe.sequential('human-watch-orchestrator', () => {
     expect(event.resolved_action).toBe('send_message_to_worker')
     expect(event.resolved_by_type).toBe('steward_agent')
     expect(event.resolved_note).toBe('Please continue with option A.')
+  })
+
+  it('falls back to synced session kind when worker agent index is missing', async () => {
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    db.prepare(`DELETE FROM sync_agent_index WHERE client_id = 'mac-1' AND local_agent_id = 10`).run()
+    db.prepare(`
+      INSERT INTO sync_sessions (
+        client_id, client_name, session_id, session_key, session_kind,
+        runtime_group, agent, active, created_at, updated_at
+      ) VALUES (
+        'mac-1', 'Mac', 'sess-worker-1', 'worker-key', 'claude-code',
+        'claude', 'worker', 1, unixepoch(), unixepoch()
+      )
+    `).run()
+    const stale = new Date(Date.now() - 120_000).toISOString()
+    fetchTranscript.mockResolvedValue({
+      messages: [
+        {
+          role: 'assistant',
+          parts: [{ type: 'text', text: '需要你确认是否继续执行下一步，请回复继续或停止。' }],
+          timestamp: stale,
+        },
+      ],
+    })
+    sendContinue.mockResolvedValue({ accepted: true })
+
+    await evaluateHumanWatchBinding(
+      db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any,
+      {},
+      defaultDeps(),
+    )
+
+    expect(fetchTranscript).toHaveBeenCalledWith(expect.objectContaining({ kind: 'claude-code' }))
+    expect(sendContinue).toHaveBeenCalledWith(expect.objectContaining({ kind: 'claude-code' }))
+    const skipped = db
+      .prepare(`SELECT COUNT(*) as count FROM human_watch_interventions WHERE skip_reason = 'no_session_kind'`)
+      .get() as { count: number }
+    expect(skipped.count).toBe(0)
   })
 
   it('logs bridge_offline skip', async () => {
@@ -301,6 +342,51 @@ describe.sequential('human-watch-orchestrator', () => {
     const context = event?.context_json ? JSON.parse(event.context_json) as Record<string, unknown> : {}
     expect(String(context.worker_judge_context || '')).toContain('最近用户意图')
     expect(String(context.worker_summary || '')).toContain('ASSISTANT:')
+  })
+
+  it('adds retrieved memory context to steward judge prompt and event context', async () => {
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    const stale = new Date(Date.now() - 120_000).toISOString()
+    fetchTranscript.mockResolvedValue({
+      messages: [
+        {
+          role: 'user',
+          parts: [{ type: 'text', text: '是否继续部署生产？' }],
+          timestamp: stale,
+        },
+        {
+          role: 'assistant',
+          parts: [{ type: 'text', text: '请确认是否继续部署生产。' }],
+          timestamp: stale,
+        },
+      ],
+    })
+    fetchMemoryContext.mockResolvedValue('1. 发布 SOP: 小范围验证后才继续部署。')
+    runJudge.mockResolvedValue({ reply: '继续，但先做小范围验证。', sessionId: 'judge-memory', source: 'test' })
+    sendContinue.mockResolvedValue({ accepted: true })
+
+    await evaluateHumanWatchBinding(
+      db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any,
+      { sessionId: 'sess-worker-1', sessionKind: 'claude-code' },
+      defaultDeps(),
+    )
+
+    expect(fetchMemoryContext).toHaveBeenCalled()
+    expect(runJudge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining('值守记忆检索'),
+      }),
+    )
+    expect(runJudge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining('发布 SOP'),
+      }),
+    )
+    const event = db
+      .prepare(`SELECT context_json FROM human_watch_events ORDER BY id DESC LIMIT 1`)
+      .get() as { context_json: string | null }
+    const context = event?.context_json ? JSON.parse(event.context_json) as Record<string, unknown> : {}
+    expect(String(context.steward_memory_context || '')).toContain('发布 SOP')
   })
 
   it('skips send when steward judge returns empty reply', async () => {

@@ -218,6 +218,7 @@ type BridgePendingKind =
   | 'steward_delete'
   | 'steward_judge'
   | 'agent_message'
+  | 'memory_search'
 
 interface PendingBridgeRequest {
   requestId: string
@@ -524,6 +525,15 @@ function resolvePendingRequest(msg: any) {
     return true
   }
 
+  if (pending.kind === 'memory_search') {
+    pending.resolve({
+      query: typeof msg?.query === 'string' ? msg.query : '',
+      results: Array.isArray(msg?.results) ? msg.results : [],
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
+    return true
+  }
+
   if (pending.kind === 'continue') {
     const resolvedSessionId = typeof msg?.sessionId === 'string' ? msg.sessionId : pending.sessionId || null
     if (pending.sessionKind && resolvedSessionId) {
@@ -788,6 +798,7 @@ export function initBridgeServer(port: number = 5002) {
             case 'steward_delete_response':
             case 'steward_judge_response':
             case 'agent_message_response':
+            case 'memory_search_response':
               touchConnection(connectionId)
               resolvePendingRequest(msg)
               break
@@ -1580,6 +1591,56 @@ export async function requestBridgeClientAgentDetail(input: {
       clearTimeout(timeout)
       bridgePendingRequests.delete(requestId)
       reject(error instanceof Error ? error : new Error('Failed to send agent detail request'))
+    }
+  })
+}
+
+export type BridgeMemorySearchResult = {
+  query: string
+  results: Array<{
+    source: string
+    agentName?: string | null
+    path: string
+    title?: string | null
+    snippet: string
+  }>
+  source: string
+}
+
+export async function requestBridgeClientMemorySearch(input: {
+  clientId: string
+  query: string
+  limit?: number
+  timeoutMs?: number
+}): Promise<BridgeMemorySearchResult> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(1000, input.timeoutMs || 12000)
+
+  return await new Promise<BridgeMemorySearchResult>((resolve, reject) => {
+    const timeout = makePendingTimeout(requestId, 'memory_search', input.clientId, timeoutMs, reject)
+
+    bridgePendingRequests.set(requestId, {
+      requestId,
+      clientId: input.clientId,
+      connectionId,
+      timeout,
+      kind: 'memory_search',
+      resolve: resolve as (value: unknown) => void,
+      reject,
+    })
+
+    try {
+      ws.send(JSON.stringify({
+        type: 'memory_search_request',
+        requestId,
+        query: input.query,
+        limit: Math.min(Math.max(input.limit ?? 5, 1), 20),
+      }))
+    } catch (error) {
+      clearTimeout(timeout)
+      bridgePendingRequests.delete(requestId)
+      reject(error instanceof Error ? error : new Error('Failed to send memory search request'))
     }
   })
 }

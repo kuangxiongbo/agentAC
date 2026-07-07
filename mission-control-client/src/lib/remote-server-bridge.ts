@@ -45,6 +45,7 @@ import { runStewardJudgeOnEdge } from './human-watch-judge'
 import { isBindableSessionKind } from './agent-session-binding'
 import { deliverAgentMessage } from './deliver-agent-message'
 import { edgeUpstreamFetch, isEdgeTlsInsecure } from './edge-upstream-fetch'
+import { searchLocalMemory } from './memory-sync'
 import {
   getPermissionRequest,
   isDangerousPermissionRequest,
@@ -1247,6 +1248,42 @@ function handleSessionTranscriptRequest(message: any): void {
   }
 }
 
+async function handleMemorySearchRequest(message: any): Promise<void> {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  const query = typeof message?.query === 'string' ? message.query.trim() : ''
+  const limit = Math.min(Math.max(Number(message?.limit || 5), 1), 20)
+  if (!requestId) return
+
+  if (!query) {
+    safeSend(state.ws, {
+      type: 'memory_search_response',
+      requestId,
+      ok: false,
+      error: 'query is required',
+    })
+    return
+  }
+
+  try {
+    const results = await searchLocalMemory(query, { limit })
+    safeSend(state.ws, {
+      type: 'memory_search_response',
+      requestId,
+      ok: true,
+      source: 'remote-bridge',
+      query,
+      results,
+    })
+  } catch (err: any) {
+    safeSend(state.ws, {
+      type: 'memory_search_response',
+      requestId,
+      ok: false,
+      error: err?.message || 'Failed to search local memory',
+    })
+  }
+}
+
 async function handleProjectsSync(payload: any): Promise<void> {
   const projects = Array.isArray(payload?.projects) ? payload.projects : []
   if (projects.length === 0) return
@@ -1338,6 +1375,12 @@ function handleMessage(raw: string): void {
 
     case 'session_transcript_request':
       handleSessionTranscriptRequest(msg)
+      break
+
+    case 'memory_search_request':
+      handleMemorySearchRequest(msg).catch((e) =>
+        safeLog('error', '[RemoteBridge] memory_search_request handler failed', { err: e }),
+      )
       break
 
     case 'session_continue_request':

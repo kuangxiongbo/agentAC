@@ -7,6 +7,9 @@ export interface StewardContextConfig {
   summary_max_chars?: number
   tool_result_max_chars?: number
   include_thinking?: boolean
+  include_memory?: boolean
+  memory_search_limit?: number
+  memory_max_chars?: number
 }
 
 export interface StewardRuntimeConfig {
