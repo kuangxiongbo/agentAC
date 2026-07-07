@@ -22,6 +22,10 @@ COPY .npmrc ./
 # Official Node images already include matching headers under /usr/local/include/node.
 # Point node-gyp at them so native modules do not depend on live nodejs.org downloads.
 ENV npm_config_nodedir=/usr/local
+RUN pnpm config set registry https://registry.npmmirror.com && \
+    pnpm config set fetch-retries 5 && \
+    pnpm config set fetch-retry-mintimeout 10000 && \
+    pnpm config set fetch-retry-maxtimeout 120000
 # better-sqlite3 requires native compilation tools
 RUN set -eux; \
     export DEBIAN_FRONTEND=noninteractive; \
