@@ -64,7 +64,7 @@ export async function runStewardJudgeOnEdge(
   const resultSessionId = String(result.sessionId || sessionKey || '').trim()
   if (!reply || reply === EMPTY_SESSION_REPLY || (baseline.text && reply === baseline.text)) {
     const current = readLatestAssistantState(kind, resultSessionId)
-    if (current.count > baseline.count && current.text && current.text !== EMPTY_SESSION_REPLY) {
+    if (isNewAssistantState(current, baseline) && current.text && current.text !== EMPTY_SESSION_REPLY) {
       reply = current.text
     } else {
       reply = await waitForNewAssistantReply(kind, resultSessionId, baseline)
@@ -83,15 +83,15 @@ export async function runStewardJudgeOnEdge(
 function readLatestAssistantState(
   kind: ReturnType<typeof getLocalSessionKindForFramework>,
   sessionKey: string,
-): { text: string; count: number } {
-  if (kind !== 'codex-cli') return { text: '', count: 0 }
+): { text: string; count: number; timestampMs: number } {
+  if (kind !== 'codex-cli') return { text: '', count: 0, timestampMs: 0 }
   const page = readLocalSessionTranscriptPage('codex-cli', sessionKey, { limit: 12 })
   const assistantMessages = page.messages.filter((message) => message.role === 'assistant')
   const lastAssistant = [...assistantMessages].reverse().find((message) => {
     if (message.role !== 'assistant') return false
     return message.parts.some((part) => part.type === 'text' && part.text.trim())
   })
-  if (!lastAssistant) return { text: '', count: assistantMessages.length }
+  if (!lastAssistant) return { text: '', count: assistantMessages.length, timestampMs: 0 }
   return {
     text: lastAssistant.parts
       .map((part) => (part.type === 'text' ? part.text : null))
@@ -99,18 +99,32 @@ function readLatestAssistantState(
       .join('\n')
       .trim(),
     count: assistantMessages.length,
+    timestampMs: parseTranscriptTimestampMs(lastAssistant.timestamp),
   }
+}
+
+function parseTranscriptTimestampMs(timestamp: string | undefined): number {
+  if (!timestamp) return 0
+  const value = new Date(timestamp).getTime()
+  return Number.isFinite(value) ? value : 0
+}
+
+function isNewAssistantState(
+  current: { count: number; timestampMs: number },
+  baseline: { count: number; timestampMs: number },
+): boolean {
+  return current.count > baseline.count || (current.timestampMs > 0 && current.timestampMs > baseline.timestampMs)
 }
 
 async function waitForNewAssistantReply(
   kind: ReturnType<typeof getLocalSessionKindForFramework>,
   sessionKey: string,
-  baseline: { text: string; count: number },
+  baseline: { text: string; count: number; timestampMs: number },
 ): Promise<string> {
   if (kind !== 'codex-cli') return ''
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const next = readLatestAssistantState(kind, sessionKey)
-    if (next.count > baseline.count && next.text && next.text !== EMPTY_SESSION_REPLY) {
+    if (isNewAssistantState(next, baseline) && next.text && next.text !== EMPTY_SESSION_REPLY) {
       return next.text
     }
     await new Promise((resolve) => setTimeout(resolve, 1000))

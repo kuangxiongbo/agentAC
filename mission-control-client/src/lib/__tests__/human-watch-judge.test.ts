@@ -104,4 +104,39 @@ describe('human-watch-judge', () => {
       sessionId: 'judge-session-1',
     })
   })
+
+  it('accepts repeated steward text when the paged assistant count is unchanged but timestamp is newer', async () => {
+    agentRow = {
+      ...agentRow,
+      framework: 'codex',
+      session_key: 'judge-session-1',
+    }
+    readLocalSessionTranscriptPage
+      .mockReturnValueOnce({
+        messages: [
+          { role: 'assistant', timestamp: '2026-07-07T06:00:17.693Z', parts: [{ type: 'text', text: '继续' }] },
+          { role: 'user', timestamp: '2026-07-07T06:01:15.223Z', parts: [{ type: 'text', text: 'old prompt' }] },
+          { role: 'assistant', timestamp: '2026-07-07T06:01:20.462Z', parts: [{ type: 'text', text: '继续' }] },
+        ],
+      })
+      .mockReturnValueOnce({
+        messages: [
+          { role: 'assistant', timestamp: '2026-07-07T06:01:20.462Z', parts: [{ type: 'text', text: '继续' }] },
+          { role: 'user', timestamp: '2026-07-07T06:02:15.246Z', parts: [{ type: 'text', text: 'new prompt' }] },
+          { role: 'assistant', timestamp: '2026-07-07T06:02:25.304Z', parts: [{ type: 'text', text: '继续' }] },
+        ],
+      })
+    executeBoundLocalAgentPrompt.mockResolvedValue({
+      reply: '继续',
+      sessionId: 'judge-session-1',
+    })
+
+    const { runStewardJudgeOnEdge } = await import('@/lib/human-watch-judge')
+    const result = await runStewardJudgeOnEdge(9, 'Worker 需要确认下一步。')
+
+    expect(result).toEqual({
+      reply: '继续',
+      sessionId: 'judge-session-1',
+    })
+  })
 })
