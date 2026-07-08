@@ -51,10 +51,16 @@ function buildDefaultStewardConfig(): Record<string, unknown> {
     prompt_template:
       '任务似乎已停滞。请继续下一步，或在受阻时简要说明需要确认的内容。',
     grace_after_prompt_seconds: 30,
-    max_interventions_per_hour: 6,
+    max_interventions_per_hour: 60,
+    max_interventions_window_seconds: 24 * 60 * 60,
   }
-  const { prompt_template: _p, grace_after_prompt_seconds: _g, max_interventions_per_hour: _m, ...rules } =
-    bindingDefaults
+  const {
+    prompt_template: _p,
+    grace_after_prompt_seconds: _g,
+    max_interventions_per_hour: _m,
+    max_interventions_window_seconds: _w,
+    ...rules
+  } = bindingDefaults
   return {
     agent_kind: HUMAN_WATCH_AGENT_KIND,
     steward: {

@@ -281,6 +281,8 @@ export function evaluateHumanWatchRules(
     rulesHit.confirmation_text = true
     if (confirmSignals.strong) rulesHit.confirmation_strong = true
     if (confirmSignals.weak) rulesHit.confirmation_weak = true
+    const contentHash = contentFingerprint(lastAssistantContent(lines))
+    if (contentHash) rulesHit.confirmation_text_hash = contentHash
   }
 
   if (stuckSignals.includes('awaiting_user_response') && hasAwaitingUserResponseSignal(lines)) {

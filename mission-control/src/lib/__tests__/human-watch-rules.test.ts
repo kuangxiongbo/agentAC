@@ -105,6 +105,37 @@ describe('human-watch-rules', () => {
     expect(first.fingerprint).not.toBe(second.fingerprint)
   })
 
+  it('uses latest confirmation content in the fingerprint', () => {
+    const first = evaluateHumanWatchRules(
+      [
+        {
+          role: 'assistant',
+          content: '请确认是否继续执行部署。',
+          createdAt: now - 120,
+        },
+      ],
+      { idle_timeout_seconds: 60, require_combination: true },
+      now,
+    )
+    const second = evaluateHumanWatchRules(
+      [
+        {
+          role: 'assistant',
+          content: '请确认是否继续执行数据库检查。',
+          createdAt: now - 120,
+        },
+      ],
+      { idle_timeout_seconds: 60, require_combination: true },
+      now,
+    )
+
+    expect(first.matched).toBe(true)
+    expect(second.matched).toBe(true)
+    expect(first.rulesHit.confirmation_text_hash).toBeTypeOf('string')
+    expect(second.rulesHit.confirmation_text_hash).toBeTypeOf('string')
+    expect(first.fingerprint).not.toBe(second.fingerprint)
+  })
+
   it('matches strong signal when transcript has no timestamps', () => {
     const result = evaluateHumanWatchRules(
       [{ role: 'assistant', content: '你确认后我再继续。' }],

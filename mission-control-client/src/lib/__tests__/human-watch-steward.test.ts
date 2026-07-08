@@ -84,7 +84,18 @@ describe('human-watch-steward', () => {
 
     expect(agent.role).toBe(HUMAN_WATCH_AGENT_ROLE)
     expect(agent.config.agent_kind).toBe(HUMAN_WATCH_AGENT_KIND)
-    expect((agent.config as { steward?: { llm_enabled?: boolean } }).steward?.llm_enabled).toBe(true)
+    const stewardConfig = (agent.config as {
+      steward?: {
+        llm_enabled?: boolean
+        binding_defaults?: Record<string, unknown>
+        rules?: Record<string, unknown>
+      }
+    }).steward
+    expect(stewardConfig?.llm_enabled).toBe(true)
+    expect(stewardConfig?.binding_defaults?.max_interventions_per_hour).toBe(60)
+    expect(stewardConfig?.binding_defaults?.max_interventions_window_seconds).toBe(24 * 60 * 60)
+    expect(stewardConfig?.rules?.max_interventions_per_hour).toBeUndefined()
+    expect(stewardConfig?.rules?.max_interventions_window_seconds).toBeUndefined()
     expect(agent.framework).toBe('codex')
     expect(sessionProvisioning).toBe(true)
     expect(runInsert).toHaveBeenCalled()
