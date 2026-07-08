@@ -31,6 +31,18 @@ describe('human-watch-global-rules', () => {
     db.close()
   })
 
+  it('allows five-second intervention thresholds for fast unattended watch', () => {
+    const normalized = normalizeGlobalRulesPatch({
+      idle_timeout_seconds: 5,
+      idle_timeout_with_stuck_seconds: 5,
+      grace_after_prompt_seconds: 0,
+    })
+
+    expect(normalized.idle_timeout_seconds).toBe(5)
+    expect(normalized.idle_timeout_with_stuck_seconds).toBe(5)
+    expect(normalized.grace_after_prompt_seconds).toBe(0)
+  })
+
   it('resolveHumanWatchRulesForBinding ignores binding rules_override', () => {
     const db = new Database(':memory:')
     runMigrations(db)

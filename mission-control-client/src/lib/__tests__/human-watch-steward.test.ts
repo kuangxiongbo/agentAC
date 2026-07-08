@@ -92,6 +92,8 @@ describe('human-watch-steward', () => {
       }
     }).steward
     expect(stewardConfig?.llm_enabled).toBe(true)
+    expect(stewardConfig?.binding_defaults?.idle_timeout_seconds).toBe(5)
+    expect(stewardConfig?.binding_defaults?.grace_after_prompt_seconds).toBe(0)
     expect(stewardConfig?.binding_defaults?.max_interventions_per_hour).toBe(60)
     expect(stewardConfig?.binding_defaults?.max_interventions_window_seconds).toBe(24 * 60 * 60)
     expect(stewardConfig?.rules?.max_interventions_per_hour).toBeUndefined()

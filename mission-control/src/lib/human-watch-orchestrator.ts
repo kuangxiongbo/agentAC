@@ -3,6 +3,7 @@ import { config } from './config'
 import { eventBus, type ServerEvent } from './event-bus'
 import {
   countSuccessfulInterventionsSince,
+  countInterventionSkipsSince,
   getLastInterventionCompletedAt,
   hasSuccessfulInterventionFingerprint,
   logHumanWatchIntervention,
@@ -11,6 +12,7 @@ import { createHumanWatchEvent, updateHumanWatchEvent } from './human-watch-even
 import type { HumanWatchEventView } from './human-watch-types'
 import type { HumanWatchBindingRow } from './human-watch-bindings'
 import {
+  disableHumanWatchBinding,
   listAllEnabledHumanWatchBindings,
   listEnabledBindingsForTranscriptUpdate,
 } from './human-watch-bindings'
@@ -46,7 +48,7 @@ import {
 } from './human-watch-defaults'
 import { resolveHumanWatchRulesForBinding } from './human-watch-global-rules'
 
-const EVAL_DEBOUNCE_MS = 2_000
+const EVAL_DEBOUNCE_MS = 5_000
 const POLL_INTERVAL_MS = 60_000
 const TRANSCRIPT_FETCH_LIMIT = 80
 const RULES_LOOKBACK = 12
@@ -63,6 +65,13 @@ type EvaluateDeps = {
     messages: TranscriptMessage[],
     stewardConfig: StewardRuntimeConfig,
   ) => Promise<string | null>
+}
+
+type HumanWatchAutoStopConfig = {
+  enabled?: boolean
+  max_successful_interventions?: number
+  max_runtime_seconds?: number
+  max_rate_limited_skips?: number
 }
 
 const defaultDeps: EvaluateDeps = {
@@ -131,6 +140,76 @@ function auditBase(binding: HumanWatchBindingRow) {
     stewardName: binding.steward_name,
     workerSessionId: binding.worker_session_id,
   }
+}
+
+function parseBindingAutoStop(binding: HumanWatchBindingRow): HumanWatchAutoStopConfig {
+  if (!binding.rules_override) return {}
+  try {
+    const parsed = JSON.parse(binding.rules_override) as { auto_stop?: unknown }
+    const raw = parsed.auto_stop
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    const config = raw as Record<string, unknown>
+    return {
+      enabled: config.enabled === true,
+      max_successful_interventions: positiveInt(config.max_successful_interventions),
+      max_runtime_seconds: positiveInt(config.max_runtime_seconds),
+      max_rate_limited_skips: positiveInt(config.max_rate_limited_skips),
+    }
+  } catch {
+    return {}
+  }
+}
+
+function positiveInt(value: unknown): number | undefined {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 1) return undefined
+  return Math.floor(n)
+}
+
+function resolveAutoStopReason(binding: HumanWatchBindingRow): string | null {
+  const config = parseBindingAutoStop(binding)
+  if (!config.enabled) return null
+
+  const now = Math.floor(Date.now() / 1000)
+  const since = binding.created_at || 0
+
+  if (config.max_runtime_seconds && since > 0 && now - since >= config.max_runtime_seconds) {
+    return `max_runtime_seconds:${config.max_runtime_seconds}`
+  }
+
+  if (config.max_successful_interventions) {
+    const count = countSuccessfulInterventionsSince(binding.id, since)
+    if (count >= config.max_successful_interventions) {
+      return `max_successful_interventions:${config.max_successful_interventions}`
+    }
+  }
+
+  if (config.max_rate_limited_skips) {
+    const count = countInterventionSkipsSince(binding.id, 'rate_limited', since)
+    if (count >= config.max_rate_limited_skips) {
+      return `max_rate_limited_skips:${config.max_rate_limited_skips}`
+    }
+  }
+
+  return null
+}
+
+function maybeAutoStopBinding(binding: HumanWatchBindingRow): boolean {
+  const reason = resolveAutoStopReason(binding)
+  if (!reason) return false
+
+  const disabled = disableHumanWatchBinding(binding.id, binding.workspace_id)
+  if (disabled) {
+    logHumanWatchIntervention({
+      ...auditBase(binding),
+      eventType: 'auto_stop',
+      decision: 'disabled',
+      outcome: 'success',
+      skipReason: reason,
+      errorMessage: `Human Watch binding auto-stopped: ${reason}`,
+    })
+  }
+  return disabled
 }
 
 function createPendingWatchEvent(
@@ -381,6 +460,7 @@ export async function evaluateHumanWatchBinding(
   const tenantId = binding.tenant_id ?? 1
   if (!isHumanWatchEnabledForTenant(tenantId)) return
   if (!binding.enabled) return
+  if (maybeAutoStopBinding(binding)) return
   if (!deps.isBridgeOnline(binding.client_id)) {
     logHumanWatchIntervention({
       ...auditBase(binding),
@@ -511,6 +591,7 @@ export async function evaluateHumanWatchBinding(
         fingerprint: evaluation.fingerprint,
         skipReason: 'rate_limited',
       })
+      maybeAutoStopBinding(binding)
       return
     }
 
@@ -564,6 +645,7 @@ export async function evaluateHumanWatchBinding(
         promptPreview: prompt,
         outcome: 'success',
       })
+      maybeAutoStopBinding(binding)
       updateHumanWatchEvent(watchEvent.id, binding.workspace_id, {
         status: 'resolved',
         resolvedAction: 'send_message_to_worker',

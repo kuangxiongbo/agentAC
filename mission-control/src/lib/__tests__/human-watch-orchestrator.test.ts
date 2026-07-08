@@ -132,6 +132,74 @@ describe.sequential('human-watch-orchestrator', () => {
     expect(event.resolved_note).toBe('Please continue with option A.')
   })
 
+  it('uses steward judge for explicit answer-then-confirm prompts', async () => {
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    const stale = new Date(Date.now() - 6_000).toISOString()
+    fetchTranscript.mockResolvedValue({
+      messages: [
+        {
+          role: 'assistant',
+          parts: [{ type: 'text', text: '请回答这个问题，回答后说"确认"。' }],
+          timestamp: stale,
+        },
+      ],
+    })
+    sendContinue.mockResolvedValue({ accepted: true })
+    runJudge.mockResolvedValue({ reply: '我会优先处理重复排查日志的脚本。确认。', sessionId: 'judge-sess', source: 'test' })
+
+    await evaluateHumanWatchBinding(
+      db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any,
+      { sessionId: 'sess-worker-1', sessionKind: 'claude-code' },
+      defaultDeps(),
+    )
+
+    expect(runJudge).toHaveBeenCalled()
+    expect(sendContinue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: '我会优先处理重复排查日志的脚本。确认。',
+      }),
+    )
+  })
+
+  it('auto-stops a binding after configured successful interventions', async () => {
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    db.prepare(`UPDATE human_watch_bindings SET rules_override = ? WHERE id = 1`).run(
+      JSON.stringify({
+        auto_stop: {
+          enabled: true,
+          max_successful_interventions: 1,
+        },
+      }),
+    )
+    const stale = new Date(Date.now() - 120_000).toISOString()
+    fetchTranscript.mockResolvedValue({
+      messages: [
+        {
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'Please confirm which option you prefer.' }],
+          timestamp: stale,
+        },
+      ],
+    })
+    sendContinue.mockResolvedValue({ accepted: true })
+
+    await evaluateHumanWatchBinding(
+      db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any,
+      { sessionId: 'sess-worker-1', sessionKind: 'claude-code' },
+      defaultDeps(),
+    )
+
+    const binding = db.prepare(`SELECT enabled FROM human_watch_bindings WHERE id = 1`).get() as { enabled: number }
+    expect(binding.enabled).toBe(0)
+    const row = db
+      .prepare(`SELECT event_type, decision, outcome, skip_reason FROM human_watch_interventions ORDER BY id DESC LIMIT 1`)
+      .get() as { event_type: string; decision: string | null; outcome: string | null; skip_reason: string | null }
+    expect(row.event_type).toBe('auto_stop')
+    expect(row.decision).toBe('disabled')
+    expect(row.outcome).toBe('success')
+    expect(row.skip_reason).toBe('max_successful_interventions:1')
+  })
+
   it('falls back to synced session kind when worker agent index is missing', async () => {
     const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
     db.prepare(`DELETE FROM sync_agent_index WHERE client_id = 'mac-1' AND local_agent_id = 10`).run()

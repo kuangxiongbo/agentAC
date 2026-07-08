@@ -8,7 +8,7 @@ export const DEFAULT_INTERVENTION_PROMPT_EN =
 
 export const MAX_INTERVENTIONS_PER_WINDOW_DEFAULT = 60
 export const DEFAULT_INTERVENTION_RATE_WINDOW_SECONDS = 24 * 60 * 60
-export const DEFAULT_GRACE_AFTER_PROMPT_SECONDS = 30
+export const DEFAULT_GRACE_AFTER_PROMPT_SECONDS = 0
 
 /** 租户级全局值守判断规则默认值（所有 Worker 绑定共用） */
 export function buildDefaultGlobalRules(): Record<string, unknown> {

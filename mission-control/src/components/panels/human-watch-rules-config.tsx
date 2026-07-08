@@ -140,7 +140,7 @@ export function HumanWatchRulesConfig({
 
       const payload = {
         enabled: rulesEngineEnabled,
-        idle_timeout_seconds: Math.max(30, Number(idleSec) || 90),
+        idle_timeout_seconds: Math.max(5, Number(idleSec) || 90),
         exclude_if_tool_active_within_seconds: Math.max(0, Number(toolExcludeSec) || 120),
         stuck_signals,
         confirmation_patterns: textToPatterns(patternsText),

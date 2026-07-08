@@ -90,8 +90,8 @@ const DEFAULT_AWAITING_USER_RESPONSE_PATTERNS = [
 
 export const DEFAULT_HUMAN_WATCH_RULE_CONFIG: HumanWatchRuleConfig = {
   enabled: true,
-  idle_timeout_seconds: 50,
-  idle_timeout_with_stuck_seconds: 30,
+  idle_timeout_seconds: 5,
+  idle_timeout_with_stuck_seconds: 5,
   stuck_signals: ['pending_tool', 'confirmation_text', 'awaiting_user_response'],
   confirmation_patterns: DEFAULT_STRONG_CONFIRMATION_PATTERNS,
   confirmation_patterns_weak: DEFAULT_WEAK_CONFIRMATION_PATTERNS,

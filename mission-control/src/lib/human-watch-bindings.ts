@@ -600,6 +600,22 @@ export function deleteHumanWatchBinding(
   return result.changes > 0
 }
 
+export function disableHumanWatchBinding(
+  id: number,
+  workspaceId: number,
+  database?: Database.Database,
+): boolean {
+  const db = dbOr(database)
+  const result = db
+    .prepare(
+      `UPDATE human_watch_bindings
+       SET enabled = 0, updated_at = unixepoch()
+       WHERE id = ? AND workspace_id = ? AND enabled = 1`,
+    )
+    .run(id, workspaceId)
+  return result.changes > 0
+}
+
 export function deleteHumanWatchBindingsForSteward(
   workspaceId: number,
   clientId: string,

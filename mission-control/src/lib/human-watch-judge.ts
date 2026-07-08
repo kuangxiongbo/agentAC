@@ -25,9 +25,10 @@ export interface StewardRuntimeConfig {
 const DEFAULT_JUDGE_TEMPLATE = `你是人工值守判官。阅读下方 Worker 结构化上下文与会话摘录，判断 Worker 在等什么确认、卡在哪一步、下一步最合理的继续指令是什么。
 只输出一条可直接发给 Worker 的用户消息。要求：
 1. 只输出给 Worker 的最终消息，不要解释、不要分析、不要前缀。
-2. 如果 Worker 明确在等待确认/选择，直接给出明确选择。
-3. 如果 Worker 需要下一步执行指令，直接给出简洁可执行指令。
-4. 如果信息不足，先要求 Worker 汇报最关键缺口。
+2. 如果 Worker 问了一个需要内容回答的问题，并要求“回答后说确认/回复后说确认”，必须先像人一样给出简洁实际回答，再在末尾包含确认；不要只回复“确认”，也不要跳过问题。
+3. 如果 Worker 明确只是在等待是否继续/是否确认且没有内容问题，直接给出明确选择。
+4. 如果 Worker 需要下一步执行指令，直接给出简洁可执行指令。
+5. 如果信息不足，先要求 Worker 汇报最关键缺口。
 
 Worker 上下文：
 {context}
@@ -138,6 +139,14 @@ function inferWorkerNeed(lines: HumanWatchTranscriptLine[]): string {
   const lastAssistant = extractLastRoleText(lines, 'assistant')
   if (!lastAssistant) return '未识别到明确卡点，请结合会话摘录判断'
   const normalized = lastAssistant.toLowerCase()
+  if (
+    normalized.includes('回答后说') ||
+    normalized.includes('回复后说') ||
+    normalized.includes('回答后') ||
+    normalized.includes('回复后')
+  ) {
+    return 'Worker 正在等待值守代替用户回答问题，并在回答后确认'
+  }
   if (
     normalized.includes('confirm') ||
     normalized.includes('确认') ||

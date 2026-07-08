@@ -171,6 +171,25 @@ export function countSuccessfulInterventionsSince(
   return row?.c ?? 0
 }
 
+export function countInterventionSkipsSince(
+  bindingId: number,
+  skipReason: string,
+  sinceSec: number,
+  database?: Database.Database,
+): number {
+  const db = dbOr(database)
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as c FROM human_watch_interventions
+       WHERE binding_id = ?
+         AND event_type = 'intervention_skipped'
+         AND skip_reason = ?
+         AND created_at >= ?`,
+    )
+    .get(bindingId, skipReason, sinceSec) as { c?: number } | undefined
+  return row?.c ?? 0
+}
+
 export function listHumanWatchInterventions(
   filters: ListHumanWatchInterventionsFilters,
   database?: Database.Database,

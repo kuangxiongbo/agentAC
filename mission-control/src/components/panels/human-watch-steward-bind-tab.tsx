@@ -250,6 +250,7 @@ export function HumanWatchStewardBindTab({
           bindingId={primaryBinding.id}
           enabled={primaryBinding.enabled}
           mode={primaryBinding.mode || 'auto_send'}
+          rulesOverride={primaryBinding.rules_override}
           onSaved={load}
         />
       ) : null}

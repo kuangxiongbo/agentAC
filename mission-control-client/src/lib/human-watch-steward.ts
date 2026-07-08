@@ -28,7 +28,7 @@ function frameworkColumnForKind(kind: BindableSessionKind): string {
 function buildDefaultStewardConfig(): Record<string, unknown> {
   const bindingDefaults = {
     enabled: true,
-    idle_timeout_seconds: 90,
+    idle_timeout_seconds: 5,
     stuck_signals: ['pending_tool', 'confirmation_text', 'awaiting_user_response'],
     confirmation_patterns: [
       'please confirm',
@@ -50,7 +50,7 @@ function buildDefaultStewardConfig(): Record<string, unknown> {
     exclude_if_tool_active_within_seconds: 120,
     prompt_template:
       '任务似乎已停滞。请继续下一步，或在受阻时简要说明需要确认的内容。',
-    grace_after_prompt_seconds: 30,
+    grace_after_prompt_seconds: 0,
     max_interventions_per_hour: 60,
     max_interventions_window_seconds: 24 * 60 * 60,
   }

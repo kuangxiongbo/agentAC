@@ -234,6 +234,7 @@ export function HumanWatchWorkerBindTab({
           bindingId={currentBinding.id}
           enabled={currentBinding.enabled}
           mode={(currentBinding.mode as 'auto_send' | 'suggest_only') || 'auto_send'}
+          rulesOverride={currentBinding.rules_override}
           onSaved={load}
         />
       ) : null}

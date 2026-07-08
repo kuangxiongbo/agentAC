@@ -1,4 +1,4 @@
-export type HumanWatchDecision = 'noop' | 'auto_send' | 'suggest_only' | 'skipped'
+export type HumanWatchDecision = 'noop' | 'auto_send' | 'suggest_only' | 'skipped' | 'disabled'
 
 export type HumanWatchEventSource =
   | 'worker_tool'
@@ -28,6 +28,7 @@ export type HumanWatchInterventionEventType =
   | 'intervention_attempt'
   | 'intervention_completed'
   | 'intervention_skipped'
+  | 'auto_stop'
   | 'llm_sweep'
 
 export type HumanWatchInterventionOutcome = 'success' | 'failed' | 'skipped'
