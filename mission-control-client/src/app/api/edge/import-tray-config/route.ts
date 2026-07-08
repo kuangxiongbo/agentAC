@@ -3,6 +3,7 @@ import { getDatabase, logAuditEvent } from '@/lib/db'
 import { requireRole } from '@/lib/auth'
 import { readEdgeTrayConfigFile, trayFileToSettings } from '@/lib/edge-tray-config-file'
 import { restartRemoteBridge } from '@/lib/remote-server-bridge'
+import { shouldReconnectBridgeForSettingChange } from '@/lib/edge-bootstrap-settings'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -50,8 +51,13 @@ export async function POST(request: NextRequest) {
   `)
 
   const updated: string[] = []
+  let shouldReconnectBridge = false
   const txn = db.transaction(() => {
     for (const [key, value] of Object.entries(incoming)) {
+      const previous = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
+      if (shouldReconnectBridgeForSettingChange(key, previous?.value, value)) {
+        shouldReconnectBridge = true
+      }
       const category = key.split('.')[0] || 'edge'
       upsert.run(key, value, `Imported from tray config: ${key}`, category)
       updated.push(key)
@@ -62,10 +68,10 @@ export async function POST(request: NextRequest) {
   logAuditEvent({
     action: 'edge_tray_config_import',
     actor: 'edge-tray',
-    detail: { keys: updated },
+    detail: { keys: updated, bridge_reconnect: shouldReconnectBridge },
   })
 
-  if (updated.some((k) => k.startsWith('gateway.'))) {
+  if (shouldReconnectBridge) {
     restartRemoteBridge()
   }
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDatabase, logAuditEvent } from '@/lib/db'
 import { restartRemoteBridge } from '@/lib/remote-server-bridge'
+import { normalizeSettingValue, shouldReconnectBridgeForSettingChange } from '@/lib/edge-bootstrap-settings'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -60,12 +61,17 @@ export async function POST(request: NextRequest) {
   `)
 
   const updated: string[] = []
+  let shouldReconnectBridge = false
   const txn = db.transaction(() => {
     for (const [key, value] of Object.entries(settings)) {
       if (!key.startsWith('gateway.') && !key.startsWith('device.') && !key.startsWith('edge.') && !key.startsWith('general.')) {
         continue
       }
-      const strValue = String(value ?? '')
+      const strValue = normalizeSettingValue(value)
+      const previous = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
+      if (shouldReconnectBridgeForSettingChange(key, previous?.value, strValue)) {
+        shouldReconnectBridge = true
+      }
       const category = key.split('.')[0] || 'edge'
       upsert.run(key, strValue, `Edge tray bootstrap: ${key}`, category)
       updated.push(key)
@@ -76,10 +82,10 @@ export async function POST(request: NextRequest) {
   logAuditEvent({
     action: 'edge_bootstrap_apply',
     actor: 'edge-tray',
-    detail: { keys: updated },
+    detail: { keys: updated, bridge_reconnect: shouldReconnectBridge },
   })
 
-  if (body.reconnect_bridge !== false) {
+  if (body.reconnect_bridge !== false && shouldReconnectBridge) {
     restartRemoteBridge()
   }
 
