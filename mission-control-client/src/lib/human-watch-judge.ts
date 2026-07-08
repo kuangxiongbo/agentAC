@@ -73,6 +73,9 @@ export async function runStewardJudgeOnEdge(
   if (!reply || reply === EMPTY_SESSION_REPLY) {
     throw new Error('Judge session returned empty reply')
   }
+  if (isStewardJudgeRuntimeError(reply)) {
+    throw new Error(`Judge session returned runtime error: ${reply.slice(0, 160)}`)
+  }
 
   return {
     reply,
@@ -107,6 +110,19 @@ function parseTranscriptTimestampMs(timestamp: string | undefined): number {
   if (!timestamp) return 0
   const value = new Date(timestamp).getTime()
   return Number.isFinite(value) ? value : 0
+}
+
+function isStewardJudgeRuntimeError(reply: string): boolean {
+  const text = String(reply || '').trim()
+  if (!text) return false
+  return [
+    /^missing environment variable:/i,
+    /^error:\s*missing environment variable:/i,
+    /^api error:/i,
+    /^command failed\s*\(/i,
+    /authentication failed/i,
+    /no api key/i,
+  ].some((pattern) => pattern.test(text))
 }
 
 function isNewAssistantState(

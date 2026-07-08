@@ -72,6 +72,19 @@ describe('human-watch-judge', () => {
     })
   })
 
+  it('rejects CLI runtime errors instead of returning them as steward replies', async () => {
+    executeBoundLocalAgentPrompt.mockResolvedValue({
+      reply: 'Missing environment variable: `OPENAI_API_KEY`.',
+      sessionId: 'new-judge-session',
+    })
+
+    const { runStewardJudgeOnEdge } = await import('@/lib/human-watch-judge')
+
+    await expect(runStewardJudgeOnEdge(9, 'Worker 需要确认下一步。'))
+      .rejects
+      .toThrow('Judge session returned runtime error')
+  })
+
   it('accepts repeated steward text when a new assistant message was added', async () => {
     agentRow = {
       ...agentRow,
