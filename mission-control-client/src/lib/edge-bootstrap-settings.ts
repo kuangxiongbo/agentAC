@@ -5,7 +5,15 @@ export const BRIDGE_RECONNECT_SETTING_KEYS = new Set([
 ])
 
 export function normalizeSettingValue(value: unknown): string {
-  return String(value ?? '')
+  return String(value ?? '').trim()
+}
+
+export function normalizeBridgeSettingValue(key: string, value: unknown): string {
+  const normalized = normalizeSettingValue(value)
+  if (key === 'gateway.server_url') {
+    return normalized.replace(/\/+$/, '')
+  }
+  return normalized
 }
 
 export function shouldReconnectBridgeForSettingChange(
@@ -14,6 +22,5 @@ export function shouldReconnectBridgeForSettingChange(
   nextValue: unknown,
 ): boolean {
   if (!BRIDGE_RECONNECT_SETTING_KEYS.has(key)) return false
-  return normalizeSettingValue(previousValue) !== normalizeSettingValue(nextValue)
+  return normalizeBridgeSettingValue(key, previousValue) !== normalizeBridgeSettingValue(key, nextValue)
 }
-

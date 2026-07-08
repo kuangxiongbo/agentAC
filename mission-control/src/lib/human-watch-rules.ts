@@ -46,6 +46,8 @@ const DEFAULT_STRONG_CONFIRMATION_PATTERNS = [
   '你确认',
   '确认后',
   '请回复',
+  '回答后说',
+  '回复后说',
   '是否继续',
   '要不要',
   '只读',

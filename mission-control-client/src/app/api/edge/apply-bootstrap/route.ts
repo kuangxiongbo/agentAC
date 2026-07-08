@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDatabase, logAuditEvent } from '@/lib/db'
 import { restartRemoteBridge } from '@/lib/remote-server-bridge'
-import { normalizeSettingValue, shouldReconnectBridgeForSettingChange } from '@/lib/edge-bootstrap-settings'
+import { BRIDGE_RECONNECT_SETTING_KEYS, normalizeSettingValue, shouldReconnectBridgeForSettingChange } from '@/lib/edge-bootstrap-settings'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -61,15 +61,36 @@ export async function POST(request: NextRequest) {
   `)
 
   const updated: string[] = []
+  const skipped: string[] = []
   let shouldReconnectBridge = false
+  const previousBridgeSettings = new Map<string, string | undefined>()
+  for (const key of BRIDGE_RECONNECT_SETTING_KEYS) {
+    const previous = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
+    previousBridgeSettings.set(key, previous?.value)
+  }
+  const gatewayEndpointChanged = (
+    shouldReconnectBridgeForSettingChange('gateway.server_url', previousBridgeSettings.get('gateway.server_url'), settings['gateway.server_url'])
+    || shouldReconnectBridgeForSettingChange('gateway.token', previousBridgeSettings.get('gateway.token'), settings['gateway.token'])
+  )
   const txn = db.transaction(() => {
     for (const [key, value] of Object.entries(settings)) {
       if (!key.startsWith('gateway.') && !key.startsWith('device.') && !key.startsWith('edge.') && !key.startsWith('general.')) {
         continue
       }
       const strValue = normalizeSettingValue(value)
-      const previous = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
-      if (shouldReconnectBridgeForSettingChange(key, previous?.value, strValue)) {
+      const previousValue = previousBridgeSettings.has(key)
+        ? previousBridgeSettings.get(key)
+        : (db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)?.value
+      if (
+        key === 'device.client_id'
+        && previousValue
+        && shouldReconnectBridgeForSettingChange(key, previousValue, strValue)
+        && !gatewayEndpointChanged
+      ) {
+        skipped.push(key)
+        continue
+      }
+      if (shouldReconnectBridgeForSettingChange(key, previousValue, strValue)) {
         shouldReconnectBridge = true
       }
       const category = key.split('.')[0] || 'edge'
@@ -82,12 +103,12 @@ export async function POST(request: NextRequest) {
   logAuditEvent({
     action: 'edge_bootstrap_apply',
     actor: 'edge-tray',
-    detail: { keys: updated, bridge_reconnect: shouldReconnectBridge },
+    detail: { keys: updated, skipped, bridge_reconnect: shouldReconnectBridge },
   })
 
   if (body.reconnect_bridge !== false && shouldReconnectBridge) {
     restartRemoteBridge()
   }
 
-  return NextResponse.json({ ok: true, updated })
+  return NextResponse.json({ ok: true, updated, skipped })
 }

@@ -36,6 +36,29 @@ describe('human-watch-rules', () => {
     expect(result.rulesHit.idle_timeout).toBe(true)
   })
 
+  it('matches assistant prompt that asks user to answer then say confirmation', () => {
+    const result = evaluateHumanWatchRules(
+      [
+        {
+          role: 'assistant',
+          content:
+            '如果让你今天就必须做出一个"自动化小工具"送给团队，你会优先解决哪个场景？回答后说"确认"。',
+          createdAt: now - 40,
+        },
+      ],
+      {
+        idle_timeout_seconds: 90,
+        idle_timeout_with_stuck_seconds: 30,
+        require_combination: true,
+      },
+      now,
+    )
+    expect(result.matched).toBe(true)
+    expect(result.rulesHit.confirmation_text).toBe(true)
+    expect(result.rulesHit.confirmation_strong).toBe(true)
+    expect(result.rulesHit.idle_timeout).toBe(true)
+  })
+
   it('uses shorter idle when stuck signal present', () => {
     const result = evaluateHumanWatchRules(
       [

@@ -16,8 +16,9 @@ describe('edge bootstrap bridge reconnect settings', () => {
 
   it('does not reconnect for unchanged bridge settings', () => {
     expect(shouldReconnectBridgeForSettingChange('gateway.server_url', 'https://agent.example', 'https://agent.example')).toBe(false)
+    expect(shouldReconnectBridgeForSettingChange('gateway.server_url', 'https://agent.example/', ' https://agent.example ')).toBe(false)
     expect(shouldReconnectBridgeForSettingChange('gateway.token', 'same-token', 'same-token')).toBe(false)
+    expect(shouldReconnectBridgeForSettingChange('gateway.token', ' same-token ', 'same-token')).toBe(false)
     expect(shouldReconnectBridgeForSettingChange('device.client_id', 'edge-a', 'edge-a')).toBe(false)
   })
 })
-
