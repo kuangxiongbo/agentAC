@@ -94,6 +94,76 @@ describe('edge-messages', () => {
     expect(acked.completed_at).toBeTypeOf('number')
   })
 
+  it('records human-watch assist completion when a queued message is acknowledged', () => {
+    db.prepare(`
+      INSERT INTO human_watch_bindings (
+        id, workspace_id, tenant_id, client_id,
+        worker_local_agent_id, worker_name,
+        steward_local_agent_id, steward_name,
+        worker_session_id, worker_session_kind, enabled, mode
+      ) VALUES (
+        3, 1, 1, 'mc-edge-1',
+        6, 'Worker',
+        7, '值守 Agent',
+        'session-1', 'codex-cli', 1, 'auto_send'
+      )
+    `).run()
+
+    const created = createBase({
+      payload: {
+        binding_id: 3,
+        client_id: 'mc-edge-1',
+        worker_local_agent_id: 6,
+        worker_name: 'Worker',
+        worker_session_id: 'session-1',
+        session_kind: 'codex-cli',
+        steward_local_agent_id: 7,
+        steward_name: '值守 Agent',
+        prompt: 'Worker 正在等待用户确认。',
+      },
+    })
+    leaseEdgeMessages({ clientId: 'mc-edge-1', leaseOwner: 'runtime-1' }, db)
+
+    ackEdgeMessage(
+      {
+        id: created.message.id,
+        clientId: 'mc-edge-1',
+        leaseOwner: 'runtime-1',
+        result: {
+          delivered: true,
+          steward_reply: '继续，按当前方案推进。',
+          steward_session_id: 'steward-session-1',
+        },
+      },
+      db,
+    )
+
+    const row = db.prepare(`
+      SELECT * FROM human_watch_interventions
+      WHERE message_id = ? AND event_type = 'intervention_completed'
+    `).get(created.message.id) as {
+      binding_id: number
+      worker_local_agent_id: number
+      steward_local_agent_id: number
+      event_type: string
+      outcome: string
+      prompt_preview: string
+      message_id: string
+      correlation_id: string
+    } | undefined
+
+    expect(row).toMatchObject({
+      binding_id: 3,
+      worker_local_agent_id: 6,
+      steward_local_agent_id: 7,
+      event_type: 'intervention_completed',
+      outcome: 'success',
+      prompt_preview: '继续，按当前方案推进。',
+      message_id: created.message.id,
+      correlation_id: 'corr-1',
+    })
+  })
+
   it('rejects ack from a different lease owner', () => {
     const created = createBase()
     leaseEdgeMessages({ clientId: 'mc-edge-1', leaseOwner: 'runtime-1' }, db)
@@ -175,4 +245,3 @@ describe('edge-messages', () => {
     expect(leasedSecond[0]?.payload.prompt).toBe('second')
   })
 })
-
