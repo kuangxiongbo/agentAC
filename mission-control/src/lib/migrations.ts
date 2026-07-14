@@ -1937,6 +1937,162 @@ const migrations: Migration[] = [
         ON human_watch_bindings(client_id, worker_session_id, worker_session_kind)`)
     },
   },
+  {
+    id: '070_supervision_goals_and_memories',
+    up(db: Database.Database) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS supervision_goals (
+          id TEXT PRIMARY KEY,
+          workspace_id INTEGER NOT NULL,
+          tenant_id INTEGER,
+          client_id TEXT NOT NULL,
+          steward_local_agent_id INTEGER NOT NULL,
+          steward_session_id TEXT,
+          title TEXT NOT NULL,
+          objective TEXT NOT NULL,
+          success_criteria_json TEXT NOT NULL,
+          constraints_json TEXT NOT NULL DEFAULT '[]',
+          allowed_workers_json TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL DEFAULT 'draft',
+          priority TEXT NOT NULL DEFAULT 'medium',
+          budget_json TEXT NOT NULL,
+          usage_json TEXT NOT NULL DEFAULT '{}',
+          current_plan_version INTEGER NOT NULL DEFAULT 0,
+          requires_plan_approval INTEGER NOT NULL DEFAULT 1,
+          deadline_at INTEGER,
+          created_by TEXT NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          completed_at INTEGER
+        )
+      `)
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS supervision_goal_plans (
+          id TEXT PRIMARY KEY,
+          goal_id TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'draft',
+          plan_json TEXT NOT NULL,
+          rationale TEXT,
+          source_event_id INTEGER,
+          created_by_type TEXT NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (goal_id) REFERENCES supervision_goals(id) ON DELETE CASCADE,
+          UNIQUE(goal_id, version)
+        )
+      `)
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS supervision_goal_tasks (
+          goal_id TEXT NOT NULL,
+          task_id INTEGER NOT NULL,
+          plan_version INTEGER NOT NULL,
+          logical_task_key TEXT NOT NULL,
+          dependencies_json TEXT NOT NULL DEFAULT '[]',
+          acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+          assigned_agent_id TEXT,
+          assigned_session_id TEXT,
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          reassignment_count INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          PRIMARY KEY (goal_id, task_id),
+          FOREIGN KEY (goal_id) REFERENCES supervision_goals(id) ON DELETE CASCADE,
+          FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          UNIQUE(goal_id, logical_task_key, plan_version)
+        )
+      `)
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS supervision_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id INTEGER NOT NULL,
+          tenant_id INTEGER,
+          goal_id TEXT NOT NULL,
+          task_id INTEGER,
+          event_type TEXT NOT NULL,
+          actor_type TEXT NOT NULL,
+          actor_id TEXT,
+          decision TEXT,
+          reason TEXT,
+          evidence_json TEXT,
+          action_json TEXT,
+          message_id TEXT,
+          correlation_id TEXT,
+          idempotency_key TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (goal_id) REFERENCES supervision_goals(id) ON DELETE CASCADE,
+          FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL
+        )
+      `)
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS supervision_leases (
+          goal_id TEXT PRIMARY KEY,
+          owner_id TEXT NOT NULL,
+          lease_expires_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (goal_id) REFERENCES supervision_goals(id) ON DELETE CASCADE
+        )
+      `)
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS steward_memories (
+          id TEXT PRIMARY KEY,
+          workspace_id INTEGER NOT NULL,
+          tenant_id INTEGER,
+          scope_type TEXT NOT NULL,
+          scope_id TEXT NOT NULL,
+          category TEXT NOT NULL,
+          content TEXT NOT NULL,
+          summary TEXT,
+          source_refs_json TEXT NOT NULL DEFAULT '[]',
+          evidence_json TEXT NOT NULL DEFAULT '[]',
+          confidence REAL NOT NULL DEFAULT 0.5,
+          status TEXT NOT NULL DEFAULT 'candidate',
+          supersedes_id TEXT,
+          effective_at INTEGER,
+          expires_at INTEGER,
+          created_by_type TEXT NOT NULL,
+          reviewed_by TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (supersedes_id) REFERENCES steward_memories(id) ON DELETE SET NULL
+        )
+      `)
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS steward_memory_usage (
+          id TEXT PRIMARY KEY,
+          workspace_id INTEGER NOT NULL,
+          tenant_id INTEGER,
+          memory_id TEXT NOT NULL,
+          goal_id TEXT,
+          intervention_id INTEGER,
+          query_text TEXT,
+          adopted INTEGER,
+          outcome TEXT,
+          score REAL,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (memory_id) REFERENCES steward_memories(id) ON DELETE CASCADE,
+          FOREIGN KEY (goal_id) REFERENCES supervision_goals(id) ON DELETE SET NULL,
+          FOREIGN KEY (intervention_id) REFERENCES human_watch_interventions(id) ON DELETE SET NULL
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_supervision_goals_workspace_status
+        ON supervision_goals(workspace_id, status, updated_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_supervision_goals_steward
+        ON supervision_goals(client_id, steward_local_agent_id, status)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_supervision_plans_goal
+        ON supervision_goal_plans(goal_id, version DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_supervision_events_goal
+        ON supervision_events(goal_id, created_at DESC)`)
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_supervision_events_idempotency
+        ON supervision_events(workspace_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_steward_memories_scope_status
+        ON steward_memories(workspace_id, tenant_id, scope_type, scope_id, status, updated_at DESC)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_steward_memory_usage_memory
+        ON steward_memory_usage(memory_id, created_at DESC)`)
+    },
+  },
 ]
 
 export function runMigrations(db: Database.Database) {
