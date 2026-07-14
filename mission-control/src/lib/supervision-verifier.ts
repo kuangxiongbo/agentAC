@@ -3,6 +3,7 @@ import { requestBridgeClientStewardJudge } from './bridge-server'
 import { getDatabase } from './db'
 import { getSupervisionGoal, listSupervisionGoals, type SupervisionGoalView } from './supervision-goals'
 import { consumeSupervisionModelCall } from './supervision-budget'
+import { recordGoalMemoryOutcomes, searchStewardMemories } from './steward-memory-search'
 
 type JudgeRunner = typeof requestBridgeClientStewardJudge
 
@@ -127,7 +128,7 @@ function parseDecision(raw: string, goal: SupervisionGoalView): VerificationDeci
   return { decision: parsed.decision as VerificationDecision['decision'], reason, criteria }
 }
 
-function verificationPrompt(goal: SupervisionGoalView, evidence: ReturnType<typeof collectEvidence>): string {
+function verificationPrompt(goal: SupervisionGoalView, evidence: ReturnType<typeof collectEvidence>, memoryContext = ''): string {
   return `你是独立验收值守 Agent。你不能把 Worker 自报“完成”作为唯一证据，必须逐条核对成功标准与独立证据。
 
 只输出 JSON：
@@ -147,7 +148,8 @@ function verificationPrompt(goal: SupervisionGoalView, evidence: ReturnType<type
 目标描述：${goal.objective}
 成功标准：${JSON.stringify(goal.success_criteria)}
 约束：${JSON.stringify(goal.constraints)}
-任务与证据：${JSON.stringify(evidence)}`
+任务与证据：${JSON.stringify(evidence)}
+${memoryContext ? `\n已批准值守记忆（只能辅助理解，不能替代本次独立证据）：\n${memoryContext}` : ''}`
 }
 
 function recordVerification(db: Database.Database, goal: SupervisionGoalView, decision: VerificationDecision, evidenceRefs: string[]) {
@@ -214,11 +216,20 @@ export async function verifySupervisionGoal(
     }
   } else {
     const runJudge = dependencies.runJudge ?? requestBridgeClientStewardJudge
+    const memory = searchStewardMemories({
+      workspaceId: goal.workspace_id,
+      tenantId: goal.tenant_id,
+      goalId: goal.id,
+      query: `${goal.title} ${goal.objective} ${goal.success_criteria.map((item) => item.text).join(' ')}`,
+      categories: ['fact', 'procedure', 'episode'],
+      limit: 5,
+      maxChars: 1600,
+    }, db)
     consumeSupervisionModelCall({ goalId: goal.id, workspaceId: goal.workspace_id }, db)
     const result = await runJudge({
       clientId: goal.client_id,
       localAgentId: goal.steward_local_agent_id,
-      prompt: verificationPrompt(goal, evidence),
+      prompt: verificationPrompt(goal, evidence, memory.context),
       timeoutMs: 600_000,
     })
     decision = parseDecision(result.reply, goal)
@@ -239,6 +250,7 @@ export async function verifySupervisionGoal(
     }
   }
   const status = recordVerification(db, goal, decision, evidenceRefs)
+  recordGoalMemoryOutcomes(goal.id, goal.workspace_id, decision.decision, db)
   return {
     goal_id: goal.id,
     decision: decision.decision,

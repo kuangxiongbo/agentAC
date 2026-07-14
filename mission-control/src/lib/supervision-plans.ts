@@ -9,6 +9,7 @@ import {
 } from './supervision-goals'
 import { supervisionGoalPlanDraftSchema } from './supervision-validation'
 import { consumeSupervisionModelCall } from './supervision-budget'
+import { searchStewardMemories } from './steward-memory-search'
 
 export interface SupervisionPlanTask {
   logical_key: string
@@ -105,7 +106,7 @@ export function validateSupervisionGoalPlan(
   return parsed.data
 }
 
-function buildPlanPrompt(goal: SupervisionGoalView): string {
+function buildPlanPrompt(goal: SupervisionGoalView, memoryContext = ''): string {
   return `你是目标监督值守 Agent。请把下面目标拆解为可分派给 Worker 的结构化任务计划。
 
 只输出一个 JSON 对象，不要 Markdown、解释或前缀。JSON 必须符合：
@@ -135,7 +136,8 @@ function buildPlanPrompt(goal: SupervisionGoalView): string {
 目标描述：${goal.objective}
 成功标准：${JSON.stringify(goal.success_criteria)}
 约束：${JSON.stringify(goal.constraints)}
-预算：${JSON.stringify(goal.budget)}`
+预算：${JSON.stringify(goal.budget)}
+${memoryContext ? `\n已批准值守记忆（仅作参考，当前目标和安全约束优先）：\n${memoryContext}` : ''}`
 }
 
 function planView(row: SupervisionGoalPlanRow): SupervisionGoalPlanView {
@@ -221,12 +223,21 @@ export async function generateSupervisionGoalPlan(input: {
   const goal = getSupervisionGoal(input.goalId, input.workspaceId, db)
   if (!goal) throw new Error('Goal not found')
   if (goal.status !== 'planning') throw new Error(`Invalid goal state for planning: ${goal.status}`)
+  const memory = searchStewardMemories({
+    workspaceId: goal.workspace_id,
+    tenantId: goal.tenant_id,
+    goalId: goal.id,
+    query: `${goal.title} ${goal.objective} ${goal.constraints.join(' ')}`,
+    categories: ['preference', 'fact', 'procedure', 'episode'],
+    limit: 5,
+    maxChars: 1800,
+  }, db)
   consumeSupervisionModelCall({ goalId: goal.id, workspaceId: goal.workspace_id }, db)
   const runJudge = deps.runJudge ?? requestBridgeClientStewardJudge
   const result = await runJudge({
     clientId: goal.client_id,
     localAgentId: goal.steward_local_agent_id,
-    prompt: buildPlanPrompt(goal),
+    prompt: buildPlanPrompt(goal, memory.context),
     timeoutMs: 600_000,
   })
   const rawPlan = extractJsonObject(result.reply)

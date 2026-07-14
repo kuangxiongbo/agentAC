@@ -19,6 +19,7 @@ import { runSupervisionCorrections } from './supervision-corrections'
 import { runSupervisionVerifications } from './supervision-verifier'
 import { enforceSupervisionBudgets } from './supervision-budget'
 import { runStewardMemoryLearning } from './steward-memory-learning'
+import { forgetStewardMemories } from './steward-memory-search'
 
 const BACKUP_DIR = join(dirname(config.dbPath), 'backups')
 
@@ -523,6 +524,7 @@ async function tick() {
         : id === 'server_gateway_sync' ? await runServerGatewaySync()
         : id === 'supervision_monitor' ? await (async () => {
             const budgets = enforceSupervisionBudgets()
+            const forgotten = forgetStewardMemories()
             const r = await runSupervisionMonitor()
             const corrections = runSupervisionCorrections()
             const verifications = await runSupervisionVerifications()
@@ -530,7 +532,7 @@ async function tick() {
             const errorCount = r.errors.length + corrections.errors.length + verifications.errors.length + learning.errors.length
             return {
               ok: errorCount === 0,
-              message: `Scanned ${r.goals_scanned} goals, blocked ${budgets.blocked} over budget, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}, learned ${learning.candidates} candidates${errorCount ? `, ${errorCount} errors` : ''}`,
+              message: `Scanned ${r.goals_scanned} goals, blocked ${budgets.blocked} over budget, expired ${forgotten.expired + forgotten.harmful} memories, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}, learned ${learning.candidates} candidates${errorCount ? `, ${errorCount} errors` : ''}`,
             }
           })()
         : await runCleanup()
@@ -604,6 +606,7 @@ export async function triggerTask(taskId: string): Promise<{ ok: boolean; messag
   if (taskId === 'server_gateway_sync') return runServerGatewaySync()
   if (taskId === 'supervision_monitor') return (async () => {
     const budgets = enforceSupervisionBudgets()
+    const forgotten = forgetStewardMemories()
     const r = await runSupervisionMonitor()
     const corrections = runSupervisionCorrections()
     const verifications = await runSupervisionVerifications()
@@ -611,7 +614,7 @@ export async function triggerTask(taskId: string): Promise<{ ok: boolean; messag
     const errorCount = r.errors.length + corrections.errors.length + verifications.errors.length + learning.errors.length
     return {
       ok: errorCount === 0,
-      message: `Scanned ${r.goals_scanned} goals, blocked ${budgets.blocked} over budget, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}, learned ${learning.candidates} candidates${errorCount ? `, ${errorCount} errors` : ''}`,
+      message: `Scanned ${r.goals_scanned} goals, blocked ${budgets.blocked} over budget, expired ${forgotten.expired + forgotten.harmful} memories, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}, learned ${learning.candidates} candidates${errorCount ? `, ${errorCount} errors` : ''}`,
     }
   })()
   return { ok: false, message: `Unknown task: ${taskId}` }

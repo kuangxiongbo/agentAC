@@ -23,6 +23,7 @@ import type { HumanWatchBindingMode } from './human-watch-types'
 import { logger } from './logger'
 import { MEMORY_ALLOWED_PREFIXES, MEMORY_PATH } from './memory-path'
 import { searchMemory } from './memory-search'
+import { searchStewardMemories } from './steward-memory-search'
 import {
   isBridgeClientOnline,
   requestBridgeClientAgentDetail,
@@ -325,6 +326,20 @@ async function fetchHumanWatchMemoryContext(
     const maxChars = Math.min(Math.max((context as { memory_max_chars?: number }).memory_max_chars ?? 1200, 200), 3000)
     let rows = [] as string[]
 
+    const curated = searchStewardMemories({
+      workspaceId: binding.workspace_id,
+      tenantId: binding.tenant_id,
+      query,
+      stewardId: binding.steward_local_agent_id,
+      clientId: binding.client_id,
+      categories: ['preference', 'fact', 'procedure', 'episode'],
+      limit,
+      maxChars,
+    })
+    rows.push(...curated.hits.map((hit, index) =>
+      `${index + 1}. 值守长期记忆 ${hit.memory.summary || hit.memory.category}: ${hit.snippet}`,
+    ))
+
     try {
       const edge = await requestBridgeClientMemorySearch({
         clientId: binding.client_id,
@@ -332,14 +347,14 @@ async function fetchHumanWatchMemoryContext(
         limit,
         timeoutMs: 8000,
       })
-      rows = edge.results
+      rows.push(...edge.results
         .slice(0, limit)
         .map((result, index) => {
           const agent = result.agentName ? `${result.agentName} / ` : ''
           const snippet = String(result.snippet || '').replace(/\s+/g, ' ').trim()
           return `${index + 1}. ${agent}${result.title || result.path} (${result.source}:${result.path}): ${snippet}`
         })
-        .filter((line) => line.trim())
+        .filter((line) => line.trim()))
     } catch (err) {
       logger.debug({ err, bindingId: binding.id }, '[HumanWatch] Edge memory search unavailable')
     }

@@ -4,6 +4,7 @@ import { requestBridgeClientStewardJudge } from './bridge-server'
 import { getDatabase } from './db'
 import { getSupervisionGoal, listSupervisionGoals, type SupervisionGoalView } from './supervision-goals'
 import { consumeSupervisionModelCall } from './supervision-budget'
+import { searchStewardMemories } from './steward-memory-search'
 
 interface MonitoredTaskRow {
   task_id: number
@@ -132,7 +133,7 @@ function parseSemanticDecision(raw: string): SemanticDecision {
   }
 }
 
-function semanticPrompt(goal: SupervisionGoalView, task: MonitoredTaskRow, output: string): string {
+function semanticPrompt(goal: SupervisionGoalView, task: MonitoredTaskRow, output: string, memoryContext = ''): string {
   return `你是目标监督值守 Agent。判断 Worker 输出是否偏离目标、任务说明、约束或验收标准。
 
 只输出 JSON：
@@ -144,7 +145,8 @@ function semanticPrompt(goal: SupervisionGoalView, task: MonitoredTaskRow, outpu
 约束：${JSON.stringify(goal.constraints)}
 任务：${task.title}
 任务说明：${task.description || ''}
-Worker 输出：${output}`
+Worker 输出：${output}
+${memoryContext ? `\n已批准值守记忆（仅作参考，当前证据和安全策略优先）：\n${memoryContext}` : ''}`
 }
 
 function deterministicObservations(
@@ -284,11 +286,19 @@ async function semanticObservations(
     if (existing) continue
     checks++
     try {
+      const memory = searchStewardMemories({
+        workspaceId: goal.workspace_id,
+        tenantId: goal.tenant_id,
+        goalId: goal.id,
+        query: `${task.title} ${task.description || ''} ${output}`,
+        limit: 4,
+        maxChars: 1200,
+      }, db)
       consumeSupervisionModelCall({ goalId: goal.id, workspaceId: goal.workspace_id }, db)
       const result = await runJudge({
         clientId: goal.client_id,
         localAgentId: goal.steward_local_agent_id,
-        prompt: semanticPrompt(goal, task, output),
+        prompt: semanticPrompt(goal, task, output, memory.context),
         timeoutMs: 300_000,
       })
       const decision = parseSemanticDecision(result.reply)

@@ -107,7 +107,14 @@ describe('supervision plans', () => {
 
   it('generates and parses a fenced JSON plan from the steward', async () => {
     createGoal(false)
-    const runJudge = vi.fn(async () => ({
+    db.prepare(`
+      INSERT INTO steward_memories (
+        id, workspace_id, tenant_id, scope_type, scope_id, category, content,
+        source_refs_json, evidence_json, confidence, status, created_by_type
+      ) VALUES ('memory-plan', 1, 1, 'user', '2', 'procedure',
+        'Run integration tests before release.', '[]', '[]', 0.9, 'approved', 'human_user')
+    `).run()
+    const runJudge = vi.fn(async (_input: { prompt: string }) => ({
       reply: `\`\`\`json\n${JSON.stringify(plan)}\n\`\`\``,
       sessionId: 'steward-session',
       source: 'test',
@@ -117,6 +124,7 @@ describe('supervision plans', () => {
       workspaceId: 1,
     }, { runJudge }, db)
     expect(runJudge).toHaveBeenCalledOnce()
+    expect(runJudge.mock.calls[0][0].prompt).toContain('Run integration tests before release.')
     expect(saved.status).toBe('approved')
     expect(getSupervisionGoal('goal-plan', 1, db)?.status).toBe('running')
     expect(getSupervisionGoal('goal-plan', 1, db)?.usage).toMatchObject({ model_calls: 1 })
