@@ -18,6 +18,7 @@ import { runSupervisionMonitor } from './supervision-monitor'
 import { runSupervisionCorrections } from './supervision-corrections'
 import { runSupervisionVerifications } from './supervision-verifier'
 import { enforceSupervisionBudgets } from './supervision-budget'
+import { runStewardMemoryLearning } from './steward-memory-learning'
 
 const BACKUP_DIR = join(dirname(config.dbPath), 'backups')
 
@@ -525,10 +526,11 @@ async function tick() {
             const r = await runSupervisionMonitor()
             const corrections = runSupervisionCorrections()
             const verifications = await runSupervisionVerifications()
-            const errorCount = r.errors.length + corrections.errors.length + verifications.errors.length
+            const learning = await runStewardMemoryLearning()
+            const errorCount = r.errors.length + corrections.errors.length + verifications.errors.length + learning.errors.length
             return {
               ok: errorCount === 0,
-              message: `Scanned ${r.goals_scanned} goals, blocked ${budgets.blocked} over budget, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}${errorCount ? `, ${errorCount} errors` : ''}`,
+              message: `Scanned ${r.goals_scanned} goals, blocked ${budgets.blocked} over budget, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}, learned ${learning.candidates} candidates${errorCount ? `, ${errorCount} errors` : ''}`,
             }
           })()
         : await runCleanup()
@@ -605,10 +607,11 @@ export async function triggerTask(taskId: string): Promise<{ ok: boolean; messag
     const r = await runSupervisionMonitor()
     const corrections = runSupervisionCorrections()
     const verifications = await runSupervisionVerifications()
-    const errorCount = r.errors.length + corrections.errors.length + verifications.errors.length
+    const learning = await runStewardMemoryLearning()
+    const errorCount = r.errors.length + corrections.errors.length + verifications.errors.length + learning.errors.length
     return {
       ok: errorCount === 0,
-      message: `Scanned ${r.goals_scanned} goals, blocked ${budgets.blocked} over budget, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}${errorCount ? `, ${errorCount} errors` : ''}`,
+      message: `Scanned ${r.goals_scanned} goals, blocked ${budgets.blocked} over budget, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}, learned ${learning.candidates} candidates${errorCount ? `, ${errorCount} errors` : ''}`,
     }
   })()
   return { ok: false, message: `Unknown task: ${taskId}` }
