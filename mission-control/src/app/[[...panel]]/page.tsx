@@ -38,6 +38,7 @@ import { ExecApprovalPanel } from '@/components/panels/exec-approval-panel'
 import { SystemMonitorPanel } from '@/components/panels/system-monitor-panel'
 import { ChatPagePanel } from '@/components/panels/chat-page-panel'
 import { HumanWatchPanel } from '@/components/panels/human-watch-panel'
+import { SupervisionPanel } from '@/components/panels/supervision-panel'
 import { ChatPanel } from '@/components/chat/chat-panel'
 import { getPluginPanel } from '@/lib/plugins'
 import { shouldRedirectDashboardToHttps } from '@/lib/browser-security'
@@ -472,7 +473,7 @@ export default function Home() {
 }
 
 const ESSENTIAL_PANELS = new Set([
-  'overview', 'agents', 'tasks', 'chat', 'activity', 'logs', 'settings',
+  'overview', 'agents', 'tasks', 'supervision', 'chat', 'activity', 'logs', 'settings',
 ])
 
 function ContentRouter({ tab }: { tab: string }) {
@@ -587,6 +588,8 @@ function ContentRouter({ tab }: { tab: string }) {
       return <ChannelsPanel />
     case 'human-watch':
       return <HumanWatchPanel />
+    case 'supervision':
+      return <SupervisionPanel />
     case 'nodes':
       if (isLocal) return <LocalModeUnavailable panel={tab} />
       return <NodesPanel />

@@ -145,5 +145,19 @@ describe('supervision goal routes', () => {
       worker_local_agent_id: 11,
     })
     expect((db.prepare(`SELECT COUNT(*) AS count FROM edge_messages`).get() as { count: number }).count).toBe(1)
+
+    const detailRoute = await import('@/app/api/supervision/goals/[id]/route')
+    const detailResponse = await detailRoute.GET(
+      new NextRequest(`http://localhost/api/supervision/goals/${created.goal.id}`),
+      { params: Promise.resolve({ id: created.goal.id }) },
+    )
+    expect(detailResponse.status).toBe(200)
+    const detail = await detailResponse.json()
+    expect(detail.tasks).toEqual([
+      expect.objectContaining({ logical_task_key: 'implement', status: 'in_progress' }),
+    ])
+    expect(detail.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_type: 'goal_task_dispatched' }),
+    ]))
   })
 })

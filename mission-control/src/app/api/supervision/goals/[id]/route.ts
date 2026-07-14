@@ -3,7 +3,7 @@ import { requireRole } from '@/lib/auth'
 import { mutationLimiter } from '@/lib/rate-limit'
 import { validateBody } from '@/lib/validation'
 import { updateSupervisionGoalSchema } from '@/lib/supervision-validation'
-import { getSupervisionGoal, listSupervisionGoalEvents, updateSupervisionGoal } from '@/lib/supervision-goals'
+import { getSupervisionGoal, listSupervisionGoalEvents, listSupervisionGoalTasks, updateSupervisionGoal } from '@/lib/supervision-goals'
 
 export const dynamic = 'force-dynamic'
 
@@ -19,7 +19,11 @@ export async function GET(
   if (!goal || (auth.user.tenant_id != null && goal.tenant_id !== auth.user.tenant_id)) {
     return NextResponse.json({ error: 'Goal not found' }, { status: 404 })
   }
-  return NextResponse.json({ goal, events: listSupervisionGoalEvents(id, workspaceId) })
+  return NextResponse.json({
+    goal,
+    tasks: listSupervisionGoalTasks(id, workspaceId),
+    events: listSupervisionGoalEvents(id, workspaceId),
+  })
 }
 
 export async function PATCH(

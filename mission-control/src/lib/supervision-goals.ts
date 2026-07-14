@@ -455,3 +455,22 @@ export function listSupervisionGoalEvents(
     ORDER BY id ASC
   `).all(goalId, workspaceId) as Array<Record<string, unknown>>
 }
+
+export function listSupervisionGoalTasks(
+  goalId: string,
+  workspaceId: number,
+  database?: Database.Database,
+) {
+  return dbOr(database).prepare(`
+    SELECT sgt.goal_id, sgt.task_id, sgt.plan_version, sgt.logical_task_key,
+           sgt.dependencies_json, sgt.acceptance_criteria_json,
+           sgt.assigned_agent_id, sgt.assigned_session_id, sgt.retry_count,
+           sgt.reassignment_count, t.title, t.description, t.status,
+           t.priority, t.assigned_to, t.outcome, t.resolution,
+           t.error_message, t.metadata, t.updated_at
+    FROM supervision_goal_tasks sgt
+    JOIN tasks t ON t.id = sgt.task_id AND t.workspace_id = ?
+    WHERE sgt.goal_id = ?
+    ORDER BY sgt.plan_version DESC, t.id ASC
+  `).all(workspaceId, goalId) as Array<Record<string, unknown>>
+}
