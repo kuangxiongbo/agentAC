@@ -14,6 +14,7 @@ import { dispatchAssignedTasks, runAegisReviews, requeueStaleTasks, autoRouteInb
 import { spawnRecurringTasks } from './recurring-tasks'
 import { runServerGatewaySync } from './gateway-sync'
 import { startRemoteBridge } from './remote-server-bridge'
+import { runSupervisionMonitor } from './supervision-monitor'
 
 const BACKUP_DIR = join(dirname(config.dbPath), 'backups')
 
@@ -430,6 +431,15 @@ export function initScheduler() {
     running: false,
   })
 
+  tasks.set('supervision_monitor', {
+    name: 'Goal Supervision Monitor',
+    intervalMs: TICK_MS,
+    lastRun: null,
+    nextRun: now + 40_000,
+    enabled: true,
+    running: false,
+  })
+
   // Start the tick loop
   tickInterval = setInterval(tick, TICK_MS)
   eventBus.on('server-event', (event) => {
@@ -473,8 +483,9 @@ async function tick() {
       : id === 'recurring_task_spawn' ? 'general.recurring_task_spawn'
       : id === 'stale_task_requeue' ? 'general.stale_task_requeue'
       : id === 'server_gateway_sync' ? 'general.server_gateway_sync'
+      : id === 'supervision_monitor' ? 'general.supervision_monitor'
       : 'general.agent_heartbeat'
-    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue' || id === 'server_gateway_sync'
+    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue' || id === 'server_gateway_sync' || id === 'supervision_monitor'
     if (!isSettingEnabled(settingKey, defaultEnabled)) continue
     
     // Skip agent-related tasks if local monitoring is disabled
@@ -506,6 +517,10 @@ async function tick() {
         : id === 'recurring_task_spawn' ? await spawnRecurringTasks()
         : id === 'stale_task_requeue' ? await requeueStaleTasks()
         : id === 'server_gateway_sync' ? await runServerGatewaySync()
+        : id === 'supervision_monitor' ? await runSupervisionMonitor().then((r) => ({
+            ok: r.errors.length === 0,
+            message: `Scanned ${r.goals_scanned} goals, created ${r.observations_created} observations${r.errors.length ? `, ${r.errors.length} errors` : ''}`,
+          }))
         : await runCleanup()
       task.lastResult = { ...result, timestamp: now }
     } catch (err: any) {
@@ -543,8 +558,9 @@ export function getSchedulerStatus() {
       : id === 'recurring_task_spawn' ? 'general.recurring_task_spawn'
       : id === 'stale_task_requeue' ? 'general.stale_task_requeue'
       : id === 'server_gateway_sync' ? 'general.server_gateway_sync'
+      : id === 'supervision_monitor' ? 'general.supervision_monitor'
       : 'general.agent_heartbeat'
-    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue' || id === 'server_gateway_sync'
+    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue' || id === 'server_gateway_sync' || id === 'supervision_monitor'
     result.push({
       id,
       name: task.name,
@@ -574,6 +590,10 @@ export async function triggerTask(taskId: string): Promise<{ ok: boolean; messag
   if (taskId === 'recurring_task_spawn') return spawnRecurringTasks()
   if (taskId === 'stale_task_requeue') return requeueStaleTasks()
   if (taskId === 'server_gateway_sync') return runServerGatewaySync()
+  if (taskId === 'supervision_monitor') return runSupervisionMonitor().then((r) => ({
+    ok: r.errors.length === 0,
+    message: `Scanned ${r.goals_scanned} goals, created ${r.observations_created} observations${r.errors.length ? `, ${r.errors.length} errors` : ''}`,
+  }))
   return { ok: false, message: `Unknown task: ${taskId}` }
 }
 
