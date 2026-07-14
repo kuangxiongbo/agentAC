@@ -382,6 +382,28 @@ export function applySupervisionGoalAction(input: {
   const now = Math.floor(Date.now() / 1000)
   const completedAt = target === 'completed' ? now : null
   db.transaction(() => {
+    if (input.action === 'approve_plan') {
+      const planVersion = input.planVersion ?? current.current_plan_version
+      const approved = db.prepare(`
+        UPDATE supervision_goal_plans
+        SET status = 'approved'
+        WHERE goal_id = ? AND version = ? AND status = 'draft'
+      `).run(current.id, planVersion)
+      if (approved.changes !== 1) throw new Error('Approved plan not found')
+      db.prepare(`
+        UPDATE supervision_goal_plans
+        SET status = 'superseded'
+        WHERE goal_id = ? AND version != ? AND status = 'approved'
+      `).run(current.id, planVersion)
+    } else if (input.action === 'reject_plan') {
+      const planVersion = input.planVersion ?? current.current_plan_version
+      const rejected = db.prepare(`
+        UPDATE supervision_goal_plans
+        SET status = 'rejected'
+        WHERE goal_id = ? AND version = ? AND status = 'draft'
+      `).run(current.id, planVersion)
+      if (rejected.changes !== 1) throw new Error('Plan draft not found')
+    }
     const result = db.prepare(`
       UPDATE supervision_goals
       SET status = ?,

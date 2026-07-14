@@ -26,6 +26,28 @@ describe('supervision goal routes', () => {
       ) VALUES ('edge-a', 'Mac', 7, 'Goal Steward', 'edge-a-Goal Steward',
         'human-watch', 'idle', 'codex', 'steward-session', unixepoch())
     `).run()
+    db.prepare(`
+      INSERT INTO sync_agent_index (
+        client_id, client_name, local_agent_id, original_name, remote_name,
+        role, status, framework, session_key, updated_at
+      ) VALUES ('edge-a', 'Mac', 11, 'Backend Worker', 'edge-a-Backend Worker',
+        'developer', 'idle', 'codex', 'worker-session', unixepoch())
+    `).run()
+    db.prepare(`
+      INSERT INTO agents (
+        name, role, status, config, workspace_id, source, node_id, framework, hidden
+      ) VALUES ('mac-backend', 'developer', 'idle', ?, 1, 'client', 'edge-a', 'codex', 0)
+    `).run(JSON.stringify({
+      local_agent_id: 11,
+      original_name: 'Backend Worker',
+      capabilities: ['backend'],
+    }))
+    db.prepare(`
+      INSERT INTO sync_clients (
+        client_id, client_name, workspace_id, agent_count, last_seen,
+        last_sync_source, created_at, updated_at
+      ) VALUES ('edge-a', 'Mac', 1, 2, unixepoch(), 'test', unixepoch(), unixepoch())
+    `).run()
     requireRole.mockReturnValue({
       user: {
         id: 2,
@@ -104,5 +126,24 @@ describe('supervision goal routes', () => {
     expect(actionResponse.status).toBe(200)
     const action = await actionResponse.json()
     expect(action.goal).toMatchObject({ status: 'running', current_plan_version: 1, version: 3 })
+
+    const dispatchRoute = await import('@/app/api/supervision/goals/[id]/dispatch/route')
+    const dispatchResponse = await dispatchRoute.POST(
+      new NextRequest(`http://localhost/api/supervision/goals/${created.goal.id}/dispatch`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      }),
+      { params: Promise.resolve({ id: created.goal.id }) },
+    )
+    expect(dispatchResponse.status).toBe(200)
+    const dispatched = await dispatchResponse.json()
+    expect(dispatched).toMatchObject({ created_count: 1, activated_count: 1, blocked_count: 0 })
+    expect(dispatched.tasks[0]).toMatchObject({
+      logical_key: 'implement',
+      status: 'in_progress',
+      worker_local_agent_id: 11,
+    })
+    expect((db.prepare(`SELECT COUNT(*) AS count FROM edge_messages`).get() as { count: number }).count).toBe(1)
   })
 })

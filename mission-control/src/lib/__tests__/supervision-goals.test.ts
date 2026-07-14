@@ -121,6 +121,11 @@ describe('supervision goals', () => {
     }, db)).toThrow('Invalid goal transition')
 
     db.prepare(`UPDATE supervision_goals SET status='awaiting_plan_approval' WHERE id='goal-1'`).run()
+    db.prepare(`
+      INSERT INTO supervision_goal_plans (
+        id, goal_id, version, status, plan_json, created_by_type
+      ) VALUES ('plan-1', 'goal-1', 1, 'draft', '{"summary":"test","tasks":[]}', 'human_user')
+    `).run()
     const running = applySupervisionGoalAction({
       goalId: 'goal-1',
       workspaceId: 1,
@@ -146,5 +151,6 @@ describe('supervision goals', () => {
     expect(completed.status).toBe('completed')
     expect(completed.completed_at).toBeTypeOf('number')
     expect(getSupervisionGoal('goal-1', 1, db)?.current_plan_version).toBe(1)
+    expect((db.prepare(`SELECT status FROM supervision_goal_plans WHERE id='plan-1'`).get() as { status: string }).status).toBe('approved')
   })
 })
