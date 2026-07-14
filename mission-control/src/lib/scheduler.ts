@@ -16,6 +16,7 @@ import { runServerGatewaySync } from './gateway-sync'
 import { startRemoteBridge } from './remote-server-bridge'
 import { runSupervisionMonitor } from './supervision-monitor'
 import { runSupervisionCorrections } from './supervision-corrections'
+import { runSupervisionVerifications } from './supervision-verifier'
 
 const BACKUP_DIR = join(dirname(config.dbPath), 'backups')
 
@@ -518,12 +519,13 @@ async function tick() {
         : id === 'recurring_task_spawn' ? await spawnRecurringTasks()
         : id === 'stale_task_requeue' ? await requeueStaleTasks()
         : id === 'server_gateway_sync' ? await runServerGatewaySync()
-        : id === 'supervision_monitor' ? await runSupervisionMonitor().then((r) => {
+        : id === 'supervision_monitor' ? await runSupervisionMonitor().then(async (r) => {
             const corrections = runSupervisionCorrections()
-            const errorCount = r.errors.length + corrections.errors.length
+            const verifications = await runSupervisionVerifications()
+            const errorCount = r.errors.length + corrections.errors.length + verifications.errors.length
             return {
               ok: errorCount === 0,
-              message: `Scanned ${r.goals_scanned} goals, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}${errorCount ? `, ${errorCount} errors` : ''}`,
+              message: `Scanned ${r.goals_scanned} goals, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}${errorCount ? `, ${errorCount} errors` : ''}`,
             }
           })
         : await runCleanup()
@@ -595,12 +597,13 @@ export async function triggerTask(taskId: string): Promise<{ ok: boolean; messag
   if (taskId === 'recurring_task_spawn') return spawnRecurringTasks()
   if (taskId === 'stale_task_requeue') return requeueStaleTasks()
   if (taskId === 'server_gateway_sync') return runServerGatewaySync()
-  if (taskId === 'supervision_monitor') return runSupervisionMonitor().then((r) => {
+  if (taskId === 'supervision_monitor') return runSupervisionMonitor().then(async (r) => {
     const corrections = runSupervisionCorrections()
-    const errorCount = r.errors.length + corrections.errors.length
+    const verifications = await runSupervisionVerifications()
+    const errorCount = r.errors.length + corrections.errors.length + verifications.errors.length
     return {
       ok: errorCount === 0,
-      message: `Scanned ${r.goals_scanned} goals, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}${errorCount ? `, ${errorCount} errors` : ''}`,
+      message: `Scanned ${r.goals_scanned} goals, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}${errorCount ? `, ${errorCount} errors` : ''}`,
     }
   })
   return { ok: false, message: `Unknown task: ${taskId}` }
