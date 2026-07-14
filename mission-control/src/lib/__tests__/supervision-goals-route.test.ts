@@ -66,19 +66,43 @@ describe('supervision goal routes', () => {
     const listed = await listResponse.json()
     expect(listed.total).toBe(1)
 
-    db.prepare(`UPDATE supervision_goals SET status='awaiting_plan_approval' WHERE id=?`)
-      .run(created.goal.id)
+    const planRoute = await import('@/app/api/supervision/goals/[id]/plan/route')
+    const planResponse = await planRoute.POST(
+      new NextRequest(`http://localhost/api/supervision/goals/${created.goal.id}/plan`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'submit',
+          draft: {
+            summary: 'Implement then verify',
+            tasks: [{
+              logical_key: 'implement',
+              title: 'Implement',
+              description: 'Implement the release change',
+              dependencies: [],
+              required_capabilities: ['backend'],
+              acceptance_criteria: ['Tests pass'],
+              risk: 'low',
+            }],
+          },
+        }),
+      }),
+      { params: Promise.resolve({ id: created.goal.id }) },
+    )
+    expect(planResponse.status).toBe(201)
+    expect((await planResponse.json()).plan).toMatchObject({ version: 1, status: 'draft' })
+
     const actionsRoute = await import('@/app/api/supervision/goals/[id]/actions/route')
     const actionResponse = await actionsRoute.POST(
       new NextRequest(`http://localhost/api/supervision/goals/${created.goal.id}/actions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ action: 'approve_plan', version: 1, plan_version: 1 }),
+        body: JSON.stringify({ action: 'approve_plan', version: 2, plan_version: 1 }),
       }),
       { params: Promise.resolve({ id: created.goal.id }) },
     )
     expect(actionResponse.status).toBe(200)
     const action = await actionResponse.json()
-    expect(action.goal).toMatchObject({ status: 'running', current_plan_version: 1, version: 2 })
+    expect(action.goal).toMatchObject({ status: 'running', current_plan_version: 1, version: 3 })
   })
 })

@@ -70,3 +70,31 @@ export const supervisionGoalActionSchema = z.object({
   reason: z.string().max(5000).optional(),
   plan_version: z.number().int().positive().optional(),
 })
+
+export const supervisionPlanTaskSchema = z.object({
+  logical_key: z.string().regex(/^[a-z0-9][a-z0-9._-]*$/).max(100),
+  title: z.string().min(1).max(500),
+  description: z.string().min(1).max(5000),
+  dependencies: z.array(z.string().min(1).max(100)).max(50).default([]),
+  required_capabilities: z.array(z.string().min(1).max(100)).max(30).default([]),
+  preferred_framework: z.enum(['claude-code', 'codex-cli', 'hermes']).optional(),
+  acceptance_criteria: z.array(z.string().min(1).max(1000)).min(1).max(30),
+  estimated_minutes: z.number().int().min(1).max(30 * 24 * 60).optional(),
+  risk: z.enum(['low', 'medium', 'high', 'critical']).default('low'),
+})
+
+export const supervisionGoalPlanDraftSchema = z.object({
+  summary: z.string().min(1).max(5000),
+  tasks: z.array(supervisionPlanTaskSchema).min(1).max(100),
+})
+
+export const createSupervisionPlanSchema = z.object({
+  mode: z.enum(['generate', 'submit']).default('generate'),
+  draft: supervisionGoalPlanDraftSchema.optional(),
+  rationale: z.string().max(5000).optional(),
+  source_event_id: z.number().int().positive().optional(),
+}).superRefine((value, context) => {
+  if (value.mode === 'submit' && !value.draft) {
+    context.addIssue({ code: 'custom', path: ['draft'], message: 'draft is required in submit mode' })
+  }
+})
