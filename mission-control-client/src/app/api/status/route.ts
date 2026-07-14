@@ -509,6 +509,7 @@ async function performHealthCheck() {
   const health: any = {
     status: 'healthy',
     version: APP_VERSION,
+    process_id: process.pid,
     uptime: process.uptime(),
     checks: [],
     timestamp: Date.now()

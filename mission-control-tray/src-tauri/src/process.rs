@@ -15,6 +15,8 @@ static CHILD: Mutex<Option<Child>> = Mutex::new(None);
 struct HealthResponse {
     #[serde(default)]
     version: Option<String>,
+    #[serde(default)]
+    process_id: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -23,6 +25,31 @@ struct PortOwnerInfo {
     command: Option<String>,
     cwd: Option<PathBuf>,
     owned_by_edge: bool,
+}
+
+fn duplicate_owned_port_victims(
+    infos: &[PortOwnerInfo],
+    tracked_pid: Option<&str>,
+) -> Vec<String> {
+    if infos.len() <= 1 || infos.iter().any(|info| !info.owned_by_edge) {
+        return Vec::new();
+    }
+
+    match tracked_pid.filter(|pid| infos.iter().any(|info| info.pid == *pid)) {
+        Some(pid) => infos
+            .iter()
+            .filter(|info| info.pid != pid)
+            .map(|info| info.pid.clone())
+            .collect(),
+        None => infos.iter().map(|info| info.pid.clone()).collect(),
+    }
+}
+
+fn tracked_child_pid() -> Option<String> {
+    CHILD
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|child| child.id().to_string()))
 }
 
 pub fn is_running() -> bool {
@@ -382,6 +409,69 @@ fn kill_port_owner(port: u16) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn terminate_pids(pids: &[String]) {
+    for pid in pids {
+        let _ = Command::new("kill").arg(pid).status();
+    }
+    for _ in 0..20 {
+        let alive = pids.iter().any(|pid| {
+            Command::new("kill")
+                .args(["-0", pid])
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false)
+        });
+        if !alive {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    for pid in pids {
+        let _ = Command::new("kill").args(["-KILL", pid]).status();
+    }
+}
+
+fn recover_duplicate_owned_port(cfg: &EdgeConfig) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let infos = port_owner_infos(cfg.port)?;
+        if infos.len() <= 1 {
+            return Ok(false);
+        }
+        if infos.iter().any(|info| !info.owned_by_edge) {
+            return Err(format!(
+                "端口 {} 同时被 E-Agent Edge 和其他程序占用，未自动终止任何进程：\n{}",
+                cfg.port,
+                format_port_owner_infos(&infos)
+            ));
+        }
+        let tracked = tracked_child_pid();
+        let victims = duplicate_owned_port_victims(&infos, tracked.as_deref());
+        if victims.is_empty() {
+            return Ok(false);
+        }
+        let responder_pid = probe_health(cfg)
+            .and_then(|health| health.process_id)
+            .map(|pid| pid.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        eprintln!(
+            "[E-Agent Edge] 端口 {} 检测到 {} 个重复 runtime（health responder PID {}），保留当前托盘实例并清理 PID: {}",
+            cfg.port,
+            infos.len(),
+            responder_pid,
+            victims.join(", ")
+        );
+        terminate_pids(&victims);
+        return Ok(true);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = cfg;
+        Ok(false)
+    }
+}
+
 fn recover_owned_port(cfg: &EdgeConfig, reason: &str) -> Result<bool, String> {
     if !port_in_use(cfg.port) {
         return Ok(false);
@@ -510,6 +600,7 @@ fn apply_bootstrap_settings_if_needed(
 
 /// 确保边缘服务在跑：已配置用户启动托盘 / 安装完成后自动调用。
 pub fn ensure_running(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<(), String> {
+    let _ = recover_duplicate_owned_port(cfg)?;
     if is_running() {
         if !is_current_runtime_healthy(cfg) {
             eprintln!("[E-Agent Edge] 已跟踪的 Web 客户端版本不是当前 runtime，准备重启");
@@ -600,6 +691,7 @@ fn command_for_node_server(node: &std::path::Path) -> Command {
 
 pub fn start(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<(), String> {
     runtime::ensure_runtime(cfg)?;
+    let _ = recover_duplicate_owned_port(cfg)?;
     if is_running() {
         return Ok(());
     }
@@ -749,4 +841,39 @@ pub fn restart(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<
         );
     }
     ensure_running(cfg, bootstrap)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{duplicate_owned_port_victims, PortOwnerInfo};
+
+    fn owner(pid: &str, owned_by_edge: bool) -> PortOwnerInfo {
+        PortOwnerInfo {
+            pid: pid.to_string(),
+            command: Some("node".to_string()),
+            cwd: None,
+            owned_by_edge,
+        }
+    }
+
+    #[test]
+    fn duplicate_cleanup_keeps_tracked_runtime() {
+        let infos = vec![owner("100", true), owner("200", true)];
+        assert_eq!(duplicate_owned_port_victims(&infos, Some("200")), vec!["100"]);
+    }
+
+    #[test]
+    fn duplicate_cleanup_reclaims_all_untracked_edge_runtimes() {
+        let infos = vec![owner("100", true), owner("200", true)];
+        assert_eq!(
+            duplicate_owned_port_victims(&infos, None),
+            vec!["100", "200"]
+        );
+    }
+
+    #[test]
+    fn duplicate_cleanup_never_kills_mixed_owners() {
+        let infos = vec![owner("100", true), owner("200", false)];
+        assert!(duplicate_owned_port_victims(&infos, Some("100")).is_empty());
+    }
 }
