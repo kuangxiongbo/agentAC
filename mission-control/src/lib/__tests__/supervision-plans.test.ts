@@ -119,5 +119,21 @@ describe('supervision plans', () => {
     expect(runJudge).toHaveBeenCalledOnce()
     expect(saved.status).toBe('approved')
     expect(getSupervisionGoal('goal-plan', 1, db)?.status).toBe('running')
+    expect(getSupervisionGoal('goal-plan', 1, db)?.usage).toMatchObject({ model_calls: 1 })
+  })
+
+  it('forces human approval for high-risk tasks even when auto approval is configured', () => {
+    createGoal(false)
+    const saved = saveSupervisionGoalPlan({
+      goalId: 'goal-plan',
+      workspaceId: 1,
+      draft: {
+        ...plan,
+        tasks: [{ ...plan.tasks[0], risk: 'high' as const }],
+      },
+      createdByType: 'steward_agent',
+    }, db)
+    expect(saved.status).toBe('draft')
+    expect(getSupervisionGoal('goal-plan', 1, db)?.status).toBe('awaiting_plan_approval')
   })
 })

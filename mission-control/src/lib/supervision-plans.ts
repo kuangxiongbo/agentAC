@@ -8,6 +8,7 @@ import {
   type SupervisionGoalView,
 } from './supervision-goals'
 import { supervisionGoalPlanDraftSchema } from './supervision-validation'
+import { consumeSupervisionModelCall } from './supervision-budget'
 
 export interface SupervisionPlanTask {
   logical_key: string
@@ -161,8 +162,10 @@ export function saveSupervisionGoalPlan(input: {
       SELECT COALESCE(MAX(version), 0) + 1 AS version
       FROM supervision_goal_plans WHERE goal_id = ?
     `).get(goal.id) as { version: number }).version
-    const planStatus = goal.requires_plan_approval ? 'draft' : 'approved'
-    const nextGoalStatus = goal.requires_plan_approval ? 'awaiting_plan_approval' : 'running'
+    const hasHighRiskTask = plan.tasks.some((task) => task.risk === 'high' || task.risk === 'critical')
+    const requiresApproval = goal.requires_plan_approval || hasHighRiskTask
+    const planStatus = requiresApproval ? 'draft' : 'approved'
+    const nextGoalStatus = requiresApproval ? 'awaiting_plan_approval' : 'running'
     const id = randomUUID()
     db.prepare(`
       INSERT INTO supervision_goal_plans (
@@ -199,7 +202,7 @@ export function saveSupervisionGoalPlan(input: {
       input.actorId ?? null,
       planStatus,
       input.rationale ?? null,
-      JSON.stringify({ plan_id: id, plan_version: next, task_count: plan.tasks.length, goal_status: nextGoalStatus }),
+      JSON.stringify({ plan_id: id, plan_version: next, task_count: plan.tasks.length, goal_status: nextGoalStatus, high_risk_approval_required: hasHighRiskTask }),
       `goal:${goal.id}:plan:${next}:created`,
       now,
     )
@@ -218,6 +221,7 @@ export async function generateSupervisionGoalPlan(input: {
   const goal = getSupervisionGoal(input.goalId, input.workspaceId, db)
   if (!goal) throw new Error('Goal not found')
   if (goal.status !== 'planning') throw new Error(`Invalid goal state for planning: ${goal.status}`)
+  consumeSupervisionModelCall({ goalId: goal.id, workspaceId: goal.workspace_id }, db)
   const runJudge = deps.runJudge ?? requestBridgeClientStewardJudge
   const result = await runJudge({
     clientId: goal.client_id,

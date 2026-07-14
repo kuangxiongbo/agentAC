@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import { requestBridgeClientStewardJudge } from './bridge-server'
 import { getDatabase } from './db'
 import { getSupervisionGoal, listSupervisionGoals, type SupervisionGoalView } from './supervision-goals'
+import { consumeSupervisionModelCall } from './supervision-budget'
 
 type JudgeRunner = typeof requestBridgeClientStewardJudge
 
@@ -213,6 +214,7 @@ export async function verifySupervisionGoal(
     }
   } else {
     const runJudge = dependencies.runJudge ?? requestBridgeClientStewardJudge
+    consumeSupervisionModelCall({ goalId: goal.id, workspaceId: goal.workspace_id }, db)
     const result = await runJudge({
       clientId: goal.client_id,
       localAgentId: goal.steward_local_agent_id,
