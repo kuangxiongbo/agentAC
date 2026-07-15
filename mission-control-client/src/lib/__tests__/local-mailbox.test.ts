@@ -1,6 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { runMigrations } from '@/lib/migrations'
+
+vi.mock('@/lib/edge-client-identity', () => ({
+  resolveLocalClientId: (db: Database.Database) => {
+    const row = db.prepare(`SELECT value FROM settings WHERE key = 'device.client_id'`).get() as { value?: string } | undefined
+    return row?.value || 'mc-node-static'
+  },
+}))
+
 import {
   enqueuePermissionDecisionSync,
   getLocalMailboxStatus,

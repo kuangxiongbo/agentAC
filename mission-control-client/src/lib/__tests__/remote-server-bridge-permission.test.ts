@@ -48,6 +48,10 @@ vi.mock('@/lib/config', () => ({
   REMOTE_SERVER_URL: 'ws://127.0.0.1:5000',
   REMOTE_SERVER_TOKEN: '',
   REMOTE_RECONNECT_MS: 1000,
+  config: {
+    memoryDir: '',
+    memoryAllowedPrefixes: [],
+  },
 }))
 
 vi.mock('@/lib/local-session-executor', () => ({

@@ -101,7 +101,7 @@ describe('supervision monitor', () => {
       workspaceId: 1,
       ownerId: 'monitor-a',
       nowSeconds: now,
-    }, { runJudge: vi.fn() }, db)
+    }, { runJudge: vi.fn(), isClientOnline: () => false }, db)
     expect(result).toMatchObject({ goals_scanned: 1, goals_leased: 1, semantic_checks: 0 })
     const types = listSupervisionGoalEvents('goal-monitor', 1, db).map((event) => event.event_type)
     expect(types).toEqual(expect.arrayContaining([
@@ -115,8 +115,68 @@ describe('supervision monitor', () => {
       workspaceId: 1,
       ownerId: 'monitor-b',
       nowSeconds: now,
-    }, { runJudge: vi.fn() }, db)
+    }, { runJudge: vi.fn(), isClientOnline: () => false }, db)
     expect(blockedByLease.goals_leased).toBe(0)
+  })
+
+  it('does not mark a resumable worker offline while its bridge client is online', async () => {
+    db.prepare(`UPDATE sync_agent_index SET status = 'offline', updated_at = ? WHERE local_agent_id = 11`)
+      .run(now - 600)
+
+    await runSupervisionMonitor({
+      workspaceId: 1,
+      ownerId: 'monitor-online-bridge',
+      nowSeconds: now,
+    }, {
+      runJudge: vi.fn(),
+      isClientOnline: () => true,
+      wakeup: () => true,
+    }, db)
+
+    expect(listSupervisionGoalEvents('goal-monitor', 1, db))
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ event_type: 'worker_offline_detected' })]))
+    expect(getSupervisionGoal('goal-monitor', 1, db)?.status).toBe('running')
+  })
+
+  it('automatically activates a dependent task after its prerequisite completes', async () => {
+    const row = db.prepare(`SELECT plan_json FROM supervision_goal_plans WHERE goal_id = 'goal-monitor' AND version = 1`)
+      .get() as { plan_json: string }
+    const plan = JSON.parse(row.plan_json)
+    plan.tasks.push({
+      logical_key: 'verify',
+      title: 'Verify backend',
+      description: 'Run the read-only verification',
+      dependencies: ['implement'],
+      required_capabilities: ['backend'],
+      acceptance_criteria: ['Verification passes'],
+      risk: 'low',
+    })
+    db.prepare(`UPDATE supervision_goal_plans SET plan_json = ? WHERE goal_id = 'goal-monitor' AND version = 1`)
+      .run(JSON.stringify(plan))
+    const expanded = dispatchSupervisionGoal({ goalId: 'goal-monitor', workspaceId: 1 }, {
+      isClientOnline: () => true,
+      wakeup: () => true,
+    }, db)
+    const dependentId = expanded.tasks.find((task) => task.logical_key === 'verify')?.task_id
+    expect(dependentId).toBeTypeOf('number')
+    expect(db.prepare(`SELECT status FROM tasks WHERE id = ?`).get(dependentId) as { status: string })
+      .toEqual({ status: 'inbox' })
+    db.prepare(`UPDATE tasks SET status = 'done', outcome = 'success', updated_at = ? WHERE id = ?`)
+      .run(now + 60, taskId)
+
+    const result = await runSupervisionMonitor({
+      workspaceId: 1,
+      ownerId: 'monitor-dispatch-dependent',
+      nowSeconds: now + 60,
+    }, {
+      runJudge: vi.fn(),
+      isClientOnline: () => true,
+      wakeup: () => true,
+    }, db)
+
+    expect(result).toMatchObject({ dispatches_run: 1, tasks_activated: 1 })
+    expect(db.prepare(`SELECT status FROM tasks WHERE id = ?`).get(dependentId))
+      .toEqual({ status: 'in_progress' })
   })
 
   it('uses the steward for semantic deviation detection and enters verification', async () => {
@@ -136,7 +196,7 @@ describe('supervision monitor', () => {
       workspaceId: 1,
       ownerId: 'monitor-semantic',
       nowSeconds: now + 60,
-    }, { runJudge }, db)
+    }, { runJudge, isClientOnline: () => true, wakeup: () => true }, db)
     expect(semantic.semantic_checks).toBe(1)
     expect(runJudge).toHaveBeenCalledOnce()
     expect(listSupervisionGoalEvents('goal-monitor', 1, db)).toEqual(expect.arrayContaining([
@@ -157,7 +217,7 @@ describe('supervision monitor', () => {
       workspaceId: 1,
       ownerId: 'monitor-verify',
       nowSeconds: now + 120,
-    }, { runJudge: alignedJudge }, db)
+    }, { runJudge: alignedJudge, isClientOnline: () => true, wakeup: () => true }, db)
     expect(getSupervisionGoal('goal-monitor', 1, db)?.status).toBe('verifying')
     expect(listSupervisionGoalEvents('goal-monitor', 1, db)).toEqual(expect.arrayContaining([
       expect.objectContaining({ event_type: 'goal_verification_started' }),

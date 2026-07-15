@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { requestBridgeClientStewardJudge } from './bridge-server'
+import { isBridgeClientOnline, requestBridgeClientStewardJudge, sendEdgeMessageWakeup } from './bridge-server'
 import { getDatabase } from './db'
+import { dispatchSupervisionGoal } from './supervision-dispatcher'
 import { getSupervisionGoal, listSupervisionGoals, type SupervisionGoalView } from './supervision-goals'
 import { consumeSupervisionModelCall } from './supervision-budget'
 import { searchStewardMemories } from './steward-memory-search'
+import { listSyncClients } from './sync-clients'
 
 interface MonitoredTaskRow {
   task_id: number
@@ -37,11 +39,28 @@ export interface SupervisionMonitorResult {
   goals_leased: number
   observations_created: number
   semantic_checks: number
+  dispatches_run: number
+  tasks_activated: number
   errors: string[]
+}
+
+interface MonitorDependencies {
+  runJudge?: JudgeRunner
+  isClientOnline?: (clientId: string) => boolean
+  wakeup?: (clientId: string, detail: Record<string, unknown>) => boolean
 }
 
 function dbOr(database?: Database.Database) {
   return database ?? getDatabase()
+}
+
+function defaultClientOnline(workspaceId: number): (clientId: string) => boolean {
+  const connected = new Set(
+    listSyncClients(workspaceId)
+      .filter((client) => client.status === 'connected')
+      .map((client) => client.client_id),
+  )
+  return (clientId) => isBridgeClientOnline(clientId) || connected.has(clientId)
 }
 
 function insertObservation(db: Database.Database, input: {
@@ -154,6 +173,7 @@ function deterministicObservations(
   goal: SupervisionGoalView,
   tasks: MonitoredTaskRow[],
   now: number,
+  isClientOnline: (clientId: string) => boolean,
 ): number {
   let created = 0
   for (const task of tasks) {
@@ -163,7 +183,8 @@ function deterministicObservations(
         WHERE client_id = ? AND local_agent_id = ?
         LIMIT 1
       `).get(goal.client_id, Number(task.assigned_agent_id)) as { status: string; updated_at: number } | undefined
-      if (!worker || ['offline', 'error', 'sleeping'].includes(worker.status) || now - worker.updated_at > 300) {
+      const clientOnline = isClientOnline(goal.client_id)
+      if (!clientOnline && (!worker || ['offline', 'error', 'sleeping'].includes(worker.status) || now - worker.updated_at > 300)) {
         if (insertObservation(db, {
           goal,
           taskId: task.task_id,
@@ -335,7 +356,7 @@ async function semanticObservations(
 
 export async function runSupervisionMonitor(
   input: { workspaceId?: number; ownerId?: string; nowSeconds?: number; leaseSeconds?: number } = {},
-  dependencies: { runJudge?: JudgeRunner } = {},
+  dependencies: MonitorDependencies = {},
   database?: Database.Database,
 ): Promise<SupervisionMonitorResult> {
   const db = dbOr(database)
@@ -351,16 +372,33 @@ export async function runSupervisionMonitor(
     goals_leased: 0,
     observations_created: 0,
     semantic_checks: 0,
+    dispatches_run: 0,
+    tasks_activated: 0,
     errors: [],
   }
   const runJudge = dependencies.runJudge ?? requestBridgeClientStewardJudge
+  const isClientOnline = dependencies.isClientOnline ?? defaultClientOnline(input.workspaceId ?? 1)
+  const wakeup = dependencies.wakeup ?? sendEdgeMessageWakeup
   for (const listedGoal of goals) {
     if (!acquireLease(db, listedGoal.id, ownerId, now, input.leaseSeconds ?? 55)) continue
     result.goals_leased++
     const goal = getSupervisionGoal(listedGoal.id, listedGoal.workspace_id, db)
     if (!goal || goal.status !== 'running') continue
     const tasks = listTasks(db, goal)
-    result.observations_created += deterministicObservations(db, goal, tasks, now)
+    result.observations_created += deterministicObservations(db, goal, tasks, now, isClientOnline)
+    const current = getSupervisionGoal(goal.id, goal.workspace_id, db)
+    if (current?.status === 'running') {
+      try {
+        const dispatched = dispatchSupervisionGoal({
+          goalId: goal.id,
+          workspaceId: goal.workspace_id,
+        }, { isClientOnline, wakeup }, db)
+        result.dispatches_run++
+        result.tasks_activated += dispatched.activated_count
+      } catch (error) {
+        result.errors.push(`goal=${goal.id}: ${error instanceof Error ? error.message : 'dispatcher failed'}`)
+      }
+    }
     const semantic = await semanticObservations(db, goal, tasks, runJudge)
     result.observations_created += semantic.created
     result.semantic_checks += semantic.checks
