@@ -112,6 +112,12 @@ describe('supervision dispatcher', () => {
     expect(wakeup).toHaveBeenCalledOnce()
     expect((db.prepare(`SELECT COUNT(*) AS count FROM tasks`).get() as { count: number }).count).toBe(2)
     expect((db.prepare(`SELECT COUNT(*) AS count FROM edge_messages`).get() as { count: number }).count).toBe(1)
+    const message = db.prepare(`SELECT payload_json FROM edge_messages LIMIT 1`).get() as { payload_json: string }
+    expect(JSON.parse(message.payload_json)).toMatchObject({
+      worker_local_agent_id: 11,
+      session_id: 'backend-session',
+      session_kind: 'codex-cli',
+    })
 
     const repeated = dispatchSupervisionGoal({ goalId: 'goal-dispatch', workspaceId: 1 }, {
       isClientOnline: () => true,

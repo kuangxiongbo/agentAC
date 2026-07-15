@@ -24,6 +24,25 @@ interface DispatchableTask {
   agent_node_id?: string
 }
 
+export function isSupervisedGoalTask(taskId: number, db = getDatabase()): boolean {
+  const row = db.prepare(`
+    SELECT metadata,
+      EXISTS (
+        SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id
+      ) AS has_goal_relation
+    FROM tasks
+    WHERE id = ?
+  `).get(taskId) as { metadata: string | null; has_goal_relation: number } | undefined
+  if (!row) return false
+  if (row.has_goal_relation === 1) return true
+  try {
+    const metadata = row.metadata ? JSON.parse(row.metadata) : {}
+    return typeof metadata?.goal_id === 'string' && metadata.goal_id.trim().length > 0
+  } catch {
+    return false
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Model routing
 // ---------------------------------------------------------------------------
@@ -399,6 +418,7 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
   const results: Array<{ id: number; verdict: string; error?: string }> = []
 
   for (const task of tasks) {
+    if (isSupervisedGoalTask(task.id)) continue
     // Move to quality_review to prevent re-processing
     db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?')
       .run('quality_review', Math.floor(Date.now() / 1000), task.id)
@@ -584,6 +604,7 @@ export async function requeueStaleTasks(): Promise<{ ok: boolean; message: strin
   let skippedPendingApproval = 0
 
   for (const task of staleTasks) {
+    if (isSupervisedGoalTask(task.id)) continue
     // Only requeue if the agent is offline or unknown
     const agentOffline = !task.agent_status || task.agent_status === 'offline'
     if (!agentOffline) continue
@@ -677,6 +698,7 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
   const now = Math.floor(Date.now() / 1000)
 
   for (const task of tasks) {
+    if (isSupervisedGoalTask(task.id)) continue
     // Mark as in_progress immediately to prevent re-dispatch
     db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?')
       .run('in_progress', now, task.id)
@@ -1000,6 +1022,7 @@ export async function autoRouteInboxTasks(): Promise<{ ok: boolean; message: str
   const now = Math.floor(Date.now() / 1000)
 
   for (const task of inboxTasks) {
+    if (isSupervisedGoalTask(task.id)) continue
     const taskText = `${task.title} ${task.description || ''}`
     let parsedTags: string[] = []
     if (task.tags) {

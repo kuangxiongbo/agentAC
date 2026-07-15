@@ -12,7 +12,12 @@ vi.mock('@/lib/db', () => ({
   },
 }))
 
-import { autoRouteInboxTasks, dispatchAssignedTasks, requeueStaleTasks } from '@/lib/task-dispatch'
+import {
+  autoRouteInboxTasks,
+  dispatchAssignedTasks,
+  isSupervisedGoalTask,
+  requeueStaleTasks,
+} from '@/lib/task-dispatch'
 
 describe('requeueStaleTasks', () => {
   let db: Database.Database
@@ -117,6 +122,21 @@ describe('requeueStaleTasks', () => {
     }
     expect(supervised).toEqual({ status: 'inbox', assigned_to: null })
     expect(ordinary).toEqual({ status: 'assigned', assigned_to: 'worker-a' })
+  })
+
+  it('rejects supervised tasks at the final mutation guard', () => {
+    db.prepare(`
+      INSERT INTO tasks (id, title, status, workspace_id, metadata, created_at, updated_at)
+      VALUES
+        (7, 'Relational supervision', 'inbox', 1, '{}', ?, ?),
+        (8, 'Metadata supervision', 'inbox', 1, '{"goal_id":"goal-meta"}', ?, ?),
+        (9, 'Ordinary task', 'inbox', 1, '{}', ?, ?)
+    `).run(staleUpdatedAt, staleUpdatedAt, staleUpdatedAt, staleUpdatedAt, staleUpdatedAt, staleUpdatedAt)
+    markSupervised(7)
+
+    expect(isSupervisedGoalTask(7, db)).toBe(true)
+    expect(isSupervisedGoalTask(8, db)).toBe(true)
+    expect(isSupervisedGoalTask(9, db)).toBe(false)
   })
 
   it('does not requeue a stale supervised task through the legacy scheduler', async () => {

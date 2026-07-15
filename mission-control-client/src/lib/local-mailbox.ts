@@ -233,6 +233,10 @@ function handleSessionContinueMessage(message: {
   const localPermissionMode = permissionMode === 'standard' || permissionMode === 'full'
     ? permissionMode
     : undefined
+  const workerLocalAgentId = Number(message.payload.worker_local_agent_id)
+  const workerAgent = Number.isFinite(workerLocalAgentId) && workerLocalAgentId > 0
+    ? { id: workerLocalAgentId }
+    : null
   if (!sessionId || !isLocalSessionKind(sessionKind)) {
     return {
       ok: false,
@@ -251,6 +255,8 @@ function handleSessionContinueMessage(message: {
   }
 
   enqueueLocalSessionPrompt(sessionKind as LocalSessionKind, sessionId, content, {
+    managedByPlatform: true,
+    agent: workerAgent,
     workerSessionId: sessionId,
     sessionKind: sessionKind as LocalSessionKind,
     workingDirectory: workingDirectory || null,

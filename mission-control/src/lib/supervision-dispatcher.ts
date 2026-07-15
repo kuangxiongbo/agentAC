@@ -349,6 +349,7 @@ export function dispatchSupervisionGoal(
         payload: {
           session_id: worker.session_id,
           session_kind: worker.framework,
+          worker_local_agent_id: worker.local_agent_id,
           content: prompt,
           goal_id: goal.id,
           task_id: taskId,

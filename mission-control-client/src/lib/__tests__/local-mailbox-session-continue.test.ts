@@ -25,6 +25,10 @@ describe('local-mailbox session continue handler', () => {
     db = new Database(':memory:')
     runMigrations(db)
     db.prepare(`INSERT OR REPLACE INTO settings (key, value, category) VALUES ('device.client_id', 'edge-test', 'device')`).run()
+    db.prepare(`
+      INSERT INTO agents (id, name, role, framework, status, workspace_id, created_at, updated_at)
+      VALUES (6, 'worker-6', 'developer', 'codex', 'idle', 1, 1, 1)
+    `).run()
   })
 
   afterEach(() => {
@@ -41,6 +45,7 @@ describe('local-mailbox session continue handler', () => {
     `).run(messageId, JSON.stringify({
       session_id: 'sess-1',
       session_kind: 'codex-cli',
+      worker_local_agent_id: 6,
       content: 'continue once',
     }))
   }
@@ -55,7 +60,12 @@ describe('local-mailbox session continue handler', () => {
       'codex-cli',
       'sess-1',
       'continue once',
-      expect.objectContaining({ workerSessionId: 'sess-1', sessionKind: 'codex-cli' }),
+      expect.objectContaining({
+        managedByPlatform: true,
+        agent: { id: 6 },
+        workerSessionId: 'sess-1',
+        sessionKind: 'codex-cli',
+      }),
     )
 
     insertContinueMessage('msg-continue-2')

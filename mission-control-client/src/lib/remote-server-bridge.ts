@@ -1196,6 +1196,7 @@ async function handleSessionContinueRequest(message: any): Promise<void> {
       })
     }
     enqueueLocalSessionPrompt(kind as LocalSessionKind, sessionId, prompt, {
+      managedByPlatform: true,
       workingDirectory: workingDirectory || null,
       permissionMode,
     })
