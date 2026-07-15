@@ -28,10 +28,20 @@ describe('task queue supervised isolation', () => {
 
   it('ignores active and queued supervised tasks when polling', async () => {
     db.prepare(`
+      INSERT INTO supervision_goals (
+        id, workspace_id, client_id, steward_local_agent_id, title, objective,
+        success_criteria_json, budget_json, created_by
+      ) VALUES ('goal-1', 1, 'edge-a', 7, 'Goal', 'Objective', '[]', '{}', 'test')
+    `).run()
+    db.prepare(`
       INSERT INTO tasks (id, title, status, assigned_to, metadata, workspace_id, created_at, updated_at)
-      VALUES (1, 'Active supervised', 'in_progress', 'queue-agent', '{"goal_id":"goal-1"}', 1, 1, 1),
-             (2, 'Queued supervised', 'inbox', NULL, '{"goal_id":"goal-1"}', 1, 2, 2),
+      VALUES (1, 'Active supervised', 'in_progress', 'queue-agent', '{}', 1, 1, 1),
+             (2, 'Queued supervised', 'inbox', NULL, '{}', 1, 2, 2),
              (3, 'Normal task', 'inbox', NULL, '{}', 1, 3, 3)
+    `).run()
+    db.prepare(`
+      INSERT INTO supervision_goal_tasks (goal_id, task_id, plan_version, logical_task_key)
+      VALUES ('goal-1', 1, 1, 'active'), ('goal-1', 2, 1, 'queued')
     `).run()
     const route = await import('@/app/api/tasks/queue/route')
 

@@ -18,6 +18,13 @@ describe('requeueStaleTasks', () => {
   let db: Database.Database
   const staleUpdatedAt = Math.floor(Date.now() / 1000) - 20 * 60 // 20 minutes ago
 
+  function markSupervised(taskId: number) {
+    db.prepare(`
+      INSERT INTO supervision_goal_tasks (goal_id, task_id, plan_version, logical_task_key)
+      VALUES ('goal-1', ?, 1, ?)
+    `).run(taskId, `task-${taskId}`)
+  }
+
   beforeEach(() => {
     db = new Database(':memory:')
     dbRef.current = db
@@ -27,6 +34,12 @@ describe('requeueStaleTasks', () => {
       INSERT INTO agents (id, name, role, status, workspace_id, created_at, updated_at)
       VALUES (5, 'worker-a', 'developer', 'offline', 1, ?, ?)
     `).run(staleUpdatedAt, staleUpdatedAt)
+    db.prepare(`
+      INSERT INTO supervision_goals (
+        id, workspace_id, client_id, steward_local_agent_id, title, objective,
+        success_criteria_json, budget_json, created_by
+      ) VALUES ('goal-1', 1, 'edge-a', 7, 'Goal', 'Objective', '[]', '{}', 'test')
+    `).run()
   })
 
   afterEach(() => {
@@ -86,9 +99,10 @@ describe('requeueStaleTasks', () => {
     db.prepare(`
       INSERT INTO tasks (id, title, status, workspace_id, metadata, created_by, created_at, updated_at)
       VALUES
-        (3, 'Supervised work', 'inbox', 1, '{"goal_id":"goal-1"}', 'goal-supervisor', ?, ?),
+        (3, 'Supervised work', 'inbox', 1, '{}', 'goal-supervisor', ?, ?),
         (4, 'Ordinary work', 'inbox', 1, '{}', 'test', ?, ?)
     `).run(staleUpdatedAt, staleUpdatedAt, staleUpdatedAt, staleUpdatedAt)
+    markSupervised(3)
 
     const result = await autoRouteInboxTasks()
 
@@ -108,8 +122,9 @@ describe('requeueStaleTasks', () => {
   it('does not requeue a stale supervised task through the legacy scheduler', async () => {
     db.prepare(`
       INSERT INTO tasks (id, title, status, assigned_to, workspace_id, metadata, dispatch_attempts, created_at, updated_at)
-      VALUES (5, 'Supervised stale work', 'in_progress', 'worker-a', 1, '{"goal_id":"goal-1"}', 0, ?, ?)
+      VALUES (5, 'Supervised stale work', 'in_progress', 'worker-a', 1, '{}', 0, ?, ?)
     `).run(staleUpdatedAt, staleUpdatedAt)
+    markSupervised(5)
 
     const result = await requeueStaleTasks()
 
@@ -122,8 +137,9 @@ describe('requeueStaleTasks', () => {
     db.prepare(`UPDATE agents SET status = 'idle' WHERE id = 5`).run()
     db.prepare(`
       INSERT INTO tasks (id, title, status, assigned_to, workspace_id, metadata, dispatch_attempts, created_at, updated_at)
-      VALUES (6, 'Supervised assigned work', 'assigned', 'worker-a', 1, '{"goal_id":"goal-1"}', 0, ?, ?)
+      VALUES (6, 'Supervised assigned work', 'assigned', 'worker-a', 1, '{}', 0, ?, ?)
     `).run(staleUpdatedAt, staleUpdatedAt)
+    markSupervised(6)
 
     const result = await dispatchAssignedTasks()
 

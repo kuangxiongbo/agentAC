@@ -387,6 +387,7 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
     LEFT JOIN agents a ON a.name = t.assigned_to AND a.workspace_id = t.workspace_id
     WHERE t.status = 'review'
       AND json_extract(COALESCE(t.metadata, '{}'), '$.goal_id') IS NULL
+      AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = t.id)
     ORDER BY t.updated_at ASC
     LIMIT 3
   `).all() as ReviewableTask[]
@@ -562,6 +563,7 @@ export async function requeueStaleTasks(): Promise<{ ok: boolean; message: strin
     WHERE t.status = 'in_progress'
       AND t.updated_at < ?
       AND json_extract(COALESCE(t.metadata, '{}'), '$.goal_id') IS NULL
+      AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = t.id)
   `).all(staleThreshold) as Array<{
     id: number; title: string; assigned_to: string | null; dispatch_attempts: number
     workspace_id: number; agent_status: string | null; agent_last_seen: number | null
@@ -653,6 +655,7 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
     WHERE t.status = 'assigned'
       AND t.assigned_to IS NOT NULL
       AND json_extract(COALESCE(t.metadata, '{}'), '$.goal_id') IS NULL
+      AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = t.id)
     ORDER BY
       CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
       t.created_at ASC
@@ -970,6 +973,7 @@ export async function autoRouteInboxTasks(): Promise<{ ok: boolean; message: str
     FROM tasks
     WHERE status = 'inbox' AND assigned_to IS NULL
       AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
+      AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id)
     ORDER BY
       CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
       created_at ASC
@@ -1031,6 +1035,7 @@ export async function autoRouteInboxTasks(): Promise<{ ok: boolean; message: str
         UPDATE tasks SET status = ?, assigned_to = ?, updated_at = ?
         WHERE id = ? AND status = 'inbox' AND assigned_to IS NULL
           AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
+          AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id)
       `).run('assigned', alt.agent.name, now, task.id)
       if (assigned.changes !== 1) continue
 
@@ -1048,6 +1053,7 @@ export async function autoRouteInboxTasks(): Promise<{ ok: boolean; message: str
       UPDATE tasks SET status = ?, assigned_to = ?, updated_at = ?
       WHERE id = ? AND status = 'inbox' AND assigned_to IS NULL
         AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
+        AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id)
     `).run('assigned', best.name, now, task.id)
     if (assigned.changes !== 1) continue
 

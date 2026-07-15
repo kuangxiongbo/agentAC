@@ -57,7 +57,7 @@ FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NODE_TLS_REJECT_UNAUTHORIZED=0
-RUN pnpm build
+RUN rm -rf .next && pnpm build
 
 FROM ${NODE_IMAGE} AS runtime
 

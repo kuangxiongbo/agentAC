@@ -45,6 +45,7 @@ fi
 pnpm install --frozen-lockfile
 pnpm rebuild better-sqlite3
 node -e "require('better-sqlite3'); console.log('better-sqlite3 ABI OK for', process.version)"
+rm -rf "$PROJECT_ROOT/.next"
 NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=8192}" pnpm build
 
 STANDALONE="$PROJECT_ROOT/.next/standalone"
