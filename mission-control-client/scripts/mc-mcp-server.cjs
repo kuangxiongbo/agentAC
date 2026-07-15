@@ -368,6 +368,12 @@ const TOOLS = [
   {
     name: 'mc_get_supervision_goal',
     description: 'Read the authoritative center Goal, supervised task dependency states, and supervision events. Use this instead of querying the Edge local SQLite database for Goal tasks.',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: 'object',
       properties: { goal_id: { type: 'string', description: 'Supervision Goal ID from the Worker prompt' } },
@@ -379,6 +385,12 @@ const TOOLS = [
   {
     name: 'mc_complete_supervision_task',
     description: 'Submit a supervised task result and evidence to the authoritative center. This validates the assigned Worker/session, marks the task done, and lets the supervision monitor activate its successor.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -933,7 +945,7 @@ for (const tool of TOOLS) {
 
 const SERVER_INFO = {
   name: 'mission-control',
-  version: '2.1.48',
+  version: '2.1.49',
 };
 
 const CAPABILITIES = {
@@ -971,6 +983,7 @@ async function handleMessage(msg) {
           name: t.name,
           description: t.description,
           inputSchema: t.inputSchema,
+          ...(t.annotations ? { annotations: t.annotations } : {}),
         })),
       });
 

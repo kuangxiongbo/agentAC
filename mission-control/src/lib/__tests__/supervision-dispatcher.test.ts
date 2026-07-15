@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { runMigrations } from '@/lib/migrations'
-import { dispatchSupervisionGoal } from '@/lib/supervision-dispatcher'
+import {
+  dispatchSupervisionGoal,
+  SUPERVISION_TASK_HOLD_ASSIGNEE,
+} from '@/lib/supervision-dispatcher'
 import { createSupervisionGoal, listSupervisionGoalEvents } from '@/lib/supervision-goals'
 import { saveSupervisionGoalPlan } from '@/lib/supervision-plans'
 
@@ -109,6 +112,17 @@ describe('supervision dispatcher', () => {
       status: 'inbox',
       blocked_reason: 'dependencies_not_completed',
     })
+    const held = db.prepare(`SELECT status, assigned_to FROM tasks WHERE id = ?`)
+      .get(first.tasks[1].task_id)
+    expect(held).toEqual({
+      status: 'inbox',
+      assigned_to: SUPERVISION_TASK_HOLD_ASSIGNEE,
+    })
+    const legacyMutation = db.prepare(`
+      UPDATE tasks SET status = 'assigned', assigned_to = 'legacy-worker'
+      WHERE id = ? AND status = 'inbox' AND assigned_to IS NULL
+    `).run(first.tasks[1].task_id)
+    expect(legacyMutation.changes).toBe(0)
     expect(wakeup).toHaveBeenCalledOnce()
     expect((db.prepare(`SELECT COUNT(*) AS count FROM tasks`).get() as { count: number }).count).toBe(2)
     expect((db.prepare(`SELECT COUNT(*) AS count FROM edge_messages`).get() as { count: number }).count).toBe(1)
@@ -146,6 +160,8 @@ describe('supervision dispatcher', () => {
       status: 'in_progress',
       worker_local_agent_id: 12,
     })
+    expect(db.prepare(`SELECT assigned_to FROM tasks WHERE id = ?`).get(second.tasks[1].task_id))
+      .toEqual({ assigned_to: 'mac-tester' })
     expect((db.prepare(`SELECT COUNT(*) AS count FROM edge_messages`).get() as { count: number }).count).toBe(2)
     expect(wakeup).toHaveBeenCalledTimes(2)
     const events = listSupervisionGoalEvents('goal-dispatch', 1, db)

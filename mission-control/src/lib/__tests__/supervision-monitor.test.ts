@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { runMigrations } from '@/lib/migrations'
-import { dispatchSupervisionGoal } from '@/lib/supervision-dispatcher'
+import {
+  dispatchSupervisionGoal,
+  SUPERVISION_TASK_HOLD_ASSIGNEE,
+} from '@/lib/supervision-dispatcher'
 import { createSupervisionGoal, getSupervisionGoal, listSupervisionGoalEvents } from '@/lib/supervision-goals'
 import { runSupervisionMonitor } from '@/lib/supervision-monitor'
 import { saveSupervisionGoalPlan } from '@/lib/supervision-plans'
@@ -159,8 +162,8 @@ describe('supervision monitor', () => {
     }, db)
     const dependentId = expanded.tasks.find((task) => task.logical_key === 'verify')?.task_id
     expect(dependentId).toBeTypeOf('number')
-    expect(db.prepare(`SELECT status FROM tasks WHERE id = ?`).get(dependentId) as { status: string })
-      .toEqual({ status: 'inbox' })
+    expect(db.prepare(`SELECT status, assigned_to FROM tasks WHERE id = ?`).get(dependentId))
+      .toEqual({ status: 'inbox', assigned_to: SUPERVISION_TASK_HOLD_ASSIGNEE })
     db.prepare(`UPDATE tasks SET status = 'done', outcome = 'success', updated_at = ? WHERE id = ?`)
       .run(now + 60, taskId)
 

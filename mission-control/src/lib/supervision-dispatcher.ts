@@ -20,6 +20,8 @@ interface GoalTaskRow {
   assigned_to: string | null
 }
 
+export const SUPERVISION_TASK_HOLD_ASSIGNEE = '__supervision_dependency_hold__'
+
 export interface DispatchedSupervisionTask {
   task_id: number
   logical_key: string
@@ -252,6 +254,14 @@ export function dispatchSupervisionGoal(
         taskId = relation.task_id
       }
 
+      if (relation.status === 'inbox' && relation.assigned_to === SUPERVISION_TASK_HOLD_ASSIGNEE) {
+        db.prepare(`
+          UPDATE tasks SET assigned_to = NULL, updated_at = unixepoch()
+          WHERE id = ? AND status = 'inbox' AND assigned_to = ?
+        `).run(taskId, SUPERVISION_TASK_HOLD_ASSIGNEE)
+        relation.assigned_to = null
+      }
+
       if (relation.status !== 'inbox' || relation.assigned_to) {
         results.push({
           task_id: taskId,
@@ -283,6 +293,11 @@ export function dispatchSupervisionGoal(
       if (!blockedReason && !match?.selected) blockedReason = 'no_eligible_worker'
 
       if (blockedReason || !match?.selected) {
+        db.prepare(`
+          UPDATE tasks SET assigned_to = ?, updated_at = unixepoch()
+          WHERE id = ? AND status = 'inbox' AND assigned_to IS NULL
+        `).run(SUPERVISION_TASK_HOLD_ASSIGNEE, taskId)
+        relation.assigned_to = SUPERVISION_TASK_HOLD_ASSIGNEE
         const matchDiagnostics = match
           ? {
               candidate_count: match.candidates.length,

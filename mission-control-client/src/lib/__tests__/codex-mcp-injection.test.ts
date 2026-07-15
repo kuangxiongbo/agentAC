@@ -42,7 +42,16 @@ describe('codex-mcp-injection', () => {
       script.indexOf("name: 'mc_create_task'"),
     )
     expect(completion).toContain('managedWorkerCompletionContext(args)')
+    expect(completion).toContain('destructiveHint: false')
+    expect(completion).toContain('idempotentHint: true')
     expect(completion).not.toContain('worker_local_agent_id: {')
     expect(completion).not.toContain('worker_session_id: {')
+
+    const goalRead = script.slice(
+      script.indexOf("name: 'mc_get_supervision_goal'"),
+      script.indexOf("name: 'mc_complete_supervision_task'"),
+    )
+    expect(goalRead).toContain('readOnlyHint: true')
+    expect(script).toContain('...(t.annotations ? { annotations: t.annotations } : {})')
   })
 })
