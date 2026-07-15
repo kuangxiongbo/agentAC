@@ -6,7 +6,7 @@ import type { SupervisionPlanTask } from './supervision-plans'
 import { listSyncClients } from './sync-clients'
 
 const SUPPORTED_FRAMEWORKS = new Set(['claude-code', 'codex-cli', 'hermes'])
-const UNAVAILABLE_STATUSES = new Set(['offline', 'error', 'sleeping', 'disabled'])
+const UNAVAILABLE_STATUSES = new Set(['error', 'disabled'])
 
 interface AgentConfig {
   capabilities: string[]
@@ -208,8 +208,8 @@ export function matchSupervisionWorker(
       reject(row, 'worker_excluded')
       continue
     }
-    if (!isClientOnline(row.client_id) || now - row.updated_at > 5 * 60) {
-      reject(row, 'client_or_agent_offline')
+    if (!isClientOnline(row.client_id)) {
+      reject(row, 'client_offline')
       continue
     }
     if (UNAVAILABLE_STATUSES.has(row.status.trim().toLowerCase())) {
@@ -248,6 +248,15 @@ export function matchSupervisionWorker(
 
     let score = 30
     const reasons = ['eligible executable worker']
+    const normalizedStatus = row.status.trim().toLowerCase()
+    if (normalizedStatus === 'offline' || normalizedStatus === 'sleeping') {
+      score -= 10
+      reasons.push('resumable ' + normalizedStatus + ' session')
+    }
+    if (now - row.updated_at > 5 * 60) {
+      score -= 5
+      reasons.push('agent index stale; live bridge is authoritative')
+    }
     score += Math.round(capabilityRatio * 35)
     reasons.push(required.length > 0
       ? `capabilities ${matchedCapabilities.length}/${required.length}`

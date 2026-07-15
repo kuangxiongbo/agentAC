@@ -279,6 +279,12 @@ export function dispatchSupervisionGoal(
       if (!blockedReason && !match?.selected) blockedReason = 'no_eligible_worker'
 
       if (blockedReason || !match?.selected) {
+        const matchDiagnostics = match
+          ? {
+              candidate_count: match.candidates.length,
+              rejected: match.rejected,
+            }
+          : undefined
         insertEvent(db, {
           workspaceId: goal.workspace_id,
           tenantId: goal.tenant_id,
@@ -287,7 +293,10 @@ export function dispatchSupervisionGoal(
           eventType: 'goal_task_dispatch_blocked',
           decision: 'blocked',
           reason: blockedReason,
-          action: { logical_key: planTask.logical_key },
+          action: {
+            logical_key: planTask.logical_key,
+            ...(matchDiagnostics ? { match_diagnostics: matchDiagnostics } : {}),
+          },
           idempotencyKey: `goal:${goal.id}:plan:${goal.current_plan_version}:task:${planTask.logical_key}:blocked:${blockedReason}`,
         })
         results.push({

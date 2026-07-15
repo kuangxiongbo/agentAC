@@ -7,9 +7,12 @@ const dbRef = vi.hoisted(() => ({ current: null as Database.Database | null }))
 
 vi.mock('@/lib/db', () => ({
   getDatabase: () => dbRef.current,
+  db_helpers: {
+    logActivity: vi.fn(),
+  },
 }))
 
-import { requeueStaleTasks } from '@/lib/task-dispatch'
+import { autoRouteInboxTasks, requeueStaleTasks } from '@/lib/task-dispatch'
 
 describe('requeueStaleTasks', () => {
   let db: Database.Database
@@ -76,5 +79,29 @@ describe('requeueStaleTasks', () => {
     expect(result.message).toContain('awaiting human approval')
     const task = db.prepare('SELECT status FROM tasks WHERE id = 2').get() as { status: string }
     expect(task.status).toBe('in_progress')
+  })
+
+  it('does not auto-route supervised goal tasks through the legacy scheduler', async () => {
+    db.prepare(`UPDATE agents SET status = 'idle' WHERE id = 5`).run()
+    db.prepare(`
+      INSERT INTO tasks (id, title, status, workspace_id, metadata, created_by, created_at, updated_at)
+      VALUES
+        (3, 'Supervised work', 'inbox', 1, '{"goal_id":"goal-1"}', 'goal-supervisor', ?, ?),
+        (4, 'Ordinary work', 'inbox', 1, '{}', 'test', ?, ?)
+    `).run(staleUpdatedAt, staleUpdatedAt, staleUpdatedAt, staleUpdatedAt)
+
+    const result = await autoRouteInboxTasks()
+
+    expect(result.ok).toBe(true)
+    const supervised = db.prepare(`SELECT status, assigned_to FROM tasks WHERE id = 3`).get() as {
+      status: string
+      assigned_to: string | null
+    }
+    const ordinary = db.prepare(`SELECT status, assigned_to FROM tasks WHERE id = 4`).get() as {
+      status: string
+      assigned_to: string | null
+    }
+    expect(supervised).toEqual({ status: 'inbox', assigned_to: null })
+    expect(ordinary).toEqual({ status: 'assigned', assigned_to: 'worker-a' })
   })
 })

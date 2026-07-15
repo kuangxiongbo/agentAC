@@ -966,6 +966,7 @@ export async function autoRouteInboxTasks(): Promise<{ ok: boolean; message: str
     SELECT id, title, description, priority, tags, workspace_id
     FROM tasks
     WHERE status = 'inbox' AND assigned_to IS NULL
+      AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
     ORDER BY
       CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
       created_at ASC

@@ -88,10 +88,9 @@ describe('supervision worker matcher', () => {
     }, db)
 
     expect(result.selected).toMatchObject({ local_agent_id: 11, assignment_name: 'mac-backend' })
-    expect(result.candidates.map((candidate) => candidate.local_agent_id)).toEqual([11, 12])
+    expect(result.candidates.map((candidate) => candidate.local_agent_id)).toEqual([11, 13, 12])
     expect(result.rejected).toEqual(expect.arrayContaining([
       expect.objectContaining({ local_agent_id: 7, reason: 'human_watch_not_executable' }),
-      expect.objectContaining({ local_agent_id: 13, reason: 'worker_unavailable' }),
       expect.objectContaining({ local_agent_id: 14, reason: 'worker_session_missing' }),
       expect.objectContaining({ local_agent_id: 15, reason: 'framework_not_supported' }),
     ]))
@@ -138,5 +137,31 @@ describe('supervision worker matcher', () => {
     }, db)
     expect(result.selected).toBeNull()
     expect(result.rejected).toHaveLength(6)
+    expect(result.rejected).toEqual(expect.arrayContaining([
+      expect.objectContaining({ local_agent_id: 11, reason: 'client_offline' }),
+    ]))
+  })
+
+  it('allows a resumable offline worker when the bridge is live', () => {
+    createGoal([13])
+    db.prepare(`
+      UPDATE sync_agent_index
+      SET updated_at = ?
+      WHERE local_agent_id = 13
+    `).run(Math.floor(Date.now() / 1000) - 3600)
+
+    const result = matchSupervisionWorker({ goalId: 'goal-match', workspaceId: 1, task }, {
+      isClientOnline: () => true,
+    }, db)
+
+    expect(result.selected).toMatchObject({
+      local_agent_id: 13,
+      session_id: 'offline-session',
+      status: 'offline',
+    })
+    expect(result.selected?.reasons).toEqual(expect.arrayContaining([
+      'resumable offline session',
+      'agent index stale; live bridge is authoritative',
+    ]))
   })
 })
