@@ -26,14 +26,15 @@ interface DispatchableTask {
 
 export function isSupervisedGoalTask(taskId: number, db = getDatabase()): boolean {
   const row = db.prepare(`
-    SELECT metadata,
+    SELECT metadata, created_by,
       EXISTS (
         SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id
       ) AS has_goal_relation
     FROM tasks
     WHERE id = ?
-  `).get(taskId) as { metadata: string | null; has_goal_relation: number } | undefined
+  `).get(taskId) as { metadata: string | null; created_by: string | null; has_goal_relation: number } | undefined
   if (!row) return false
+  if (row.created_by === 'goal-supervisor') return true
   if (row.has_goal_relation === 1) return true
   try {
     const metadata = row.metadata ? JSON.parse(row.metadata) : {}
@@ -405,6 +406,7 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
     LEFT JOIN projects p ON p.id = t.project_id AND p.workspace_id = t.workspace_id
     LEFT JOIN agents a ON a.name = t.assigned_to AND a.workspace_id = t.workspace_id
     WHERE t.status = 'review'
+      AND COALESCE(t.created_by, '') <> 'goal-supervisor'
       AND json_extract(COALESCE(t.metadata, '{}'), '$.goal_id') IS NULL
       AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = t.id)
     ORDER BY t.updated_at ASC
@@ -420,8 +422,14 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
   for (const task of tasks) {
     if (isSupervisedGoalTask(task.id)) continue
     // Move to quality_review to prevent re-processing
-    db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?')
-      .run('quality_review', Math.floor(Date.now() / 1000), task.id)
+    const claimed = db.prepare(`
+      UPDATE tasks SET status = ?, updated_at = ?
+      WHERE id = ? AND status = 'review'
+        AND COALESCE(created_by, '') <> 'goal-supervisor'
+        AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
+        AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id)
+    `).run('quality_review', Math.floor(Date.now() / 1000), task.id)
+    if (claimed.changes !== 1) continue
 
     eventBus.broadcast('task.status_changed', {
       id: task.id,
@@ -582,6 +590,7 @@ export async function requeueStaleTasks(): Promise<{ ok: boolean; message: strin
     LEFT JOIN agents a ON a.name = t.assigned_to AND a.workspace_id = t.workspace_id
     WHERE t.status = 'in_progress'
       AND t.updated_at < ?
+      AND COALESCE(t.created_by, '') <> 'goal-supervisor'
       AND json_extract(COALESCE(t.metadata, '{}'), '$.goal_id') IS NULL
       AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = t.id)
   `).all(staleThreshold) as Array<{
@@ -618,8 +627,14 @@ export async function requeueStaleTasks(): Promise<{ ok: boolean; message: strin
     const newAttempts = (task.dispatch_attempts ?? 0) + 1
 
     if (newAttempts >= maxDispatchRetries) {
-      db.prepare('UPDATE tasks SET status = ?, error_message = ?, dispatch_attempts = ?, updated_at = ? WHERE id = ?')
-        .run('failed', `Task stuck in_progress ${newAttempts} times — agent "${task.assigned_to}" offline. Moved to failed.`, newAttempts, now, task.id)
+      const updated = db.prepare(`
+        UPDATE tasks SET status = ?, error_message = ?, dispatch_attempts = ?, updated_at = ?
+        WHERE id = ? AND status = 'in_progress'
+          AND COALESCE(created_by, '') <> 'goal-supervisor'
+          AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
+          AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id)
+      `).run('failed', `Task stuck in_progress ${newAttempts} times — agent "${task.assigned_to}" offline. Moved to failed.`, newAttempts, now, task.id)
+      if (updated.changes !== 1) continue
 
       eventBus.broadcast('task.status_changed', {
         id: task.id,
@@ -631,8 +646,14 @@ export async function requeueStaleTasks(): Promise<{ ok: boolean; message: strin
 
       failed++
     } else {
-      db.prepare('UPDATE tasks SET status = ?, error_message = ?, dispatch_attempts = ?, updated_at = ? WHERE id = ?')
-        .run('assigned', `Requeued: agent "${task.assigned_to}" went offline while task was in_progress`, newAttempts, now, task.id)
+      const updated = db.prepare(`
+        UPDATE tasks SET status = ?, error_message = ?, dispatch_attempts = ?, updated_at = ?
+        WHERE id = ? AND status = 'in_progress'
+          AND COALESCE(created_by, '') <> 'goal-supervisor'
+          AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
+          AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id)
+      `).run('assigned', `Requeued: agent "${task.assigned_to}" went offline while task was in_progress`, newAttempts, now, task.id)
+      if (updated.changes !== 1) continue
 
       // Add a comment explaining the requeue
       db.prepare(`
@@ -675,6 +696,7 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
     LEFT JOIN projects p ON p.id = t.project_id AND p.workspace_id = t.workspace_id
     WHERE t.status = 'assigned'
       AND t.assigned_to IS NOT NULL
+      AND COALESCE(t.created_by, '') <> 'goal-supervisor'
       AND json_extract(COALESCE(t.metadata, '{}'), '$.goal_id') IS NULL
       AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = t.id)
     ORDER BY
@@ -700,8 +722,14 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
   for (const task of tasks) {
     if (isSupervisedGoalTask(task.id)) continue
     // Mark as in_progress immediately to prevent re-dispatch
-    db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?')
-      .run('in_progress', now, task.id)
+    const claimed = db.prepare(`
+      UPDATE tasks SET status = ?, updated_at = ?
+      WHERE id = ? AND status = 'assigned'
+        AND COALESCE(created_by, '') <> 'goal-supervisor'
+        AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
+        AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id)
+    `).run('in_progress', now, task.id)
+    if (claimed.changes !== 1) continue
 
     eventBus.broadcast('task.status_changed', {
       id: task.id,
@@ -831,9 +859,17 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
       }
 
       // Update task: status → review, set outcome
-      db.prepare(`
-        UPDATE tasks SET status = ?, outcome = ?, resolution = ?, metadata = ?, updated_at = ? WHERE id = ?
+      const completed = db.prepare(`
+        UPDATE tasks SET status = ?, outcome = ?, resolution = ?, metadata = ?, updated_at = ?
+        WHERE id = ? AND status = 'in_progress'
+          AND COALESCE(created_by, '') <> 'goal-supervisor'
+          AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
+          AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id)
       `).run('review', 'success', truncated, JSON.stringify(existingMeta), Math.floor(Date.now() / 1000), task.id)
+      if (completed.changes !== 1) {
+        logger.warn({ taskId: task.id }, 'Discarding legacy dispatch result because task is no longer legacy-owned')
+        continue
+      }
 
       // Add a comment from the agent with the full response
       db.prepare(`
@@ -877,6 +913,11 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
       const errorMsg = err.message || 'Unknown error'
       logger.error({ taskId: task.id, agent: task.agent_name, err }, 'Task dispatch failed')
 
+      if (isSupervisedGoalTask(task.id)) {
+        logger.warn({ taskId: task.id }, 'Discarding legacy dispatch failure for supervised goal task')
+        continue
+      }
+
       // Increment dispatch_attempts and decide next status
       const currentAttempts = (db.prepare('SELECT dispatch_attempts FROM tasks WHERE id = ?').get(task.id) as { dispatch_attempts: number } | undefined)?.dispatch_attempts ?? 0
       const newAttempts = currentAttempts + 1
@@ -884,8 +925,14 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
 
       if (newAttempts >= maxDispatchRetries) {
         // Too many failures — move to failed
-        db.prepare('UPDATE tasks SET status = ?, error_message = ?, dispatch_attempts = ?, updated_at = ? WHERE id = ?')
-          .run('failed', `Dispatch failed ${newAttempts} times. Last: ${errorMsg.substring(0, 5000)}`, newAttempts, Math.floor(Date.now() / 1000), task.id)
+        const updated = db.prepare(`
+          UPDATE tasks SET status = ?, error_message = ?, dispatch_attempts = ?, updated_at = ?
+          WHERE id = ? AND status = 'in_progress'
+            AND COALESCE(created_by, '') <> 'goal-supervisor'
+            AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
+            AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id)
+        `).run('failed', `Dispatch failed ${newAttempts} times. Last: ${errorMsg.substring(0, 5000)}`, newAttempts, Math.floor(Date.now() / 1000), task.id)
+        if (updated.changes !== 1) continue
 
         eventBus.broadcast('task.status_changed', {
           id: task.id,
@@ -896,8 +943,14 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         })
       } else {
         // Revert to assigned so it can be retried on the next tick
-        db.prepare('UPDATE tasks SET status = ?, error_message = ?, dispatch_attempts = ?, updated_at = ? WHERE id = ?')
-          .run('assigned', errorMsg.substring(0, 5000), newAttempts, Math.floor(Date.now() / 1000), task.id)
+        const updated = db.prepare(`
+          UPDATE tasks SET status = ?, error_message = ?, dispatch_attempts = ?, updated_at = ?
+          WHERE id = ? AND status = 'in_progress'
+            AND COALESCE(created_by, '') <> 'goal-supervisor'
+            AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
+            AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id)
+        `).run('assigned', errorMsg.substring(0, 5000), newAttempts, Math.floor(Date.now() / 1000), task.id)
+        if (updated.changes !== 1) continue
 
         eventBus.broadcast('task.status_changed', {
           id: task.id,
@@ -994,6 +1047,7 @@ export async function autoRouteInboxTasks(): Promise<{ ok: boolean; message: str
     SELECT id, title, description, priority, tags, workspace_id
     FROM tasks
     WHERE status = 'inbox' AND assigned_to IS NULL
+      AND COALESCE(created_by, '') <> 'goal-supervisor'
       AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
       AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id)
     ORDER BY
@@ -1057,6 +1111,7 @@ export async function autoRouteInboxTasks(): Promise<{ ok: boolean; message: str
       const assigned = db.prepare(`
         UPDATE tasks SET status = ?, assigned_to = ?, updated_at = ?
         WHERE id = ? AND status = 'inbox' AND assigned_to IS NULL
+          AND COALESCE(created_by, '') <> 'goal-supervisor'
           AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
           AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id)
       `).run('assigned', alt.agent.name, now, task.id)
@@ -1075,6 +1130,7 @@ export async function autoRouteInboxTasks(): Promise<{ ok: boolean; message: str
     const assigned = db.prepare(`
       UPDATE tasks SET status = ?, assigned_to = ?, updated_at = ?
       WHERE id = ? AND status = 'inbox' AND assigned_to IS NULL
+        AND COALESCE(created_by, '') <> 'goal-supervisor'
         AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
         AND NOT EXISTS (SELECT 1 FROM supervision_goal_tasks sgt WHERE sgt.task_id = tasks.id)
     `).run('assigned', best.name, now, task.id)

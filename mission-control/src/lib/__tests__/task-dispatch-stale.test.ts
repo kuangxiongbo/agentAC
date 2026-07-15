@@ -4,12 +4,17 @@ import { runMigrations } from '@/lib/migrations'
 import { createPermissionRequest } from '@/lib/permission-requests'
 
 const dbRef = vi.hoisted(() => ({ current: null as Database.Database | null }))
+const runOpenClawMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@/lib/db', () => ({
   getDatabase: () => dbRef.current,
   db_helpers: {
     logActivity: vi.fn(),
   },
+}))
+
+vi.mock('@/lib/command', () => ({
+  runOpenClaw: runOpenClawMock,
 }))
 
 import {
@@ -31,6 +36,7 @@ describe('requeueStaleTasks', () => {
   }
 
   beforeEach(() => {
+    runOpenClawMock.mockReset()
     db = new Database(':memory:')
     dbRef.current = db
     runMigrations(db)
@@ -126,17 +132,24 @@ describe('requeueStaleTasks', () => {
 
   it('rejects supervised tasks at the final mutation guard', () => {
     db.prepare(`
-      INSERT INTO tasks (id, title, status, workspace_id, metadata, created_at, updated_at)
+      INSERT INTO tasks (id, title, status, workspace_id, metadata, created_by, created_at, updated_at)
       VALUES
-        (7, 'Relational supervision', 'inbox', 1, '{}', ?, ?),
-        (8, 'Metadata supervision', 'inbox', 1, '{"goal_id":"goal-meta"}', ?, ?),
-        (9, 'Ordinary task', 'inbox', 1, '{}', ?, ?)
-    `).run(staleUpdatedAt, staleUpdatedAt, staleUpdatedAt, staleUpdatedAt, staleUpdatedAt, staleUpdatedAt)
+        (7, 'Relational supervision', 'inbox', 1, '{}', 'test', ?, ?),
+        (8, 'Metadata supervision', 'inbox', 1, '{"goal_id":"goal-meta"}', 'test', ?, ?),
+        (9, 'Ordinary task', 'inbox', 1, '{}', 'test', ?, ?),
+        (10, 'Provenance supervision', 'inbox', 1, '{}', 'goal-supervisor', ?, ?)
+    `).run(
+      staleUpdatedAt, staleUpdatedAt,
+      staleUpdatedAt, staleUpdatedAt,
+      staleUpdatedAt, staleUpdatedAt,
+      staleUpdatedAt, staleUpdatedAt,
+    )
     markSupervised(7)
 
     expect(isSupervisedGoalTask(7, db)).toBe(true)
     expect(isSupervisedGoalTask(8, db)).toBe(true)
     expect(isSupervisedGoalTask(9, db)).toBe(false)
+    expect(isSupervisedGoalTask(10, db)).toBe(true)
   })
 
   it('does not requeue a stale supervised task through the legacy scheduler', async () => {
@@ -166,5 +179,49 @@ describe('requeueStaleTasks', () => {
     expect(result).toEqual({ ok: true, message: 'No assigned tasks to dispatch' })
     const task = db.prepare(`SELECT status, dispatch_attempts, error_message FROM tasks WHERE id = 6`).get()
     expect(task).toEqual({ status: 'assigned', dispatch_attempts: 0, error_message: null })
+  })
+
+  it('does not requeue or dispatch a goal-supervisor task when relation and metadata signals are absent', async () => {
+    db.prepare(`UPDATE agents SET status = 'offline' WHERE id = 5`).run()
+    db.prepare(`
+      INSERT INTO tasks (
+        id, title, status, assigned_to, workspace_id, metadata, created_by,
+        dispatch_attempts, created_at, updated_at
+      ) VALUES (11, 'Provenance-only supervised work', 'in_progress', 'worker-a', 1, '{}',
+        'goal-supervisor', 0, ?, ?)
+    `).run(staleUpdatedAt, staleUpdatedAt)
+
+    expect(await requeueStaleTasks()).toEqual({ ok: true, message: 'No stale tasks found' })
+    let task = db.prepare(`SELECT status, dispatch_attempts FROM tasks WHERE id = 11`).get()
+    expect(task).toEqual({ status: 'in_progress', dispatch_attempts: 0 })
+
+    db.prepare(`UPDATE tasks SET status = 'assigned' WHERE id = 11`).run()
+    db.prepare(`UPDATE agents SET status = 'idle' WHERE id = 5`).run()
+    expect(await dispatchAssignedTasks()).toEqual({ ok: true, message: 'No assigned tasks to dispatch' })
+    task = db.prepare(`SELECT status, dispatch_attempts FROM tasks WHERE id = 11`).get()
+    expect(task).toEqual({ status: 'assigned', dispatch_attempts: 0 })
+  })
+
+  it('does not write a legacy failure after supervision takes ownership during dispatch', async () => {
+    db.prepare(`UPDATE agents SET status = 'idle' WHERE id = 5`).run()
+    db.prepare(`
+      INSERT INTO tasks (
+        id, title, status, assigned_to, workspace_id, metadata, created_by,
+        dispatch_attempts, created_at, updated_at
+      ) VALUES (12, 'Ownership race', 'assigned', 'worker-a', 1, '{}',
+        'test', 0, ?, ?)
+    `).run(staleUpdatedAt, staleUpdatedAt)
+    runOpenClawMock.mockImplementationOnce(async () => {
+      markSupervised(12)
+      throw new Error('spawn openclaw ENOENT')
+    })
+
+    const result = await dispatchAssignedTasks()
+
+    expect(result).toEqual({ ok: true, message: 'Dispatched 0/1 tasks' })
+    const task = db.prepare(`
+      SELECT status, dispatch_attempts, error_message FROM tasks WHERE id = 12
+    `).get()
+    expect(task).toEqual({ status: 'in_progress', dispatch_attempts: 0, error_message: null })
   })
 })

@@ -159,5 +159,59 @@ describe('supervision goal routes', () => {
     expect(detail.events).toEqual(expect.arrayContaining([
       expect.objectContaining({ event_type: 'goal_task_dispatched' }),
     ]))
+
+    const firstTaskId = dispatched.tasks[0].task_id as number
+    db.prepare(`UPDATE tasks SET metadata = ? WHERE id = ?`).run(JSON.stringify({ oversized: 'x'.repeat(50_000) }), firstTaskId)
+    const heldTask = db.prepare(`
+      INSERT INTO tasks (title, status, assigned_to, metadata, workspace_id, created_at, updated_at)
+      VALUES ('Held successor', 'inbox', '__supervision_dependency_hold__', ?, 1, unixepoch(), unixepoch())
+    `).run(JSON.stringify({ oversized: 'y'.repeat(50_000) }))
+    db.prepare(`
+      INSERT INTO supervision_goal_tasks (
+        goal_id, task_id, plan_version, logical_task_key,
+        dependencies_json, acceptance_criteria_json
+      ) VALUES (?, ?, 1, 'verify', '["implement"]', '["Evidence remains compact"]')
+    `).run(created.goal.id, Number(heldTask.lastInsertRowid))
+    db.prepare(`
+      INSERT INTO supervision_events (
+        workspace_id, tenant_id, goal_id, task_id, event_type, actor_type,
+        decision, evidence_json, action_json
+      ) VALUES (1, 1, ?, ?, 'goal_task_dispatch_blocked', 'system',
+        'blocked', ?, ?)
+    `).run(
+      created.goal.id,
+      Number(heldTask.lastInsertRowid),
+      JSON.stringify({ oversized: 'e'.repeat(50_000) }),
+      JSON.stringify({ oversized: 'a'.repeat(50_000) }),
+    )
+
+    const workerGoalRoute = await import('@/app/api/supervision/worker-goals/[id]/route')
+    const workerResponse = await workerGoalRoute.GET(
+      new NextRequest(`http://localhost/api/supervision/worker-goals/${created.goal.id}`),
+      { params: Promise.resolve({ id: created.goal.id }) },
+    )
+    expect(workerResponse.status).toBe(200)
+    const workerView = await workerResponse.json()
+    expect(workerView).toMatchObject({
+      schema: 2,
+      source: 'center',
+      event_summary: {
+        by_type: { goal_task_dispatch_blocked: 1 },
+      },
+    })
+    expect(workerView.tasks).toEqual([
+      expect.objectContaining({ task_id: firstTaskId, logical_task_key: 'implement', status: 'in_progress' }),
+      expect.objectContaining({
+        task_id: Number(heldTask.lastInsertRowid),
+        logical_task_key: 'verify',
+        dependencies: ['implement'],
+        status: 'inbox',
+      }),
+    ])
+    const serialized = JSON.stringify(workerView)
+    expect(serialized.length).toBeLessThan(15_000)
+    expect(serialized).not.toContain('oversized')
+    expect(serialized).not.toContain('metadata')
+    expect(serialized).not.toContain('evidence_json')
   })
 })

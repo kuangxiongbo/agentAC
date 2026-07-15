@@ -358,6 +358,12 @@ const TOOLS = [
   {
     name: 'mc_get_task',
     description: 'Get a specific task by ID',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: 'object',
       properties: { id: { type: ['string', 'number'], description: 'Task ID' } },
@@ -945,7 +951,7 @@ for (const tool of TOOLS) {
 
 const SERVER_INFO = {
   name: 'mission-control',
-  version: '2.1.49',
+  version: '2.1.50',
 };
 
 const CAPABILITIES = {
