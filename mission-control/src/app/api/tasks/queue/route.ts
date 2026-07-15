@@ -77,6 +77,7 @@ export async function GET(request: NextRequest) {
       SELECT *
       FROM tasks
       WHERE workspace_id = ? AND assigned_to = ? AND status = 'in_progress'
+        AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
       ORDER BY updated_at DESC
       LIMIT 1
     `).get(workspaceId, agent) as any | undefined
@@ -94,6 +95,7 @@ export async function GET(request: NextRequest) {
       SELECT COUNT(*) as c
       FROM tasks
       WHERE workspace_id = ? AND assigned_to = ? AND status = 'in_progress'
+        AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
     `).get(workspaceId, agent) as { c: number }).c
 
     if (inProgressCount >= maxCapacity) {
@@ -114,6 +116,7 @@ export async function GET(request: NextRequest) {
         WHERE workspace_id = ?
           AND status IN ('assigned', 'inbox')
           AND (assigned_to IS NULL OR assigned_to = ?)
+          AND json_extract(COALESCE(metadata, '{}'), '$.goal_id') IS NULL
         ORDER BY ${priorityRankSql()} ASC, due_date ASC NULLS LAST, created_at ASC
         LIMIT 1
       )

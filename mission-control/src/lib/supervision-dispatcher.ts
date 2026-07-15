@@ -98,6 +98,7 @@ function dependenciesSatisfied(task: SupervisionPlanTask, taskByKey: Map<string,
 }
 
 function buildWorkerPrompt(input: {
+  goalId: string
   goalTitle: string
   goalObjective: string
   taskId: number
@@ -106,6 +107,7 @@ function buildWorkerPrompt(input: {
 }): string {
   return `你是执行 Worker。请完成平台目标任务 #${input.taskId}。
 
+Goal ID：${input.goalId}
 目标：${input.goalTitle}
 目标描述：${input.goalObjective}
 当前任务：${input.task.title}
@@ -113,7 +115,9 @@ function buildWorkerPrompt(input: {
 约束：${JSON.stringify(input.constraints)}
 验收标准：${JSON.stringify(input.task.acceptance_criteria)}
 
-请基于当前会话上下文执行。需要用户确认或权限时明确提出问题并等待值守；完成后通过平台任务接口提交结果和证据，不要只回复“已完成”。`
+中心 Goal/Task/事件不保存在 Edge 本机 SQLite。开始执行前必须调用 MCP 工具 mc_get_supervision_goal，使用 Goal ID 查询权威任务、依赖和事件状态；不得用本机 tasks 表为空推断中心任务不存在。完成当前任务后必须调用 MCP 工具 mc_complete_supervision_task，提交 outcome、完整 resolution 和结构化 evidence。只有该工具返回 ok=true 才算任务完成，后继任务将由 supervision monitor 自动激活。
+
+请基于当前会话上下文执行。需要用户确认或权限时明确提出问题并等待值守；不要只回复“已完成”。`
 }
 
 function insertEvent(db: Database.Database, input: {
@@ -317,6 +321,7 @@ export function dispatchSupervisionGoal(
 
       const worker = match.selected
       const prompt = buildWorkerPrompt({
+        goalId: goal.id,
         goalTitle: goal.title,
         goalObjective: goal.objective,
         taskId,

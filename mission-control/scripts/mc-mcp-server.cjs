@@ -86,6 +86,19 @@ function withWorkerContext(args) {
   };
 }
 
+function managedWorkerCompletionContext(args) {
+  const workerLocalAgentId = numberFromEnv('MC_AGENT_ID');
+  const workerSessionId = process.env.MC_WORKER_SESSION_ID?.trim();
+  if (!Number.isInteger(workerLocalAgentId) || workerLocalAgentId < 1 || !workerSessionId) {
+    throw new Error('Supervised task completion requires a platform-managed Worker identity and session');
+  }
+  return {
+    ...args,
+    worker_local_agent_id: workerLocalAgentId,
+    worker_session_id: workerSessionId,
+  };
+}
+
 function buildWatchAssistPayload(args) {
   return {
     ...withWorkerContext(args),
@@ -351,6 +364,36 @@ const TOOLS = [
       required: ['id'],
     },
     handler: async ({ id }) => api('GET', `/api/tasks/${id}`),
+  },
+  {
+    name: 'mc_get_supervision_goal',
+    description: 'Read the authoritative center Goal, supervised task dependency states, and supervision events. Use this instead of querying the Edge local SQLite database for Goal tasks.',
+    inputSchema: {
+      type: 'object',
+      properties: { goal_id: { type: 'string', description: 'Supervision Goal ID from the Worker prompt' } },
+      required: ['goal_id'],
+    },
+    handler: async ({ goal_id }) =>
+      api('GET', `/api/supervision/worker-goals/${encodeURIComponent(goal_id)}`),
+  },
+  {
+    name: 'mc_complete_supervision_task',
+    description: 'Submit a supervised task result and evidence to the authoritative center. This validates the assigned Worker/session, marks the task done, and lets the supervision monitor activate its successor.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        goal_id: { type: 'string', description: 'Supervision Goal ID' },
+        task_id: { type: ['string', 'number'], description: 'Current supervised task ID' },
+        outcome: { type: 'string', enum: ['success', 'failed', 'partial'], description: 'Task outcome' },
+        resolution: { type: 'string', description: 'Complete result including commands, exit codes, and raw evidence' },
+        evidence: { type: 'object', description: 'Structured evidence such as command, exit_code, stdout, and checks' },
+      },
+      required: ['goal_id', 'task_id', 'resolution'],
+    },
+    handler: async (args) => {
+      const payload = managedWorkerCompletionContext(args);
+      return api('POST', `/api/supervision/worker-tasks/${encodeURIComponent(args.task_id)}/complete`, payload);
+    },
   },
   {
     name: 'mc_create_task',
@@ -890,7 +933,7 @@ for (const tool of TOOLS) {
 
 const SERVER_INFO = {
   name: 'mission-control',
-  version: '2.1.45',
+  version: '2.1.46',
 };
 
 const CAPABILITIES = {

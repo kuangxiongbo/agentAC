@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { buildCodexMcpConfigArgs, withCodexMcpConfigArgs } from '@/lib/codex-mcp-injection'
 
 describe('codex-mcp-injection', () => {
@@ -31,5 +33,16 @@ describe('codex-mcp-injection', () => {
       permissionMode: 'standard',
     })
     expect(finalArgs.slice(-2)).toEqual(['exec', 'hello'])
+  })
+
+  it('binds supervised completion identity to the managed process environment', () => {
+    const script = readFileSync(path.join(process.cwd(), 'scripts/mc-mcp-server.cjs'), 'utf8')
+    const completion = script.slice(
+      script.indexOf("name: 'mc_complete_supervision_task'"),
+      script.indexOf("name: 'mc_create_task'"),
+    )
+    expect(completion).toContain('managedWorkerCompletionContext(args)')
+    expect(completion).not.toContain('worker_local_agent_id: {')
+    expect(completion).not.toContain('worker_session_id: {')
   })
 })
