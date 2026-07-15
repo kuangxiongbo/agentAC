@@ -45,6 +45,16 @@ fn duplicate_owned_port_victims(
     }
 }
 
+fn path_is_within_runtime(cwd: &std::path::Path, runtime_root: &std::path::Path) -> bool {
+    if cwd.starts_with(runtime_root) {
+        return true;
+    }
+    match (cwd.canonicalize(), runtime_root.canonicalize()) {
+        (Ok(cwd), Ok(runtime_root)) => cwd.starts_with(runtime_root),
+        _ => false,
+    }
+}
+
 fn tracked_child_pid() -> Option<String> {
     CHILD
         .lock()
@@ -328,12 +338,9 @@ fn kill_process_group(pgid: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn is_edge_runtime_port_owner(pid: &str) -> bool {
-    let runtime_root = config::runtime_root()
-        .canonicalize()
-        .unwrap_or_else(|_| config::runtime_root());
+    let runtime_root = config::runtime_root();
     pid_cwd(pid)
-        .and_then(|cwd| cwd.canonicalize().ok())
-        .map(|cwd| cwd.starts_with(&runtime_root))
+        .map(|cwd| path_is_within_runtime(&cwd, &runtime_root))
         .unwrap_or(false)
 }
 
@@ -845,7 +852,8 @@ pub fn restart(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{duplicate_owned_port_victims, PortOwnerInfo};
+    use super::{duplicate_owned_port_victims, path_is_within_runtime, PortOwnerInfo};
+    use std::path::Path;
 
     fn owner(pid: &str, owned_by_edge: bool) -> PortOwnerInfo {
         PortOwnerInfo {
@@ -875,5 +883,19 @@ mod tests {
     fn duplicate_cleanup_never_kills_mixed_owners() {
         let infos = vec![owner("100", true), owner("200", false)];
         assert!(duplicate_owned_port_victims(&infos, Some("100")).is_empty());
+    }
+
+    #[test]
+    fn deleted_runtime_directory_is_still_owned_lexically() {
+        let root = Path::new("/Users/test/.e-agent-edge/runtime");
+        let cwd = Path::new("/Users/test/.e-agent-edge/runtime/runtime");
+        assert!(path_is_within_runtime(cwd, root));
+    }
+
+    #[test]
+    fn adjacent_directory_is_not_mistaken_for_edge_runtime() {
+        let root = Path::new("/Users/test/.e-agent-edge/runtime");
+        let cwd = Path::new("/Users/test/.e-agent-edge/runtime-old/runtime");
+        assert!(!path_is_within_runtime(cwd, root));
     }
 }

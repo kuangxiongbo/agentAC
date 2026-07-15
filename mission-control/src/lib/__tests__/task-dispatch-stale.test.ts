@@ -12,7 +12,7 @@ vi.mock('@/lib/db', () => ({
   },
 }))
 
-import { autoRouteInboxTasks, requeueStaleTasks } from '@/lib/task-dispatch'
+import { autoRouteInboxTasks, dispatchAssignedTasks, requeueStaleTasks } from '@/lib/task-dispatch'
 
 describe('requeueStaleTasks', () => {
   let db: Database.Database
@@ -103,5 +103,32 @@ describe('requeueStaleTasks', () => {
     }
     expect(supervised).toEqual({ status: 'inbox', assigned_to: null })
     expect(ordinary).toEqual({ status: 'assigned', assigned_to: 'worker-a' })
+  })
+
+  it('does not requeue a stale supervised task through the legacy scheduler', async () => {
+    db.prepare(`
+      INSERT INTO tasks (id, title, status, assigned_to, workspace_id, metadata, dispatch_attempts, created_at, updated_at)
+      VALUES (5, 'Supervised stale work', 'in_progress', 'worker-a', 1, '{"goal_id":"goal-1"}', 0, ?, ?)
+    `).run(staleUpdatedAt, staleUpdatedAt)
+
+    const result = await requeueStaleTasks()
+
+    expect(result.ok).toBe(true)
+    const task = db.prepare(`SELECT status, dispatch_attempts FROM tasks WHERE id = 5`).get()
+    expect(task).toEqual({ status: 'in_progress', dispatch_attempts: 0 })
+  })
+
+  it('does not execute an assigned supervised task through the legacy dispatcher', async () => {
+    db.prepare(`UPDATE agents SET status = 'idle' WHERE id = 5`).run()
+    db.prepare(`
+      INSERT INTO tasks (id, title, status, assigned_to, workspace_id, metadata, dispatch_attempts, created_at, updated_at)
+      VALUES (6, 'Supervised assigned work', 'assigned', 'worker-a', 1, '{"goal_id":"goal-1"}', 0, ?, ?)
+    `).run(staleUpdatedAt, staleUpdatedAt)
+
+    const result = await dispatchAssignedTasks()
+
+    expect(result).toEqual({ ok: true, message: 'No assigned tasks to dispatch' })
+    const task = db.prepare(`SELECT status, dispatch_attempts, error_message FROM tasks WHERE id = 6`).get()
+    expect(task).toEqual({ status: 'assigned', dispatch_attempts: 0, error_message: null })
   })
 })
