@@ -1,6 +1,7 @@
 # 本机已 pnpm build 后使用：仅打 runtime 层，避免 Docker 内 apt/pnpm 网络问题
 # 由 scripts/docker-publish-local.sh 调用
-FROM node:22.22.0-slim AS runtime
+ARG NODE_IMAGE=docker.m.daocloud.io/library/node:22.22.0-slim
+FROM ${NODE_IMAGE} AS runtime
 
 ARG MC_VERSION=dev
 ARG APT_MIRROR=mirrors.aliyun.com
