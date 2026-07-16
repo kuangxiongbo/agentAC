@@ -115,6 +115,44 @@ describe('supervision verifier', () => {
     ]))
   })
 
+  it('treats a center-validated managed completion event as independent evidence', async () => {
+    const inserted = db.prepare(`
+      INSERT INTO supervision_events (
+        workspace_id, tenant_id, goal_id, task_id, event_type, actor_type,
+        actor_id, decision, reason, evidence_json, action_json, idempotency_key
+      ) VALUES (1, 1, 'goal-verify', ?, 'goal_task_worker_completed', 'worker_agent',
+        '11', 'success', 'command exited 0', ?, ?, 'goal-verify:managed-completion')
+    `).run(
+      taskId,
+      JSON.stringify({ command: 'pnpm test', exit_code: 0, stdout: '1067 tests passed' }),
+      JSON.stringify({ worker_local_agent_id: 11, worker_session_id: 'worker-session' }),
+    )
+    const eventId = Number(inserted.lastInsertRowid)
+    const evidenceRef = `task:${taskId}:managed-completion:${eventId}`
+    const runJudge = vi.fn(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain('center_validated_worker_completion')
+      expect(prompt).toContain('1067 tests passed')
+      return {
+        reply: JSON.stringify({
+          decision: 'accepted',
+          reason: 'Center-validated managed completion evidence satisfies the goal',
+          criteria: [{
+            criterion_id: 'tests-pass',
+            passed: true,
+            evidence_refs: [evidenceRef],
+            note: 'The managed completion contains a passing test command and exact output',
+          }],
+        }),
+        sessionId: 'steward-session',
+        source: 'test',
+      }
+    })
+
+    const result = await verifySupervisionGoal({ goalId: 'goal-verify', workspaceId: 1 }, { runJudge }, db)
+    expect(result).toMatchObject({ decision: 'accepted', status: 'completed' })
+    expect(result.evidence_refs).toContain(evidenceRef)
+  })
+
   it('downgrades unsupported acceptance evidence to human review', async () => {
     db.prepare(`UPDATE tasks SET metadata = ? WHERE id = ?`).run(JSON.stringify({
       verification_evidence: [{ type: 'test', passed: true }],

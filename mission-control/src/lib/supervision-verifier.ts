@@ -75,6 +75,20 @@ function collectEvidence(db: Database.Database, tasks: VerificationTask[]) {
       SELECT reviewer, status, notes, created_at
       FROM quality_reviews WHERE task_id = ? ORDER BY created_at DESC
     `).all(task.task_id) as Array<Record<string, unknown>>
+    const managedCompletion = db.prepare(`
+      SELECT id, actor_id, decision, reason, evidence_json, action_json, created_at
+      FROM supervision_events
+      WHERE task_id = ? AND event_type = 'goal_task_worker_completed'
+      ORDER BY id DESC LIMIT 1
+    `).get(task.task_id) as {
+      id: number
+      actor_id: string | null
+      decision: string | null
+      reason: string | null
+      evidence_json: string | null
+      action_json: string | null
+      created_at: number
+    } | undefined
     const independentEvidence = [
       ...metadataEvidence.map((item, index) => ({
         ref: `task:${task.task_id}:metadata-evidence:${index}`,
@@ -84,6 +98,19 @@ function collectEvidence(db: Database.Database, tasks: VerificationTask[]) {
         ref: `task:${task.task_id}:quality-review:${index}`,
         value: review,
       })),
+      ...(managedCompletion ? [{
+        ref: `task:${task.task_id}:managed-completion:${managedCompletion.id}`,
+        value: {
+          source: 'center_validated_worker_completion',
+          attestation: 'Center validated Goal/task state, assigned Worker identity and assigned session before recording this event.',
+          actor_id: managedCompletion.actor_id,
+          decision: managedCompletion.decision,
+          reason: managedCompletion.reason,
+          evidence: parseObject(managedCompletion.evidence_json),
+          assignment: parseObject(managedCompletion.action_json),
+          created_at: managedCompletion.created_at,
+        },
+      }] : []),
     ]
     return {
       task_id: task.task_id,
@@ -142,7 +169,8 @@ function verificationPrompt(goal: SupervisionGoalView, evidence: ReturnType<type
 1. 每条成功标准必须恰好返回一次。
 2. accepted 要求所有标准 passed=true 且每条至少引用一个 independent_evidence ref。
 3. Worker resolution 仅用于理解，不能单独证明通过。
-4. 证据冲突或需要真实环境确认时返回 needs_human。
+4. source=center_validated_worker_completion 表示中心已校验 Goal/task 状态、Worker 和 session 后接受 MCP 完成提交；其结构化 evidence 可证明本次受管提交内容，但出现冲突时仍返回 needs_human。
+5. 证据冲突或需要真实环境确认时返回 needs_human。
 
 目标：${goal.title}
 目标描述：${goal.objective}
