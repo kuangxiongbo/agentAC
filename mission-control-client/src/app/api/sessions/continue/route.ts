@@ -27,6 +27,15 @@ export async function POST(request: NextRequest) {
     const sessionId = typeof body?.id === 'string' ? body.id.trim() : ''
     const prompt = typeof body?.prompt === 'string' ? body.prompt : ''
     const workingDir = typeof body?.working_dir === 'string' ? body.working_dir.trim() : ''
+    const workerLocalAgentId = Number(body?._worker_local_agent_id)
+    const workerSessionId = typeof body?._worker_session_id === 'string'
+      ? body._worker_session_id.trim()
+      : ''
+    const managedByPlatform = body?._managed_by_platform === true
+      && Boolean(request.headers.get('x-api-key'))
+      && Number.isInteger(workerLocalAgentId)
+      && workerLocalAgentId > 0
+      && workerSessionId === sessionId
     const localCliElevated = isLocalCliElevatedFlag(body?.local_cli_elevated)
     const elevationGate = await assertLocalCliElevationAllowed({ elevated: localCliElevated })
     if (!elevationGate.ok) {
@@ -64,6 +73,10 @@ export async function POST(request: NextRequest) {
     enqueueLocalSessionPrompt(kind, sessionId, prompt, {
       workingDirectory: workingDir || null,
       permissionMode,
+      managedByPlatform,
+      agent: managedByPlatform ? { id: workerLocalAgentId } : null,
+      workerSessionId: managedByPlatform ? workerSessionId : null,
+      sessionKind: managedByPlatform ? kind : null,
     })
 
     return NextResponse.json({ ok: true, accepted: true, sessionId })

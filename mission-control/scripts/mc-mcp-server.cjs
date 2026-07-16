@@ -99,6 +99,22 @@ function managedWorkerCompletionContext(args) {
   };
 }
 
+function managedSessionContinuationContext({ kind, id, prompt }) {
+  const workerLocalAgentId = numberFromEnv('MC_AGENT_ID');
+  const workerSessionId = process.env.MC_WORKER_SESSION_ID?.trim();
+  const managed = process.env.MC_MANAGED_SESSION === '1' || process.env.MC_PLATFORM_MANAGED_SESSION === '1';
+  return {
+    kind,
+    id,
+    prompt,
+    ...(managed && Number.isInteger(workerLocalAgentId) && workerLocalAgentId > 0 && workerSessionId === id ? {
+      _managed_by_platform: true,
+      _worker_local_agent_id: workerLocalAgentId,
+      _worker_session_id: workerSessionId,
+    } : {}),
+  };
+}
+
 function buildWatchAssistPayload(args) {
   return {
     ...withWorkerContext(args),
@@ -510,6 +526,12 @@ const TOOLS = [
   {
     name: 'mc_list_sessions',
     description: 'List all active sessions',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: { type: 'object', properties: {}, required: [] },
     handler: async () => api('GET', '/api/sessions'),
   },
@@ -544,12 +566,18 @@ const TOOLS = [
       },
       required: ['kind', 'id', 'prompt'],
     },
-    handler: async ({ kind, id, prompt }) =>
-      api('POST', '/api/sessions/continue', { kind, id, prompt }),
+    handler: async (args) =>
+      api('POST', '/api/sessions/continue', managedSessionContinuationContext(args)),
   },
   {
     name: 'mc_session_transcript',
     description: 'Get the transcript of a session (messages, tool calls, reasoning)',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -957,7 +985,7 @@ for (const tool of TOOLS) {
 
 const SERVER_INFO = {
   name: 'mission-control',
-  version: '2.1.51',
+  version: '2.1.52',
 };
 
 const CAPABILITIES = {
