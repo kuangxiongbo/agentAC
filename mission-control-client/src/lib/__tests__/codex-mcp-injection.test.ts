@@ -57,6 +57,11 @@ describe('codex-mcp-injection', () => {
       script.indexOf("name: 'mc_get_supervision_goal'"),
     )
     expect(taskRead).toContain('readOnlyHint: true')
+    const continuation = script.slice(script.indexOf("name: 'mc_continue_session'"))
+    expect(continuation).toContain('readOnlyHint: false')
+    expect(continuation).toContain('destructiveHint: false')
+    expect(continuation).toContain('idempotentHint: true')
+    expect(continuation).toContain('openWorldHint: false')
     expect(script).toContain('...(t.annotations ? { annotations: t.annotations } : {})')
   })
 })

@@ -529,6 +529,12 @@ const TOOLS = [
   {
     name: 'mc_continue_session',
     description: 'Send a follow-up prompt to an existing session',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -951,7 +957,7 @@ for (const tool of TOOLS) {
 
 const SERVER_INFO = {
   name: 'mission-control',
-  version: '2.1.50',
+  version: '2.1.51',
 };
 
 const CAPABILITIES = {

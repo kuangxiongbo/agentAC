@@ -44,5 +44,12 @@ describe('codex-mcp-injection', () => {
     expect(completion).toContain('managedWorkerCompletionContext(args)')
     expect(completion).not.toContain('worker_local_agent_id: {')
     expect(completion).not.toContain('worker_session_id: {')
+
+    const continuation = script.slice(script.indexOf("name: 'mc_continue_session'"))
+    expect(continuation).toContain('readOnlyHint: false')
+    expect(continuation).toContain('destructiveHint: false')
+    expect(continuation).toContain('idempotentHint: true')
+    expect(continuation).toContain('openWorldHint: false')
+    expect(script).toContain('...(t.annotations ? { annotations: t.annotations } : {})')
   })
 })
