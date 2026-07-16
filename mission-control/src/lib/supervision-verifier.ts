@@ -7,6 +7,9 @@ import { recordGoalMemoryOutcomes, searchStewardMemories } from './steward-memor
 
 type JudgeRunner = typeof requestBridgeClientStewardJudge
 
+const MAX_VERIFICATION_PROMPT_CHARS = 5900
+const MAX_PROMPT_STRING_CHARS = 360
+
 interface VerificationTask {
   task_id: number
   logical_task_key: string
@@ -49,6 +52,49 @@ function parseObject(raw: string | null): Record<string, unknown> {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
   } catch {
     return {}
+  }
+}
+
+function truncateMiddle(value: unknown, maxChars: number): string {
+  const text = String(value ?? '').trim()
+  if (text.length <= maxChars) return text
+  const marker = '...[truncated]...'
+  const remaining = Math.max(0, maxChars - marker.length)
+  const head = Math.ceil(remaining * 0.6)
+  return `${text.slice(0, head)}${marker}${text.slice(-(remaining - head))}`
+}
+
+function compactPromptValue(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return truncateMiddle(value, MAX_PROMPT_STRING_CHARS)
+  if (value == null || typeof value !== 'object') return value
+  if (depth >= 4) return truncateMiddle(JSON.stringify(value), MAX_PROMPT_STRING_CHARS)
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 10).map((item) => compactPromptValue(item, depth + 1))
+    if (value.length > items.length) items.push(`[${value.length - items.length} more items]`)
+    return items
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .slice(0, 20)
+      .map(([key, item]) => [key, compactPromptValue(item, depth + 1)]),
+  )
+}
+
+function compactIndependentEvidenceValue(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return compactPromptValue(value)
+  }
+  const record = value as Record<string, unknown>
+  if (record.source !== 'center_validated_worker_completion') {
+    return compactPromptValue(value)
+  }
+  return {
+    source: record.source,
+    actor_id: record.actor_id,
+    decision: record.decision,
+    evidence: compactPromptValue(record.evidence),
+    assignment: compactPromptValue(record.assignment),
+    created_at: record.created_at,
   }
 }
 
@@ -156,7 +202,26 @@ function parseDecision(raw: string, goal: SupervisionGoalView): VerificationDeci
 }
 
 function verificationPrompt(goal: SupervisionGoalView, evidence: ReturnType<typeof collectEvidence>, memoryContext = ''): string {
-  return `你是独立验收值守 Agent。你不能把 Worker 自报“完成”作为唯一证据，必须逐条核对成功标准与独立证据。
+  const evidenceIndex = evidence.map((task) => ({
+    task_id: task.task_id,
+    refs: task.independent_evidence.map((item) => item.ref),
+  }))
+  const promptEvidence = evidence.map((task) => ({
+    task_id: task.task_id,
+    logical_key: task.logical_key,
+    title: truncateMiddle(task.title, 160),
+    status: task.status,
+    outcome: task.outcome,
+    acceptance_criteria: task.acceptance_criteria
+      .slice(0, 8)
+      .map((criterion) => truncateMiddle(criterion, 180)),
+    worker_resolution: truncateMiddle(task.worker_resolution, 240),
+    independent_evidence: task.independent_evidence.map((item) => ({
+      ref: item.ref,
+      value: compactIndependentEvidenceValue(item.value),
+    })),
+  }))
+  const render = (details: unknown, memory: string) => `你是独立验收值守 Agent。你不能把 Worker 自报“完成”作为唯一证据，必须逐条核对成功标准与独立证据。
 
 只输出 JSON：
 {
@@ -172,12 +237,31 @@ function verificationPrompt(goal: SupervisionGoalView, evidence: ReturnType<type
 4. source=center_validated_worker_completion 表示中心已校验 Goal/task 状态、Worker 和 session 后接受 MCP 完成提交；其结构化 evidence 可证明本次受管提交内容，但出现冲突时仍返回 needs_human。
 5. 证据冲突或需要真实环境确认时返回 needs_human。
 
-目标：${goal.title}
-目标描述：${goal.objective}
-成功标准：${JSON.stringify(goal.success_criteria)}
-约束：${JSON.stringify(goal.constraints)}
-任务与证据：${JSON.stringify(evidence)}
-${memoryContext ? `\n已批准值守记忆（只能辅助理解，不能替代本次独立证据）：\n${memoryContext}` : ''}`
+目标：${truncateMiddle(goal.title, 240)}
+目标描述：${truncateMiddle(goal.objective, 700)}
+成功标准：${JSON.stringify(goal.success_criteria.map((item) => ({ ...item, text: truncateMiddle(item.text, 300) })))}
+约束：${JSON.stringify(goal.constraints.slice(0, 12).map((item) => truncateMiddle(item, 180)))}
+证据索引：${JSON.stringify(evidenceIndex)}
+任务与证据：${JSON.stringify(details)}
+${memory ? `\n已批准值守记忆（只能辅助理解，不能替代本次独立证据）：\n${memory}` : ''}`
+
+  let prompt = render(promptEvidence, truncateMiddle(memoryContext, 500))
+  if (prompt.length <= MAX_VERIFICATION_PROMPT_CHARS) return prompt
+
+  const minimalEvidence = promptEvidence.map((task) => ({
+    task_id: task.task_id,
+    logical_key: task.logical_key,
+    status: task.status,
+    outcome: task.outcome,
+    independent_evidence: task.independent_evidence.map((item) => ({
+      ref: item.ref,
+      value: truncateMiddle(JSON.stringify(item.value), 520),
+    })),
+  }))
+  prompt = render(minimalEvidence, '')
+  return prompt.length <= MAX_VERIFICATION_PROMPT_CHARS
+    ? prompt
+    : truncateMiddle(prompt, MAX_VERIFICATION_PROMPT_CHARS)
 }
 
 function recordVerification(db: Database.Database, goal: SupervisionGoalView, decision: VerificationDecision, evidenceRefs: string[]) {

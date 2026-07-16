@@ -153,6 +153,55 @@ describe('supervision verifier', () => {
     expect(result.evidence_refs).toContain(evidenceRef)
   })
 
+  it('keeps production-sized managed completion prompts within the Edge judge limit', async () => {
+    db.prepare(`UPDATE supervision_goals SET objective = ?, constraints_json = ? WHERE id = 'goal-verify'`).run(
+      'Long production objective '.repeat(300),
+      JSON.stringify(Array.from({ length: 20 }, (_, index) => `constraint-${index} ${'detail '.repeat(100)}`)),
+    )
+    db.prepare(`UPDATE tasks SET resolution = ? WHERE id = ?`).run('Worker completion detail '.repeat(400), taskId)
+    const inserted = db.prepare(`
+      INSERT INTO supervision_events (
+        workspace_id, tenant_id, goal_id, task_id, event_type, actor_type,
+        actor_id, decision, reason, evidence_json, action_json, idempotency_key
+      ) VALUES (1, 1, 'goal-verify', ?, 'goal_task_worker_completed', 'worker_agent',
+        '11', 'success', ?, ?, ?, 'goal-verify:large-managed-completion')
+    `).run(
+      taskId,
+      'Repeated managed completion reason '.repeat(300),
+      JSON.stringify({
+        command: 'pwd',
+        exit_code: 0,
+        stdout: '/Users/kuangxb/Desktop/agent指挥仓\n',
+        transcript: 'verbose transcript '.repeat(1000),
+      }),
+      JSON.stringify({ worker_local_agent_id: 11, worker_session_id: 'worker-session' }),
+    )
+    const evidenceRef = `task:${taskId}:managed-completion:${Number(inserted.lastInsertRowid)}`
+    const runJudge = vi.fn(async ({ prompt }: { prompt: string }) => {
+      expect(prompt.length).toBeLessThanOrEqual(5900)
+      expect(prompt).toContain(evidenceRef)
+      expect(prompt).toContain('center_validated_worker_completion')
+      expect(prompt).toContain('/Users/kuangxb/Desktop/agent指挥仓')
+      return {
+        reply: JSON.stringify({
+          decision: 'accepted',
+          reason: 'Bounded managed evidence is sufficient',
+          criteria: [{
+            criterion_id: 'tests-pass',
+            passed: true,
+            evidence_refs: [evidenceRef],
+            note: 'Center validated the managed completion',
+          }],
+        }),
+        sessionId: 'steward-session',
+        source: 'test',
+      }
+    })
+
+    const result = await verifySupervisionGoal({ goalId: 'goal-verify', workspaceId: 1 }, { runJudge }, db)
+    expect(result).toMatchObject({ decision: 'accepted', status: 'completed' })
+  })
+
   it('downgrades unsupported acceptance evidence to human review', async () => {
     db.prepare(`UPDATE tasks SET metadata = ? WHERE id = ?`).run(JSON.stringify({
       verification_evidence: [{ type: 'test', passed: true }],

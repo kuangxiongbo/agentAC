@@ -1,6 +1,6 @@
 {
   "name": "mission-control",
-  "version": "2.1.57",
+  "version": "2.1.58",
   "description": "OpenClaw E-AgentCenter — open-source agent orchestration dashboard",
   "scripts": {
     "verify:node": "node scripts/check-node-version.mjs",
