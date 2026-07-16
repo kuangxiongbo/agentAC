@@ -184,6 +184,21 @@ describe('supervision goal routes', () => {
       JSON.stringify({ oversized: 'e'.repeat(50_000) }),
       JSON.stringify({ oversized: 'a'.repeat(50_000) }),
     )
+    const insertHistoryEvent = db.prepare(`
+      INSERT INTO supervision_events (
+        workspace_id, tenant_id, goal_id, task_id, event_type, actor_type,
+        decision, reason, idempotency_key
+      ) VALUES (1, 1, ?, ?, 'worker_output_aligned', 'steward_agent',
+        'aligned', ?, ?)
+    `)
+    for (let index = 0; index < 30; index++) {
+      insertHistoryEvent.run(
+        created.goal.id,
+        firstTaskId,
+        `Aligned ${index}: ${'r'.repeat(2_000)}`,
+        `goal:${created.goal.id}:history:${index}`,
+      )
+    }
 
     const workerGoalRoute = await import('@/app/api/supervision/worker-goals/[id]/route')
     const workerResponse = await workerGoalRoute.GET(
@@ -193,10 +208,14 @@ describe('supervision goal routes', () => {
     expect(workerResponse.status).toBe(200)
     const workerView = await workerResponse.json()
     expect(workerView).toMatchObject({
-      schema: 2,
+      schema: 3,
       source: 'center',
       event_summary: {
-        by_type: { goal_task_dispatch_blocked: 1 },
+        by_type: { goal_task_dispatch_blocked: 1, worker_output_aligned: 30 },
+        returned: 20,
+        truncated: false,
+        history_windowed: true,
+        complete_type_counts: true,
       },
     })
     expect(workerView.tasks).toEqual([
@@ -209,7 +228,8 @@ describe('supervision goal routes', () => {
       }),
     ])
     const serialized = JSON.stringify(workerView)
-    expect(serialized.length).toBeLessThan(15_000)
+    expect(serialized.length).toBeLessThan(10_000)
+    expect(workerView.payload_bytes).toBeGreaterThan(0)
     expect(serialized).not.toContain('oversized')
     expect(serialized).not.toContain('metadata')
     expect(serialized).not.toContain('evidence_json')

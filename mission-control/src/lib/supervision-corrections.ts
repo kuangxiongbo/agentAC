@@ -395,8 +395,10 @@ export function runSupervisionCorrections(
     SELECT se.id, se.goal_id, se.task_id, se.event_type, se.reason
     FROM supervision_events se
     JOIN supervision_goals sg ON sg.id = se.goal_id
+    JOIN tasks t ON t.id = se.task_id
     WHERE se.workspace_id = ?
       AND sg.status IN ('running', 'blocked', 'verifying')
+      AND t.status IN ('assigned', 'in_progress', 'review')
       AND se.event_type IN (
         'worker_output_deviation_detected', 'worker_output_insufficient',
         'task_timeout_detected', 'worker_offline_detected',

@@ -121,6 +121,18 @@ describe('supervision corrections', () => {
     expect((db.prepare(`SELECT COUNT(*) AS count FROM edge_messages`).get() as { count: number }).count).toBe(2)
   })
 
+  it('does not continue a terminal task for a stale semantic observation', () => {
+    observation('worker_output_insufficient', 'Completion evidence was not quoted in the Worker summary')
+    db.prepare(`UPDATE tasks SET status = 'done', outcome = 'success' WHERE id = ?`).run(taskId)
+    const wakeup = vi.fn(() => true)
+
+    const result = runSupervisionCorrections({ workspaceId: 1 }, { wakeup }, db)
+
+    expect(result).toEqual({ processed: 0, applied: 0, escalated: 0, errors: [] })
+    expect(wakeup).not.toHaveBeenCalled()
+    expect((db.prepare(`SELECT COUNT(*) AS count FROM edge_messages`).get() as { count: number }).count).toBe(1)
+  })
+
   it('reassigns an offline worker and enforces retry and replan budgets', () => {
     observation('worker_offline_detected', 'Worker A is offline')
     const corrected = runSupervisionCorrections({ workspaceId: 1 }, {

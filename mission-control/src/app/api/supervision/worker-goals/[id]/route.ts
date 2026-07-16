@@ -8,7 +8,7 @@ import {
 
 export const dynamic = 'force-dynamic'
 
-const EVENT_WINDOW_SIZE = 100
+const EVENT_WINDOW_SIZE = 20
 
 function parseStringArray(value: unknown): string[] {
   if (typeof value !== 'string') return []
@@ -49,12 +49,12 @@ export async function GET(
   }, {})
   const recentEvents = allEvents.slice(-EVENT_WINDOW_SIZE)
 
-  return NextResponse.json({
-    schema: 2,
+  const response = {
+    schema: 3,
     goal: {
       id: goal.id,
       title: goal.title,
-      objective: compactText(goal.objective, 2000),
+      objective: compactText(goal.objective, 1000),
       status: goal.status,
       version: goal.version,
       current_plan_version: goal.current_plan_version,
@@ -75,8 +75,8 @@ export async function GET(
       assigned_session_id: task.assigned_session_id,
       retry_count: task.retry_count,
       reassignment_count: task.reassignment_count,
-      resolution_summary: compactText(task.resolution, 1000),
-      error_summary: compactText(task.error_message, 500),
+      resolution_summary: compactText(task.resolution, 240),
+      error_summary: compactText(task.error_message, 240),
       updated_at: task.updated_at,
     })),
     event_summary: {
@@ -84,7 +84,9 @@ export async function GET(
       by_type: eventTypeCounts,
       latest_event_id: allEvents.length > 0 ? allEvents[allEvents.length - 1].id : null,
       returned: recentEvents.length,
-      truncated: recentEvents.length < allEvents.length,
+      truncated: false,
+      history_windowed: recentEvents.length < allEvents.length,
+      complete_type_counts: true,
     },
     events: recentEvents.map((event) => ({
       id: event.id,
@@ -93,10 +95,13 @@ export async function GET(
       actor_type: event.actor_type,
       actor_id: event.actor_id,
       decision: event.decision,
-      reason: compactText(event.reason, 500),
+      reason: compactText(event.reason, 180),
       message_id: event.message_id,
       created_at: event.created_at,
     })),
     source: 'center',
-  })
+    payload_bytes: 0,
+  }
+  response.payload_bytes = Buffer.byteLength(JSON.stringify(response), 'utf8')
+  return NextResponse.json(response)
 }
