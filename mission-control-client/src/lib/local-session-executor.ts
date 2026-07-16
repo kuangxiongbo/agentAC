@@ -2051,11 +2051,12 @@ export function enqueueLocalSessionPrompt(
   }
   ensureValidSessionId(sessionId)
 
+  const agent = options.agent ? getFreshAgentRecord(options.agent) : null
   const executionKey = `session:${kind}:${sessionId}`
   const executionCwd = resolveLocalExecutionWorkingDirectory(
     kind,
     sessionId,
-    null,
+    agent,
     options.workingDirectory ?? undefined,
   )
   scheduleSerializedLocalPrompt(
@@ -2064,12 +2065,13 @@ export function enqueueLocalSessionPrompt(
     sessionId,
     () => executeLocalSessionPrompt(kind, sessionId, prompt, {
       ...options,
+      agent,
       workingDirectory: executionCwd,
       workerSessionId: options.workerSessionId || sessionId,
       sessionKind: options.sessionKind || kind,
     }),
     prompt,
-    null,
+    agent?.id,
   )
 
   return { accepted: true, sessionKey: sessionId, kind }

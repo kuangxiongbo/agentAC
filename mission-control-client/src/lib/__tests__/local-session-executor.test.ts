@@ -235,6 +235,42 @@ describe('local-session-executor', () => {
     )
   })
 
+  it('resumes mailbox codex sessions using the persisted agent project cwd', async () => {
+    runCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 })
+    readLocalSessionTranscriptPage.mockReturnValue({ messages: [] })
+    agentRow = {
+      id: 6,
+      name: 'security',
+      framework: 'codex',
+      workspace_path: '/Users/kuangxb/.e-agent-edge/runtime/runtime',
+      session_key: '019ed56d-1f38-7983-b79c-87543322e549',
+      config: JSON.stringify({
+        mc_session_project_path: '/tmp',
+      }),
+      status: 'idle',
+    }
+
+    const { enqueueLocalSessionPrompt } = await import('@/lib/local-session-executor')
+    enqueueLocalSessionPrompt(
+      'codex-cli',
+      '019ed56d-1f38-7983-b79c-87543322e549',
+      'resume mailbox codex',
+      { agent: { id: 6 }, managedByPlatform: true },
+    )
+
+    await vi.waitFor(() => expect(runCommand).toHaveBeenCalled())
+    expect(runCommand).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining([
+        'exec',
+        'resume',
+        '019ed56d-1f38-7983-b79c-87543322e549',
+        expect.stringContaining('resume mailbox codex'),
+      ]),
+      cmdOpts({ cwd: '/tmp' }),
+    )
+  })
+
   it('executes a cursor local session prompt via the cursor agent CLI', async () => {
     runCommand.mockResolvedValue({
       stdout: '{"type":"result","sessionId":"cursor-session-1","result":"cursor-done"}',
