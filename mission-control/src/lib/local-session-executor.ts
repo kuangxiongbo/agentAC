@@ -243,13 +243,13 @@ export function resolveLocalExecutionWorkingDirectory(
 ): string | undefined {
   const preferredCwd = resolveWorkingDirectory(preferred) || getLocalRuntimeWorkingDirectory(agent ?? undefined)
 
-  if (kind !== 'claude-code' || !sessionId) {
-    return preferredCwd
-  }
-
   const config = parseConfigRecord(agent?.config)
   const storedCwd = resolveWorkingDirectory(config?.mc_session_project_path)
   if (storedCwd) return storedCwd
+
+  if (kind !== 'claude-code' || !sessionId) {
+    return preferredCwd
+  }
 
   const discoveredCwd = findClaudeSessionProjectPath(sessionId)
   if (discoveredCwd) return discoveredCwd

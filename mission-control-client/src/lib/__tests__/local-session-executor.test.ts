@@ -183,6 +183,58 @@ describe('local-session-executor', () => {
     )
   })
 
+  it('resumes codex sessions using the persisted session project cwd', async () => {
+    scanCodexSessions.mockReturnValue([
+      {
+        sessionId: '019ed56d-1f38-7983-b79c-87543322e549',
+        projectPath: '/Users/kuangxb/.e-agent-client/agent-sessions/6',
+      },
+    ])
+    runCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 })
+    readLocalSessionTranscriptPage.mockReturnValue({
+      messages: [
+        { role: 'assistant', parts: [{ type: 'text', text: 'codex resumed' }], timestamp: new Date().toISOString() },
+      ],
+    })
+    agentRow = {
+      id: 6,
+      name: 'security',
+      framework: 'codex',
+      workspace_path: '/tmp',
+      session_key: '019ed56d-1f38-7983-b79c-87543322e549',
+      config: JSON.stringify({
+        session_mode: 'dedicated',
+        session_state: 'ready',
+        primary_session_key: '019ed56d-1f38-7983-b79c-87543322e549',
+        mc_session_project_path: '/Users/kuangxb/.e-agent-client/agent-sessions/6',
+      }),
+      status: 'idle',
+    }
+
+    const { resolveLocalExecutionWorkingDirectory, executeBoundLocalAgentPrompt } = await import('@/lib/local-session-executor')
+    expect(
+      resolveLocalExecutionWorkingDirectory(
+        'codex-cli',
+        '019ed56d-1f38-7983-b79c-87543322e549',
+        agentRow,
+        '/tmp',
+      ),
+    ).toBe('/Users/kuangxb/.e-agent-client/agent-sessions/6')
+
+    await executeBoundLocalAgentPrompt(agentRow, 'resume codex')
+
+    expect(runCommand).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining([
+        'exec',
+        'resume',
+        '019ed56d-1f38-7983-b79c-87543322e549',
+        expect.stringContaining('resume codex'),
+      ]),
+      cmdOpts({ cwd: '/Users/kuangxb/.e-agent-client/agent-sessions/6' }),
+    )
+  })
+
   it('executes a cursor local session prompt via the cursor agent CLI', async () => {
     runCommand.mockResolvedValue({
       stdout: '{"type":"result","sessionId":"cursor-session-1","result":"cursor-done"}',
