@@ -169,6 +169,7 @@ function createWorkerMessage(db: Database.Database, input: {
     payload: {
       session_id: input.worker.session_id,
       session_kind: input.worker.framework,
+      worker_local_agent_id: input.worker.local_agent_id,
       content: correctionPrompt(input.action, input.task, input.instruction),
       goal_id: input.goalId,
       task_id: input.task.task_id,

@@ -94,6 +94,16 @@ describe('supervision corrections', () => {
     }, db)
     expect(first).toMatchObject({ processed: 1, applied: 1, escalated: 0 })
     expect((db.prepare(`SELECT COUNT(*) AS count FROM edge_messages`).get() as { count: number }).count).toBe(2)
+    const correctionMessage = db.prepare(`
+      SELECT payload_json FROM edge_messages
+      WHERE type = 'session.continue.requested'
+      ORDER BY created_at DESC, rowid DESC LIMIT 1
+    `).get() as { payload_json: string }
+    expect(JSON.parse(correctionMessage.payload_json)).toMatchObject({
+      session_id: 'worker-a-session',
+      session_kind: 'codex-cli',
+      worker_local_agent_id: 11,
+    })
     expect(wakeup).toHaveBeenCalledOnce()
     expect(listSupervisionGoalEvents('goal-correct', 1, db)).toEqual(expect.arrayContaining([
       expect.objectContaining({
