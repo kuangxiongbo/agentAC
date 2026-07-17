@@ -172,7 +172,8 @@ function resolveAutoStopReason(binding: HumanWatchBindingRow): string | null {
   if (!config.enabled) return null
 
   const now = Math.floor(Date.now() / 1000)
-  const since = binding.created_at || 0
+  // Re-enabling or reconfiguring a binding starts a fresh auto-stop window.
+  const since = Math.max(binding.created_at || 0, binding.updated_at || 0)
 
   if (config.max_runtime_seconds && since > 0 && now - since >= config.max_runtime_seconds) {
     return `max_runtime_seconds:${config.max_runtime_seconds}`

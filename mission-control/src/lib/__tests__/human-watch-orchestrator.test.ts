@@ -200,6 +200,37 @@ describe.sequential('human-watch-orchestrator', () => {
     expect(row.skip_reason).toBe('max_successful_interventions:1')
   })
 
+  it('restarts the auto-stop runtime window when a binding is re-enabled', async () => {
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(`
+      UPDATE human_watch_bindings
+      SET created_at = ?, updated_at = ?, rules_override = ?
+      WHERE id = 1
+    `).run(
+      now - 86400,
+      now,
+      JSON.stringify({ auto_stop: { enabled: true, max_runtime_seconds: 60 } }),
+    )
+    fetchTranscript.mockResolvedValue({
+      messages: [{ role: 'assistant', parts: [{ type: 'text', text: 'All done.' }], timestamp: new Date().toISOString() }],
+    })
+
+    await evaluateHumanWatchBinding(
+      db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any,
+      { sessionId: 'sess-worker-1', sessionKind: 'claude-code' },
+      defaultDeps(),
+    )
+
+    const binding = db.prepare(`SELECT enabled FROM human_watch_bindings WHERE id = 1`).get() as { enabled: number }
+    expect(binding.enabled).toBe(1)
+    expect(fetchTranscript).toHaveBeenCalledTimes(1)
+    const autoStops = db.prepare(
+      `SELECT COUNT(*) AS count FROM human_watch_interventions WHERE event_type = 'auto_stop'`,
+    ).get() as { count: number }
+    expect(autoStops.count).toBe(0)
+  })
+
   it('falls back to synced session kind when worker agent index is missing', async () => {
     const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
     db.prepare(`DELETE FROM sync_agent_index WHERE client_id = 'mac-1' AND local_agent_id = 10`).run()
