@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { realpathSync } from 'node:fs'
 
 const runCommand = vi.fn()
 const scanCodexSessions = vi.fn()
@@ -118,6 +119,44 @@ describe('local-session-executor', () => {
     const result = await executeLocalSessionPrompt('claude-code', 'claude-session-1', 'hello')
     expect(runCommand).toHaveBeenCalledWith('claude', ['--print', '--resume', 'claude-session-1', 'hello'], cmdOpts())
     expect(result.reply).toBe('done')
+  })
+
+  it('applies the intersection of agent and task sandbox limits', async () => {
+    runCommand.mockResolvedValue({ stdout: 'sandboxed', stderr: '', code: 0 })
+    agentRow = {
+      id: 18,
+      name: 'sandbox-worker',
+      framework: 'claude',
+      workspace_path: '/tmp',
+      session_key: 'claude-session-18',
+      config: JSON.stringify({
+        session_mode: 'dedicated',
+        session_state: 'ready',
+        primary_session_key: 'claude-session-18',
+        dispatchAllowedTools: ['Read', 'Write'],
+        dispatchMaxBudgetUsd: 4,
+        dispatchCwd: '.',
+      }),
+      status: 'idle',
+    }
+
+    const { executeBoundLocalAgentPrompt } = await import('@/lib/local-session-executor')
+    const result = await executeBoundLocalAgentPrompt(agentRow, 'inspect safely', {
+      dispatchAllowedTools: ['Read', 'Bash'],
+      dispatchMaxBudgetUsd: 2,
+      dispatchCwd: '.',
+    })
+
+    const [command, args, commandOptions] = runCommand.mock.calls[0]
+    expect(command).toBe('claude')
+    expect(args).toEqual(expect.arrayContaining([
+      '--print', '--resume', 'claude-session-18',
+      '--allowedTools', 'Read',
+      '--max-budget-usd', '2',
+    ]))
+    expect(args.at(-1)).toContain('inspect safely')
+    expect(commandOptions).toEqual(cmdOpts({ cwd: realpathSync('/tmp') }))
+    expect(result.reply).toBe('sandboxed')
   })
 
   it('falls back to codex transcript reply when command returns no structured text', async () => {

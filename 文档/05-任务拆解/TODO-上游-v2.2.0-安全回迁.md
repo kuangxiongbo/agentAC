@@ -18,13 +18,13 @@
 
 ## 批次 B：自主执行安全
 
-- [ ] B1 task-dispatch allowed tools、cwd、单任务预算
-- [ ] B2 Goal/Plan 权限只能收紧 Agent 默认权限
-- [ ] B3 目标累计预算与单任务预算联动
-- [ ] B4 Skill 下载、解压、文件数和总体积上限
-- [ ] B5 原子配置写入 helper 及关键写入点迁移
-- [ ] B6 文件 canonical path、软链接和 TOCTOU 加固
-- [ ] B7 批次 B 单测、typecheck、build 和越权测试
+- [x] B1 task-dispatch allowed tools、cwd、单任务预算
+- [x] B2 Goal/Plan 权限只能收紧 Agent 默认权限
+- [x] B3 目标累计预算与单任务预算联动
+- [x] B4 Skill 下载 256 KiB 上限（当前仅单 SKILL.md，无压缩包解压路径）
+- [x] B5 原子配置写入 helper 及关键写入点迁移
+- [x] B6 文件 canonical path、软链接和 TOCTOU 加固
+- [x] B7 批次 B 单测、typecheck、build 和越权测试
 
 ## 批次 C：租户和审计闭环
 
@@ -68,8 +68,8 @@
 
 | 批次 | 提交 | 测试报告 | 发布版本 | 生产证据 |
 |---|---|---|---|---|
-| A | 待提交 | Server 111、Edge 114 项聚焦测试；双端 typecheck/build；双端 Dockerfile check | 待完成 | 待完成 |
-| B | 待完成 | 待完成 | 待完成 | 待完成 |
+| A | `a0bfb27` | Server 111、Edge 114 项聚焦测试；双端 typecheck/build；双端 Dockerfile check | 待完成 | 待完成 |
+| B | 待提交 | Server 23、Edge 21 项安全测试；沙箱链路额外 Server 9、Edge 29 项；双端 typecheck/build | 待完成 | 待完成 |
 | C | 待完成 | 待完成 | 待完成 | 待完成 |
 | D | 待完成 | 待完成 | 待完成 | 待完成 |
 | E | 待完成 | 待完成 | 待完成 | 待完成 |

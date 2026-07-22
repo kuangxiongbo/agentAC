@@ -261,6 +261,9 @@ function handleSessionContinueMessage(message: {
     sessionKind: sessionKind as LocalSessionKind,
     workingDirectory: workingDirectory || null,
     permissionMode: localPermissionMode,
+    dispatchAllowedTools: message.payload.dispatch_allowed_tools ?? message.payload.dispatchAllowedTools,
+    dispatchMaxBudgetUsd: message.payload.dispatch_max_budget_usd ?? message.payload.dispatchMaxBudgetUsd,
+    dispatchCwd: message.payload.dispatch_cwd ?? message.payload.dispatchCwd,
   })
 
   return {

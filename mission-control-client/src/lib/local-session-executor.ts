@@ -26,6 +26,10 @@ import {
   type LocalCliPermissionMode,
 } from './local-cli-permission'
 import { withCodexMcpConfigArgs } from './codex-mcp-injection'
+import {
+  resolveCliDispatchCwd,
+  resolveCliDispatchSandboxOptions,
+} from './dispatch-sandbox'
 
 export type LocalSessionKind = 'claude-code' | 'codex-cli' | 'cursor' | 'opencode' | 'hermes'
 
@@ -62,6 +66,9 @@ interface LocalSessionExecutionOptions {
   workerSessionId?: string | null
   sessionKind?: LocalSessionKind | null
   timeoutMs?: number | null
+  dispatchAllowedTools?: unknown
+  dispatchMaxBudgetUsd?: unknown
+  dispatchCwd?: unknown
 }
 
 export interface LocalRuntimeAgentRef {
@@ -848,12 +855,20 @@ function resolveExecutionPermissionMode(options: LocalSessionExecutionOptions): 
   return resolveLocalCliPermissionMode(options.agent, options.permissionMode)
 }
 
+function resolveExecutionSandbox(options: LocalSessionExecutionOptions) {
+  return resolveCliDispatchSandboxOptions(options.agent?.config, options, getLocalRuntimeWorkingDirectory({
+    workspacePath: options.agent?.workspace_path,
+    config: options.agent?.config,
+  }))
+}
+
 function buildAgentExecutionOptions(
   agent: LocalRuntimeAgentRef,
   workingDirectory?: string,
   permissionModeOverride?: LocalCliPermissionMode | null,
   workerSessionId?: string | null,
   sessionKind?: LocalSessionKind | null,
+  dispatchOptions: LocalSessionExecutionOptions = {},
 ): LocalSessionExecutionOptions {
   const permissionMode = resolveLocalCliPermissionMode(agent, permissionModeOverride)
   return {
@@ -863,6 +878,9 @@ function buildAgentExecutionOptions(
     managedByPlatform: true,
     workerSessionId,
     sessionKind,
+    dispatchAllowedTools: dispatchOptions.dispatchAllowedTools,
+    dispatchMaxBudgetUsd: dispatchOptions.dispatchMaxBudgetUsd,
+    dispatchCwd: dispatchOptions.dispatchCwd,
   }
 }
 
@@ -925,7 +943,9 @@ function buildCommandOptions(options: LocalSessionExecutionOptions) {
       : EXECUTION_TIMEOUT_MS,
     env: buildCommandEnv(options),
   }
-  const cwd = resolveWorkingDirectory(options.workingDirectory)
+  const sandbox = resolveExecutionSandbox(options)
+  const requestedCwd = resolveWorkingDirectory(options.workingDirectory)
+  const cwd = sandbox.cwd || requestedCwd
   if (cwd) commandOptions.cwd = cwd
   return commandOptions
 }
@@ -1093,9 +1113,14 @@ const LOCAL_RUNTIME_EXECUTORS: Record<LocalSessionKind, LocalRuntimeExecutorAdap
     async execute(sessionId, prompt, options) {
       ensureValidSessionId(sessionId)
       const permissionMode = resolveExecutionPermissionMode(options)
+      const sandbox = resolveExecutionSandbox(options)
+      const sandboxArgs = [
+        ...(sandbox.allowedTools ? ['--allowedTools', sandbox.allowedTools.join(',')] : []),
+        ...(sandbox.maxBudgetUsd !== null ? ['--max-budget-usd', String(sandbox.maxBudgetUsd)] : []),
+      ]
       const args = withLocalCliPermissionArgs(
         'claude',
-        ['--print', '--resume', sessionId, prompt],
+        ['--print', '--resume', sessionId, ...sandboxArgs, prompt],
         permissionMode,
       )
       const result = await runCommand('claude', args, buildCommandOptions(options))
@@ -1108,9 +1133,14 @@ const LOCAL_RUNTIME_EXECUTORS: Record<LocalSessionKind, LocalRuntimeExecutorAdap
       const sessionId = randomUUID()
       const commandOptions = buildCommandOptions(options)
       const permissionMode = resolveExecutionPermissionMode(options)
+      const sandbox = resolveExecutionSandbox(options)
+      const sandboxArgs = [
+        ...(sandbox.allowedTools ? ['--allowedTools', sandbox.allowedTools.join(',')] : []),
+        ...(sandbox.maxBudgetUsd !== null ? ['--max-budget-usd', String(sandbox.maxBudgetUsd)] : []),
+      ]
       const args = withLocalCliPermissionArgs(
         'claude',
-        ['--print', '--session-id', sessionId, prompt],
+        ['--print', '--session-id', sessionId, ...sandboxArgs, prompt],
         permissionMode,
       )
       try {
@@ -1469,7 +1499,7 @@ async function executeBoundLocalAgentPromptCore(
     }
     const permissionMode = resolveLocalCliPermissionMode(freshAgent, options.permissionMode)
     const agentExecOptions = (cwd?: string, workerSessionId?: string | null) =>
-      buildAgentExecutionOptions(freshAgent, cwd ?? workingDirectory, permissionMode, workerSessionId, kind)
+      buildAgentExecutionOptions(freshAgent, cwd ?? workingDirectory, permissionMode, workerSessionId, kind, options)
     let activeSessionKey = getExistingAgentSessionKey(freshAgent)
     const roleHash = computeAgentRoleHash(freshAgent)
     const parsedConfig = getParsedLocalAgentSessionConfig(freshAgent)
@@ -1660,7 +1690,7 @@ async function executeBoundLocalAgentPromptCore(
           ? resolveCodexWorkingDirectoryForAgent(freshAgent)
           : resolveCwd(null)
       const result = await adapter.start(startupPrompt, {
-        ...buildAgentExecutionOptions(freshAgent, provisionWorkingDirectory, permissionMode),
+        ...buildAgentExecutionOptions(freshAgent, provisionWorkingDirectory, permissionMode, null, kind, options),
         agentName: asTrimmedString(freshAgent.name),
         excludeAgentId: freshAgent.id ?? null,
       })
@@ -1892,7 +1922,7 @@ export async function executeBoundLocalAgentPrompt(
       kind,
       overrideSessionKey,
       prompt,
-      buildAgentExecutionOptions(freshForCwd, workingDirectory, options.permissionMode, overrideSessionKey, kind),
+      buildAgentExecutionOptions(freshForCwd, workingDirectory, options.permissionMode, overrideSessionKey, kind, options),
     )
   }
 
@@ -2008,7 +2038,7 @@ export function enqueueBoundLocalAgentPrompt(
       kind,
       overrideSessionKey,
       prompt,
-      buildAgentExecutionOptions(freshAgent, executionCwd, options.permissionMode, overrideSessionKey, kind),
+      buildAgentExecutionOptions(freshAgent, executionCwd, options.permissionMode, overrideSessionKey, kind, options),
     )
     : () => executeBoundLocalAgentPromptCore(freshAgent, prompt, kind, workingDirectory, options)
 

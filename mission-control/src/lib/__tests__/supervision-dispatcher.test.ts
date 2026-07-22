@@ -131,6 +131,9 @@ describe('supervision dispatcher', () => {
       worker_local_agent_id: 11,
       session_id: 'backend-session',
       session_kind: 'codex-cli',
+      dispatch_allowed_tools: ['Task', 'Bash', 'Glob', 'Grep', 'Read', 'Edit', 'Write', 'TodoWrite'],
+      dispatch_max_budget_usd: 5,
+      dispatch_cwd: '.',
     })
 
     const repeated = dispatchSupervisionGoal({ goalId: 'goal-dispatch', workspaceId: 1 }, {

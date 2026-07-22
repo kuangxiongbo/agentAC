@@ -21,6 +21,10 @@ interface GoalTaskRow {
 }
 
 export const SUPERVISION_TASK_HOLD_ASSIGNEE = '__supervision_dependency_hold__'
+export const SUPERVISION_WORKER_ALLOWED_TOOLS = [
+  'Task', 'Bash', 'Glob', 'Grep', 'Read', 'Edit', 'Write', 'TodoWrite',
+] as const
+export const SUPERVISION_DEFAULT_TASK_BUDGET_USD = 5
 
 export interface DispatchedSupervisionTask {
   task_id: number
@@ -99,6 +103,15 @@ function dependenciesSatisfied(task: SupervisionPlanTask, taskByKey: Map<string,
   })
 }
 
+function supervisedTaskBudgetUsd(goal: { budget: { max_tasks: number; max_estimated_cost?: number } }): number {
+  const total = goal.budget.max_estimated_cost
+  if (typeof total === 'number' && Number.isFinite(total)) {
+    if (total <= 0) return 0
+    return Math.min(SUPERVISION_DEFAULT_TASK_BUDGET_USD, total / Math.max(1, goal.budget.max_tasks))
+  }
+  return SUPERVISION_DEFAULT_TASK_BUDGET_USD
+}
+
 function buildWorkerPrompt(input: {
   goalId: string
   goalTitle: string
@@ -173,6 +186,7 @@ export function dispatchSupervisionGoal(
   if (goal.status !== 'running') throw new Error(`Invalid goal state for dispatch: ${goal.status}`)
   if (goal.current_plan_version < 1) throw new Error('Goal has no current plan')
   const plan = getApprovedPlan(db, goal.id, goal.current_plan_version)
+  const taskBudgetUsd = supervisedTaskBudgetUsd(goal)
   const project = resolveProject(db, goal.workspace_id, input.projectId)
   const wakeups: Array<{ clientId: string; messageId: string; type: string }> = []
 
@@ -209,6 +223,9 @@ export function dispatchSupervisionGoal(
             dependencies: planTask.dependencies,
             acceptance_criteria: planTask.acceptance_criteria,
             risk: planTask.risk,
+            dispatch_allowed_tools: SUPERVISION_WORKER_ALLOWED_TOOLS,
+            dispatch_max_budget_usd: taskBudgetUsd,
+            dispatch_cwd: '.',
           }),
           goal.workspace_id,
         )
@@ -282,6 +299,7 @@ export function dispatchSupervisionGoal(
       let blockedReason: string | null = null
       if (!dependenciesSatisfied(planTask, taskByKey)) blockedReason = 'dependencies_not_completed'
       else if (activeCount >= goal.budget.max_parallel_workers) blockedReason = 'parallel_worker_budget_reached'
+      else if (taskBudgetUsd <= 0) blockedReason = 'estimated_cost_budget_exhausted'
 
       const match = blockedReason ? null : matchSupervisionWorker({
         goalId: goal.id,
@@ -369,6 +387,9 @@ export function dispatchSupervisionGoal(
           goal_id: goal.id,
           task_id: taskId,
           logical_task_key: planTask.logical_key,
+          dispatch_allowed_tools: SUPERVISION_WORKER_ALLOWED_TOOLS,
+          dispatch_max_budget_usd: taskBudgetUsd,
+          dispatch_cwd: '.',
         },
       }, db)
       db.prepare(`

@@ -28,6 +28,7 @@ interface DispatchableTask {
   project_ticket_no: number | null
   project_id: number | null
   tags?: string[]
+  metadata?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -748,7 +749,12 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
             workspace_path: task.agent_workspace_path,
           },
           prompt,
-          { overrideSessionKey: targetSession || undefined },
+          {
+            overrideSessionKey: targetSession || undefined,
+            dispatchAllowedTools: taskMeta.dispatchAllowedTools ?? taskMeta.dispatch_allowed_tools,
+            dispatchMaxBudgetUsd: taskMeta.dispatchMaxBudgetUsd ?? taskMeta.dispatch_max_budget_usd,
+            dispatchCwd: taskMeta.dispatchCwd ?? taskMeta.dispatch_cwd,
+          },
         )
         agentResponse = {
           text: localResult.reply,

@@ -1199,6 +1199,9 @@ async function handleSessionContinueRequest(message: any): Promise<void> {
       managedByPlatform: true,
       workingDirectory: workingDirectory || null,
       permissionMode,
+      dispatchAllowedTools: session?.dispatchAllowedTools ?? session?.dispatch_allowed_tools,
+      dispatchMaxBudgetUsd: session?.dispatchMaxBudgetUsd ?? session?.dispatch_max_budget_usd,
+      dispatchCwd: session?.dispatchCwd ?? session?.dispatch_cwd,
     })
     notifySessionTranscriptUpdated(kind, sessionId, 'bridge_continue_queued')
     safeSend(state.ws, {
