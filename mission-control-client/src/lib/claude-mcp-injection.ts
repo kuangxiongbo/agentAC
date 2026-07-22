@@ -1,0 +1,68 @@
+import { existsSync } from 'node:fs'
+import path from 'node:path'
+import { config } from './config'
+import type { LocalCliPermissionMode } from './local-cli-permission'
+
+const MCP_SERVER_NAME = 'mission_control'
+
+export interface ClaudeMcpInjectionOptions {
+  managedByPlatform?: boolean
+  agentId?: number | string | null
+  agentName?: string | null
+  workerSessionId?: string | null
+  sessionKind?: string | null
+  permissionMode?: LocalCliPermissionMode | null
+}
+
+function resolveMcpServerScript(): string {
+  const candidates = [
+    path.join(process.cwd(), 'scripts', 'mc-mcp-server.cjs'),
+    path.join(process.cwd(), 'mission-control-client', 'scripts', 'mc-mcp-server.cjs'),
+    path.join(config.homeDir, '.e-agent-edge', 'mc-mcp-server.cjs'),
+  ]
+  return candidates.find((candidate) => existsSync(candidate)) || candidates[0]
+}
+
+function resolveLocalMcUrl(): string {
+  const explicit = (process.env.MC_MANAGED_MCP_URL || process.env.MC_URL || '').trim()
+  if (explicit) return explicit.replace(/\/+$/, '')
+  const port = (process.env.PORT || process.env.MC_STANDALONE_PORT || '5101').trim()
+  return `http://127.0.0.1:${port}`
+}
+
+export function buildClaudeMcpConfigArgs(options: ClaudeMcpInjectionOptions): string[] {
+  if (!options.managedByPlatform) return []
+
+  const env: Record<string, string> = {
+    MC_URL: resolveLocalMcUrl(),
+    MC_MANAGED_SESSION: '1',
+    MC_MCP_ROLE: 'worker',
+    MC_LOCAL_CLI_PERMISSION_MODE: options.permissionMode || 'standard',
+  }
+  if (options.agentId != null) env.MC_AGENT_ID = String(options.agentId)
+  if (options.agentName) env.MC_AGENT_NAME = options.agentName
+  if (options.workerSessionId) env.MC_WORKER_SESSION_ID = options.workerSessionId
+  if (options.sessionKind) env.MC_SESSION_KIND = options.sessionKind
+
+  return [
+    '--mcp-config',
+    JSON.stringify({
+      mcpServers: {
+        [MCP_SERVER_NAME]: {
+          type: 'stdio',
+          command: process.execPath,
+          args: [resolveMcpServerScript()],
+          env,
+        },
+      },
+    }),
+  ]
+}
+
+export function withClaudeMcpConfigArgs(
+  args: string[],
+  options: ClaudeMcpInjectionOptions,
+): string[] {
+  const configArgs = buildClaudeMcpConfigArgs(options)
+  return configArgs.length > 0 ? [...configArgs, ...args] : args
+}

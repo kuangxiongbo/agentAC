@@ -33,7 +33,7 @@ function loadConfig() {
     baseUrl: normalizeMissionControlBaseUrl(
       process.env.MC_URL || profile.url || 'http://127.0.0.1:3000'
     ),
-    apiKey: process.env.MC_API_KEY || profile.apiKey || '',
+    apiKey: process.env.MC_API_KEY || process.env.API_KEY || profile.apiKey || '',
     cookie: process.env.MC_COOKIE || profile.cookie || '',
   };
 }
@@ -988,7 +988,7 @@ for (const tool of TOOLS) {
 
 const SERVER_INFO = {
   name: 'mission-control',
-  version: '2.1.62',
+  version: '2.1.63',
 };
 
 const CAPABILITIES = {

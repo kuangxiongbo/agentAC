@@ -215,11 +215,21 @@ describe('local-session-executor', () => {
     await executeBoundLocalAgentPrompt(agentRow, 'hello from test')
 
     expect(findClaudeSessionProjectPath).toHaveBeenCalledWith('e3fef5dd-d946-4f26-bd2c-aa5aa41240e8')
-    expect(runCommand).toHaveBeenCalledWith(
-      'claude',
-      ['--print', '--resume', 'e3fef5dd-d946-4f26-bd2c-aa5aa41240e8', 'hello from test'],
-      cmdOpts({ cwd: '/tmp' }),
-    )
+    const [command, args, options] = runCommand.mock.calls[0]
+    expect(command).toBe('claude')
+    expect(args.slice(-4)).toEqual([
+      '--print',
+      '--resume',
+      'e3fef5dd-d946-4f26-bd2c-aa5aa41240e8',
+      'hello from test',
+    ])
+    const mcpConfig = JSON.parse(args[args.indexOf('--mcp-config') + 1])
+    expect(mcpConfig.mcpServers.mission_control.env).toMatchObject({
+      MC_AGENT_ID: '33',
+      MC_WORKER_SESSION_ID: 'e3fef5dd-d946-4f26-bd2c-aa5aa41240e8',
+      MC_SESSION_KIND: 'claude-code',
+    })
+    expect(options).toEqual(cmdOpts({ cwd: '/tmp' }))
   })
 
   it('resumes codex sessions using the persisted session project cwd', async () => {
@@ -393,10 +403,12 @@ describe('local-session-executor', () => {
 
     expect(runCommand).toHaveBeenCalledTimes(1)
     const [, startArgs] = runCommand.mock.calls[0]
-    expect(startArgs[0]).toBe('--print')
-    expect(startArgs[1]).toBe('--session-id')
-    expect(String(startArgs[3])).toContain('Now respond to the following user message in character:')
-    expect(String(startArgs[3])).toContain('hello')
+    const printIndex = startArgs.indexOf('--print')
+    expect(startArgs[printIndex + 1]).toBe('--session-id')
+    expect(String(startArgs[printIndex + 3])).toContain('Now respond to the following user message in character:')
+    expect(String(startArgs[printIndex + 3])).toContain('hello')
+    const mcpConfig = JSON.parse(startArgs[startArgs.indexOf('--mcp-config') + 1])
+    expect(mcpConfig.mcpServers.mission_control.env.MC_AGENT_ID).toBe('7')
     expect(result.reply).toBe('claude-initial-reply')
     expect(result.sessionId).toMatch(/[0-9a-f-]{36}/)
     expect(runUpdate).toHaveBeenLastCalledWith(
@@ -471,16 +483,22 @@ describe('local-session-executor', () => {
     const result = await executeBoundLocalAgentPrompt(agentRow, 'hello')
 
     expect(runCommand).toHaveBeenCalledTimes(2)
-    expect(runCommand).toHaveBeenNthCalledWith(
-      1,
-      'claude',
-      ['--print', '--resume', 'fr001', expect.stringContaining('Now respond to the following user message in character:')],
-      cmdOpts(),
-    )
+    const [firstCommand, firstArgs, firstOptions] = runCommand.mock.calls[0]
+    expect(firstCommand).toBe('claude')
+    const firstPrintIndex = firstArgs.indexOf('--print')
+    expect(firstArgs.slice(firstPrintIndex, firstPrintIndex + 3)).toEqual(['--print', '--resume', 'fr001'])
+    expect(String(firstArgs[firstPrintIndex + 3])).toContain('Now respond to the following user message in character:')
+    const firstMcpConfig = JSON.parse(firstArgs[firstArgs.indexOf('--mcp-config') + 1])
+    expect(firstMcpConfig.mcpServers.mission_control.env).toMatchObject({
+      MC_AGENT_ID: '10',
+      MC_WORKER_SESSION_ID: 'fr001',
+      MC_SESSION_KIND: 'claude-code',
+    })
+    expect(firstOptions).toEqual(cmdOpts())
     const [, secondArgs] = runCommand.mock.calls[1]
-    expect(secondArgs[0]).toBe('--print')
-    expect(secondArgs[1]).toBe('--session-id')
-    expect(String(secondArgs[3])).toContain('Now respond to the following user message in character:')
+    const secondPrintIndex = secondArgs.indexOf('--print')
+    expect(secondArgs[secondPrintIndex + 1]).toBe('--session-id')
+    expect(String(secondArgs[secondPrintIndex + 3])).toContain('Now respond to the following user message in character:')
     expect(result.reply).toBe('claude-rebound')
     expect(runUpdate).toHaveBeenLastCalledWith(
       expect.any(String),

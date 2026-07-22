@@ -26,6 +26,7 @@ import {
   type LocalCliPermissionMode,
 } from './local-cli-permission'
 import { withCodexMcpConfigArgs } from './codex-mcp-injection'
+import { withClaudeMcpConfigArgs } from './claude-mcp-injection'
 import {
   resolveCliDispatchCwd,
   resolveCliDispatchSandboxOptions,
@@ -1118,9 +1119,20 @@ const LOCAL_RUNTIME_EXECUTORS: Record<LocalSessionKind, LocalRuntimeExecutorAdap
         ...(sandbox.allowedTools ? ['--allowedTools', sandbox.allowedTools.join(',')] : []),
         ...(sandbox.maxBudgetUsd !== null ? ['--max-budget-usd', String(sandbox.maxBudgetUsd)] : []),
       ]
+      const mcpArgs = withClaudeMcpConfigArgs(
+        ['--print', '--resume', sessionId, ...sandboxArgs, prompt],
+        {
+          managedByPlatform: options.managedByPlatform,
+          agentId: options.agent?.id,
+          agentName: options.agent?.name ?? null,
+          workerSessionId: options.workerSessionId,
+          sessionKind: options.sessionKind,
+          permissionMode,
+        },
+      )
       const args = withLocalCliPermissionArgs(
         'claude',
-        ['--print', '--resume', sessionId, ...sandboxArgs, prompt],
+        mcpArgs,
         permissionMode,
       )
       const result = await runCommand('claude', args, buildCommandOptions(options))
@@ -1138,9 +1150,20 @@ const LOCAL_RUNTIME_EXECUTORS: Record<LocalSessionKind, LocalRuntimeExecutorAdap
         ...(sandbox.allowedTools ? ['--allowedTools', sandbox.allowedTools.join(',')] : []),
         ...(sandbox.maxBudgetUsd !== null ? ['--max-budget-usd', String(sandbox.maxBudgetUsd)] : []),
       ]
+      const mcpArgs = withClaudeMcpConfigArgs(
+        ['--print', '--session-id', sessionId, ...sandboxArgs, prompt],
+        {
+          managedByPlatform: options.managedByPlatform,
+          agentId: options.agent?.id,
+          agentName: options.agent?.name ?? null,
+          workerSessionId: options.workerSessionId,
+          sessionKind: options.sessionKind,
+          permissionMode,
+        },
+      )
       const args = withLocalCliPermissionArgs(
         'claude',
-        ['--print', '--session-id', sessionId, ...sandboxArgs, prompt],
+        mcpArgs,
         permissionMode,
       )
       try {
