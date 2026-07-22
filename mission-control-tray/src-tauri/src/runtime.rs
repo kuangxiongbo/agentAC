@@ -11,6 +11,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 static CACHED_MANIFEST: Mutex<Option<RuntimeManifest>> = Mutex::new(None);
+static RUNTIME_INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeManifest {
@@ -212,8 +213,20 @@ fn next_compiled_runtime_present(runtime_dir: &Path) -> bool {
         .is_file()
 }
 
-fn validate_installed_runtime(target_version: &str) -> Result<PathBuf, String> {
-    let server_js = resolve_server_js().ok_or_else(|| "runtime 缺少 server.js".to_string())?;
+fn resolve_server_js_in(root: &Path) -> Option<PathBuf> {
+    let flat = root.join("server.js");
+    if flat.is_file() {
+        return Some(flat);
+    }
+    let nested = root.join("runtime").join("server.js");
+    if nested.is_file() {
+        return Some(nested);
+    }
+    None
+}
+
+fn validate_runtime_at(root: &Path, target_version: &str) -> Result<PathBuf, String> {
+    let server_js = resolve_server_js_in(root).ok_or_else(|| "runtime 缺少 server.js".to_string())?;
     let runtime_dir = server_js
         .parent()
         .ok_or_else(|| "无法识别 runtime 目录".to_string())?
@@ -238,6 +251,10 @@ fn validate_installed_runtime(target_version: &str) -> Result<PathBuf, String> {
         }
     }
     Ok(runtime_dir)
+}
+
+fn validate_installed_runtime(target_version: &str) -> Result<PathBuf, String> {
+    validate_runtime_at(&config::runtime_root(), target_version)
 }
 
 fn runtime_require_hook_resolvable(runtime_dir: &Path) -> bool {
@@ -517,6 +534,20 @@ pub fn download_and_install(cfg: &EdgeConfig, force: bool) -> Result<String, Str
 pub fn download_and_install_with_progress<F>(
     cfg: &EdgeConfig,
     force: bool,
+    on_progress: F,
+) -> Result<String, String>
+where
+    F: FnMut(RuntimeProgress),
+{
+    let _install_guard = RUNTIME_INSTALL_LOCK
+        .lock()
+        .map_err(|_| "runtime 安装锁已损坏".to_string())?;
+    download_and_install_with_progress_locked(cfg, force, on_progress)
+}
+
+fn download_and_install_with_progress_locked<F>(
+    cfg: &EdgeConfig,
+    force: bool,
     mut on_progress: F,
 ) -> Result<String, String>
 where
@@ -595,13 +626,15 @@ where
 
     let bundle_root = find_bundle_root(&extract_parent)?;
     let runtime_dest = config::runtime_root();
+    let install_candidate = runtime_dest.with_extension(format!("installing-{}", std::process::id()));
+    let rollback = runtime_dest.with_extension(format!("rollback-{}", std::process::id()));
     on_progress(RuntimeProgress::new("runtime", "正在替换本地运行环境…"));
-    if runtime_dest.exists() {
-        fs::remove_dir_all(&runtime_dest).map_err(|e| e.to_string())?;
+    if install_candidate.exists() {
+        fs::remove_dir_all(&install_candidate).map_err(|e| e.to_string())?;
     }
     fs::create_dir_all(runtime_dest.parent().unwrap()).map_err(|e| e.to_string())?;
-    copy_tree_preserve_symlinks(&bundle_root, &runtime_dest)?;
-    if let Some(server_js) = resolve_server_js() {
+    copy_tree_preserve_symlinks(&bundle_root, &install_candidate)?;
+    if let Some(server_js) = resolve_server_js_in(&install_candidate) {
         if let Some(root) = server_js.parent() {
             on_progress(RuntimeProgress::new("runtime", "正在修复运行依赖链接…"));
             repair_runtime_peer_links(root)?;
@@ -609,14 +642,18 @@ where
     }
 
     on_progress(RuntimeProgress::new("runtime", "正在验证本地运行环境…"));
-    let installed_runtime_dir = validate_installed_runtime(&target_version)?;
-    fs::write(runtime_dest.join("VERSION"), format!("{target_version}\n"))
+    let candidate_runtime_dir = validate_runtime_at(&install_candidate, &target_version)?;
+    fs::write(install_candidate.join("VERSION"), format!("{target_version}\n"))
         .map_err(|e| e.to_string())?;
     fs::write(
-        installed_runtime_dir.join("VERSION"),
+        candidate_runtime_dir.join("VERSION"),
         format!("{target_version}\n"),
     )
     .map_err(|e| e.to_string())?;
+
+    replace_runtime_atomically(&runtime_dest, &install_candidate, &rollback, |root| {
+        validate_runtime_at(root, &target_version).map(|_| ())
+    })?;
     let _ = fs::remove_file(&zip_path);
     let _ = fs::remove_dir_all(&extract_parent);
 
@@ -629,6 +666,38 @@ where
         format!("本机 Web 客户端 {target_version} 已安装"),
     ));
     Ok(format!("已安装 runtime {target_version} ({key})"))
+}
+
+fn replace_runtime_atomically<F>(
+    runtime_dest: &Path,
+    install_candidate: &Path,
+    rollback: &Path,
+    validate: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+{
+    if rollback.exists() {
+        fs::remove_dir_all(rollback).map_err(|e| e.to_string())?;
+    }
+    if runtime_dest.exists() {
+        fs::rename(runtime_dest, rollback).map_err(|e| format!("备份现有 runtime 失败: {e}"))?;
+    }
+    if let Err(e) = fs::rename(install_candidate, runtime_dest) {
+        if rollback.exists() {
+            let _ = fs::rename(rollback, runtime_dest);
+        }
+        return Err(format!("启用新 runtime 失败: {e}"));
+    }
+    if let Err(e) = validate(runtime_dest) {
+        let _ = fs::remove_dir_all(runtime_dest);
+        if rollback.exists() {
+            let _ = fs::rename(rollback, runtime_dest);
+        }
+        return Err(format!("启用后 runtime 校验失败: {e}"));
+    }
+    let _ = fs::remove_dir_all(rollback);
+    Ok(())
 }
 
 const DOWNLOAD_MAX_ATTEMPTS: u32 = 5;
@@ -1026,6 +1095,9 @@ pub fn ensure_runtime_with_progress<F>(cfg: &EdgeConfig, mut on_progress: F) -> 
 where
     F: FnMut(RuntimeProgress),
 {
+    let _install_guard = RUNTIME_INSTALL_LOCK
+        .lock()
+        .map_err(|_| "runtime 安装锁已损坏".to_string())?;
     on_progress(RuntimeProgress::new(
         "runtime",
         "正在检查本机 Web 客户端…",
@@ -1060,7 +1132,7 @@ where
             }
         }
     }
-    if resolve_server_js().is_some() {
+    if !is_runtime_usable() && resolve_server_js().is_some() {
         eprintln!(
             "[E-Agent Edge] ~/.e-agent-edge/runtime 已损坏（常见：node_modules 符号链接指向已删除的 standalone），将重新安装"
         );
@@ -1082,7 +1154,7 @@ where
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_CLIENT_VERSION.to_string());
 
-    match download_and_install_with_progress(cfg, true, |progress| on_progress(progress)) {
+    match download_and_install_with_progress_locked(cfg, true, |progress| on_progress(progress)) {
         Ok(msg) => {
             eprintln!("[E-Agent Edge] {msg}");
             Ok(())
@@ -1103,5 +1175,65 @@ where
                 Err(local) => Err(format!("{e}\n\n{local}")),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replace_runtime_atomically;
+    use std::fs;
+
+    fn test_root(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "e-agent-edge-runtime-{name}-{}",
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    #[test]
+    fn atomic_runtime_replace_activates_valid_candidate() {
+        let root = test_root("activate");
+        let runtime = root.join("runtime");
+        let candidate = root.join("runtime.installing");
+        let rollback = root.join("runtime.rollback");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&candidate).unwrap();
+        fs::write(runtime.join("marker"), "old").unwrap();
+        fs::write(candidate.join("marker"), "new").unwrap();
+
+        replace_runtime_atomically(&runtime, &candidate, &rollback, |path| {
+            (fs::read_to_string(path.join("marker")).unwrap() == "new")
+                .then_some(())
+                .ok_or_else(|| "unexpected marker".to_string())
+        })
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(runtime.join("marker")).unwrap(), "new");
+        assert!(!candidate.exists());
+        assert!(!rollback.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn atomic_runtime_replace_restores_previous_runtime_on_validation_failure() {
+        let root = test_root("rollback");
+        let runtime = root.join("runtime");
+        let candidate = root.join("runtime.installing");
+        let rollback = root.join("runtime.rollback");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&candidate).unwrap();
+        fs::write(runtime.join("marker"), "old").unwrap();
+        fs::write(candidate.join("marker"), "broken").unwrap();
+
+        let error = replace_runtime_atomically(&runtime, &candidate, &rollback, |_| {
+            Err("candidate invalid".to_string())
+        })
+        .unwrap_err();
+
+        assert!(error.contains("candidate invalid"));
+        assert_eq!(fs::read_to_string(runtime.join("marker")).unwrap(), "old");
+        assert!(!candidate.exists());
+        assert!(!rollback.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }
