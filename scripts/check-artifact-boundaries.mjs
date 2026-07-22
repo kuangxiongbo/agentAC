@@ -28,12 +28,20 @@ if (packages.some((name) => !['mission-control', 'mission-control-client'].inclu
 for (const packageName of packages) {
   const packageRoot = path.join(repo, packageName)
   const packageJson = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'))
+  const dockerignore = readFileSync(path.join(packageRoot, '.dockerignore'), 'utf8')
   const localSanitizerPath = path.join(packageRoot, 'scripts', 'sanitize-standalone-artifact.mjs')
   if (!packageJson.scripts?.build?.includes(`node scripts/sanitize-standalone-artifact.mjs ${packageName}`)) {
     failures.push(`${packageName}: build does not use its Docker-context sanitizer`)
   }
   if (!existsSync(localSanitizerPath) || readFileSync(localSanitizerPath, 'utf8') !== canonicalSanitizer) {
     failures.push(`${packageName}: Docker-context sanitizer differs from canonical script`)
+  }
+  if (!dockerignore.includes('!scripts/sanitize-standalone-artifact.mjs')) {
+    failures.push(`${packageName}: Docker context excludes standalone sanitizer`)
+  }
+  if (packageName === 'mission-control') {
+    const runtimeArtifact = `!public/edge-runtime/client-runtime-${packageJson.version}-darwin-aarch64.zip`
+    if (!dockerignore.includes(runtimeArtifact)) failures.push(`${packageName}: Docker context excludes current Edge runtime ZIP`)
   }
   const standalone = path.join(packageRoot, '.next', 'standalone')
   if (!existsSync(standalone)) failures.push(`${packageName}: missing .next/standalone`)

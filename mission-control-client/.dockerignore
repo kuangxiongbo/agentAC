@@ -9,3 +9,4 @@ ops
 scripts/*
 !scripts/check-node-version.mjs
 !scripts/load-env.sh
+!scripts/sanitize-standalone-artifact.mjs
