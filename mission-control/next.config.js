@@ -3,6 +3,9 @@ const withNextIntl = require('next-intl/plugin')('./src/i18n/request.ts')
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  experimental: {
+    cpus: Math.max(1, Number(process.env.NEXT_BUILD_CPUS) || 4),
+  },
   outputFileTracingExcludes: {
     '/*': ['./.data/**/*'],
   },
