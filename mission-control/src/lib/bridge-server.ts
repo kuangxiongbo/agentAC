@@ -8,6 +8,7 @@ import { config, BRIDGE_TOKEN } from './config'
 import type { LocalSessionTranscriptKind, TranscriptMessage } from './session-transcript'
 import { notifySessionTranscriptUpdated } from './session-realtime'
 import { replaceBridgeAgentIndex, type BridgeAgentIndexInput } from './sync-agent-index'
+import { resolveBridgeClientWorkspaceId, upsertBridgeAgentInventory } from './bridge-agent-registration'
 import { cleanupDuplicateClientAgents, reconcileClientAgentInventory } from './sync-agent-inventory'
 import { decidePermissionRequest, recordWorkerHumanReply, type PermissionRequestView } from './permission-requests'
 import { forwardPermissionDecisionToExecApproval } from './permission-request-exec-bridge'
@@ -989,6 +990,7 @@ async function ingestBridgeAgentList(clientId: string, clientLabel: string, agen
   try {
     const normalized = normalizeBridgeAgentList(agents)
     replaceBridgeAgentIndex(clientId, clientLabel, normalized)
+    const workspaceId = resolveBridgeClientWorkspaceId(getDatabase(), clientId)
     if (config.centralMode) {
       const inventory = normalized.map((agent) => ({
         local_agent_id: agent.id,
@@ -997,51 +999,20 @@ async function ingestBridgeAgentList(clientId: string, clientLabel: string, agen
         role: agent.role,
         framework: agent.framework,
       }))
-      reconcileClientAgentInventory(1, clientId, clientLabel, inventory)
-      cleanupDuplicateClientAgents(1, clientId)
+      reconcileClientAgentInventory(workspaceId, clientId, clientLabel, inventory)
+      cleanupDuplicateClientAgents(workspaceId, clientId)
     } else {
-      await registerRemoteAgents(clientId, clientLabel, normalized)
+      await registerRemoteAgents(clientId, clientLabel, workspaceId, normalized)
     }
   } catch (err) {
     logger.error({ err, clientId }, '[BridgeServer] Failed to ingest bridge agent list')
   }
 }
 
-async function registerRemoteAgents(clientId: string, clientLabel: string, agents: BridgeAgentIndexInput[]) {
+async function registerRemoteAgents(clientId: string, clientLabel: string, workspaceId: number, agents: BridgeAgentIndexInput[]) {
   try {
     const db = getDatabase()
-    const now = Math.floor(Date.now() / 1000)
-    
-    for (const agent of agents) {
-      const fullAgentName = `${clientId}-${agent.name}`
-      const configJson = JSON.stringify({
-        node_label: clientLabel || clientId,
-        bridge_client_id: clientId,
-      })
-      db.prepare(`
-        INSERT INTO agents (name, role, status, source, last_seen, updated_at, workspace_id, node_id, framework, parent_id, config)
-        VALUES (?, ?, ?, 'bridge', ?, ?, 1, ?, ?, ?, ?)
-        ON CONFLICT(name) DO UPDATE SET
-          role = excluded.role,
-          status = excluded.status,
-          last_seen = excluded.last_seen,
-          updated_at = excluded.updated_at,
-          node_id = excluded.node_id,
-          framework = excluded.framework,
-          parent_id = excluded.parent_id,
-          config = excluded.config
-      `).run(
-        fullAgentName, 
-        agent.role || 'remote agent', 
-        agent.status || 'idle', 
-        now, 
-        now, 
-        clientId,
-        agent.framework || 'openclaw',
-        agent.parent_id || null,
-        configJson
-      )
-    }
+    upsertBridgeAgentInventory(db, { clientId, clientLabel, workspaceId, agents })
   } catch (err) {
     logger.error({ err }, '[BridgeServer] Failed to register remote agents')
   }
