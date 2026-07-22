@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+. "$PROJECT_ROOT/scripts/load-env.sh"
 # shellcheck source=mc-ports.sh
 source "$PROJECT_ROOT/scripts/mc-ports.sh"
 # shellcheck source=mc-keep-awake.sh
@@ -36,6 +37,13 @@ fi
 if [[ -d "$SOURCE_PUBLIC_DIR" ]]; then
   rm -rf "$STANDALONE_PUBLIC_DIR"
   cp -R "$SOURCE_PUBLIC_DIR" "$STANDALONE_PUBLIC_DIR"
+fi
+
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+  load_env_file "$PROJECT_ROOT/.env"
+fi
+if [[ -f "$PROJECT_ROOT/.env.local" ]]; then
+  load_env_file "$PROJECT_ROOT/.env.local"
 fi
 
 # 与 pnpm dev 共用项目根目录 .data，避免 standalone 在 .next/standalone 下新建空库导致设置丢失

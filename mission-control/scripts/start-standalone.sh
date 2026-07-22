@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+. "$PROJECT_ROOT/scripts/load-env.sh"
 STANDALONE_DIR="$PROJECT_ROOT/.next/standalone"
 STANDALONE_NEXT_DIR="$STANDALONE_DIR/.next"
 STANDALONE_STATIC_DIR="$STANDALONE_NEXT_DIR/static"
@@ -27,6 +28,13 @@ fi
 if [[ -d "$SOURCE_PUBLIC_DIR" ]]; then
   rm -rf "$STANDALONE_PUBLIC_DIR"
   cp -R "$SOURCE_PUBLIC_DIR" "$STANDALONE_PUBLIC_DIR"
+fi
+
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+  load_env_file "$PROJECT_ROOT/.env"
+fi
+if [[ -f "$PROJECT_ROOT/.env.local" ]]; then
+  load_env_file "$PROJECT_ROOT/.env.local"
 fi
 
 export MISSION_CONTROL_DATA_DIR="${MISSION_CONTROL_DATA_DIR:-$PROJECT_ROOT/.data}"

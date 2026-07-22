@@ -75,6 +75,11 @@ describe('extractSchema', () => {
     const schema = extractSchema(content)
     expect(schema!.optional).toEqual(['source', 'author'])
   })
+
+  test('does not backtrack on adversarial inline-list content', () => {
+    const content = `---\n_schema:\n  type: note\n  required: [${'\\'.repeat(100_000)}\n---\n`
+    expect(extractSchema(content)).toEqual({ type: 'note' })
+  })
 })
 
 describe('validateSchema', () => {

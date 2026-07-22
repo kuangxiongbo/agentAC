@@ -44,6 +44,7 @@ export function StepAgentRuntimes({ isGateway, onNext, onBack }: Props) {
   const mc = modeColors(isGateway)
   const [runtimes, setRuntimes] = useState<RuntimeStatus[]>([])
   const [isDocker, setIsDocker] = useState(false)
+  const [runtimeInstallsEnabled, setRuntimeInstallsEnabled] = useState(false)
   const [loading, setLoading] = useState(true)
   const [activeJobs, setActiveJobs] = useState<Record<string, InstallJob>>({})
   const [copiedYaml, setCopiedYaml] = useState<string | null>(null)
@@ -55,6 +56,7 @@ export function StepAgentRuntimes({ isGateway, onNext, onBack }: Props) {
       const data = await res.json()
       setRuntimes(data.runtimes || [])
       setIsDocker(data.isDocker || false)
+      setRuntimeInstallsEnabled(data.runtimeInstallsEnabled === true)
     } catch {
       // ignore
     } finally {
@@ -95,6 +97,7 @@ export function StepAgentRuntimes({ isGateway, onNext, onBack }: Props) {
   }, [activeJobs, fetchRuntimes])
 
   const handleInstall = async (runtimeId: string) => {
+    if (!runtimeInstallsEnabled) return
     try {
       const res = await fetch('/api/agent-runtimes', {
         method: 'POST',
@@ -206,6 +209,7 @@ export function StepAgentRuntimes({ isGateway, onNext, onBack }: Props) {
                         <p className="text-2xs text-red-400">{t('installFailed', { error: job?.error || 'Unknown error' })}</p>
                         <button
                           onClick={() => handleInstall(rt.id)}
+                          disabled={!runtimeInstallsEnabled}
                           className="text-2xs px-2 py-1 rounded border border-border/40 hover:border-border/60 text-muted-foreground hover:text-foreground transition-colors"
                         >
                           {tc('retry')}
@@ -215,6 +219,7 @@ export function StepAgentRuntimes({ isGateway, onNext, onBack }: Props) {
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => handleInstall(rt.id)}
+                          disabled={!runtimeInstallsEnabled}
                           className={`text-2xs px-2 py-1 rounded border ${mc.border} ${mc.bgBtn} ${mc.text} ${mc.hoverBg} transition-colors`}
                         >
                           {t('install')}

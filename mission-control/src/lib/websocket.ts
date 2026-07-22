@@ -18,6 +18,7 @@ import {
   readErrorDetailCode,
   NON_RETRYABLE_ERROR_CODES,
   shouldRetryWithoutDeviceIdentity,
+  shouldTryGatewayPathFallback,
 } from '@/lib/websocket-utils'
 
 const log = createClientLogger('WebSocket')
@@ -731,6 +732,7 @@ export function useWebSocket() {
 
       ws.onclose = (event) => {
         log.info(`Disconnected from Gateway: ${event.code} ${event.reason}`)
+        const wasHandshakeComplete = handshakeCompleteRef.current
         setConnection({ isConnected: false })
         handshakeCompleteRef.current = false
         stopHeartbeat()
@@ -740,7 +742,7 @@ export function useWebSocket() {
 
         // If the initial handshake never completed and the URL is root-only,
         // try common reverse-proxy websocket paths before exponential backoff.
-        if (!handshakeCompleteRef.current) {
+        if (shouldTryGatewayPathFallback(wasHandshakeComplete)) {
           const fallback = buildGatewayPathFallbackUrls(normalizedUrl).find(
             (candidate) => !wsPathFallbackTriedRef.current.has(candidate),
           )

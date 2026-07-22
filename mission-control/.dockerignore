@@ -12,3 +12,4 @@ public/edge-runtime/client-runtime-*.zip
 ops
 scripts/*
 !scripts/check-node-version.mjs
+!scripts/load-env.sh

@@ -32,6 +32,7 @@ interface Props {
 export function AgentRuntimesSection({ showFeedback }: Props) {
   const [runtimes, setRuntimes] = useState<RuntimeStatus[]>([])
   const [isDocker, setIsDocker] = useState(false)
+  const [runtimeInstallsEnabled, setRuntimeInstallsEnabled] = useState(false)
   const [loading, setLoading] = useState(true)
   const [activeJobs, setActiveJobs] = useState<Record<string, InstallJob>>({})
   const [expandedOutput, setExpandedOutput] = useState<string | null>(null)
@@ -43,6 +44,7 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
       const data = await res.json()
       setRuntimes(data.runtimes || [])
       setIsDocker(data.isDocker || false)
+      setRuntimeInstallsEnabled(data.runtimeInstallsEnabled === true)
     } catch {
       // ignore
     } finally {
@@ -96,6 +98,7 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
   }, [activeJobs, fetchRuntimes, showFeedback, syncMainAgents])
 
   const handleInstall = async (runtimeId: string) => {
+    if (!runtimeInstallsEnabled) return
     try {
       const res = await fetch('/api/agent-runtimes', {
         method: 'POST',
@@ -218,6 +221,7 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
                         variant="ghost"
                         size="sm"
                         onClick={() => handleInstall(rt.id)}
+                        disabled={!runtimeInstallsEnabled}
                         className="text-2xs h-6 px-2"
                       >
                         Install

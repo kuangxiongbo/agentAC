@@ -81,6 +81,11 @@ export function calculateBackoff(attempt: number): number {
   return Math.min(1000 * Math.pow(1.7, attempt), 15000)
 }
 
+/** Only initial handshake failures should probe reverse-proxy fallback paths. */
+export function shouldTryGatewayPathFallback(wasHandshakeComplete: boolean): boolean {
+  return !wasHandshakeComplete
+}
+
 /**
  * Detect a gap in event sequence numbers.
  * Returns info about the gap, or null if there is no gap.

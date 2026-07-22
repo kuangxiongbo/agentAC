@@ -7,6 +7,7 @@ import {
   detectSequenceGap,
   NON_RETRYABLE_ERROR_CODES,
   shouldRetryWithoutDeviceIdentity,
+  shouldTryGatewayPathFallback,
 } from '../websocket-utils'
 
 describe('readErrorDetailCode', () => {
@@ -189,6 +190,16 @@ describe('detectSequenceGap', () => {
   it('detects a large gap', () => {
     const result = detectSequenceGap(10, 110)
     expect(result).toEqual({ from: 11, to: 109, count: 99 })
+  })
+})
+
+describe('shouldTryGatewayPathFallback', () => {
+  it('probes fallback paths when the initial handshake never completed', () => {
+    expect(shouldTryGatewayPathFallback(false)).toBe(true)
+  })
+
+  it('keeps the stable URL after an established connection drops', () => {
+    expect(shouldTryGatewayPathFallback(true)).toBe(false)
   })
 })
 

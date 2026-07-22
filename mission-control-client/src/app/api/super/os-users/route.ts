@@ -6,6 +6,11 @@ import path from 'path'
 import { requireRole, getUserFromRequest } from '@/lib/auth'
 import { getDatabase, logAuditEvent } from '@/lib/db'
 import { logger } from '@/lib/logger'
+import {
+  resolvePinnedNpmRuntimeSpec,
+  resolvePinnedOpenClawSpec,
+  runtimeInstallsEnabled,
+} from '@/lib/runtime-install-security'
 
 export interface OsUser {
   username: string
@@ -65,8 +70,13 @@ function installToolForUser(
   username: string,
   tool: 'openclaw' | 'claude' | 'codex'
 ): { success: boolean; error?: string } {
+  if (!runtimeInstallsEnabled()) {
+    return { success: false, error: 'Local runtime installs are disabled' }
+  }
   try {
     if (tool === 'openclaw') {
+      const pinned = resolvePinnedOpenClawSpec()
+      if ('error' in pinned) return { success: false, error: pinned.error }
       // openclaw is managed by MC — create dir structure + install latest from npm
       const openclawDir = path.join(homeDir, '.openclaw')
       const workspaceDir = path.join(homeDir, 'workspace')
@@ -80,7 +90,7 @@ function installToolForUser(
       }
       // Install latest openclaw from GitHub (always latest) with npm fallback
       try {
-        execFileSync('/usr/bin/sudo', ['-n', '-u', username, 'npm', 'install', '-g', 'openclaw/openclaw'], {
+        execFileSync('/usr/bin/sudo', ['-n', '-u', username, 'npm', 'install', '-g', pinned.spec], {
           timeout: 120000,
           stdio: 'pipe',
           env: { ...process.env, HOME: homeDir },
@@ -95,9 +105,11 @@ function installToolForUser(
     }
 
     if (tool === 'claude') {
+      const pinned = resolvePinnedNpmRuntimeSpec('claude')
+      if ('error' in pinned) return { success: false, error: pinned.error }
       // Install claude code CLI globally for the user
       try {
-        execFileSync('/usr/bin/sudo', ['-n', '-u', username, 'npm', 'install', '-g', '@anthropic-ai/claude-code@latest'], {
+        execFileSync('/usr/bin/sudo', ['-n', '-u', username, 'npm', 'install', '-g', pinned.spec], {
           timeout: 120000,
           stdio: 'pipe',
           env: { ...process.env, HOME: homeDir },
@@ -117,9 +129,11 @@ function installToolForUser(
     }
 
     if (tool === 'codex') {
+      const pinned = resolvePinnedNpmRuntimeSpec('codex')
+      if ('error' in pinned) return { success: false, error: pinned.error }
       // Install codex CLI globally for the user
       try {
-        execFileSync('/usr/bin/sudo', ['-n', '-u', username, 'npm', 'install', '-g', '@openai/codex@latest'], {
+        execFileSync('/usr/bin/sudo', ['-n', '-u', username, 'npm', 'install', '-g', pinned.spec], {
           timeout: 120000,
           stdio: 'pipe',
           env: { ...process.env, HOME: homeDir },
@@ -270,6 +284,10 @@ export async function POST(request: NextRequest) {
   const installOpenclaw = !!body.install_openclaw
   const installClaude = !!body.install_claude
   const installCodex = !!body.install_codex
+
+  if ((installOpenclaw || installClaude || installCodex) && !runtimeInstallsEnabled()) {
+    return NextResponse.json({ error: 'Local runtime installs are disabled' }, { status: 403 })
+  }
 
   // Validate username (safe for OS user creation — alphanumeric + dash/underscore)
   if (!/^[a-z][a-z0-9_-]{1,30}[a-z0-9]$/.test(username)) {

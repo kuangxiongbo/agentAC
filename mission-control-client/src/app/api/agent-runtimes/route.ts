@@ -6,6 +6,7 @@ import type { RuntimeId, DeploymentMode } from '@/lib/agent-runtimes'
 import { logAuditEvent } from '@/lib/db'
 import { logger } from '@/lib/logger'
 import { getMainAgentRuntimeMeta } from '@/lib/runtime-agents'
+import { runtimeInstallsEnabled } from '@/lib/runtime-install-security'
 
 const VALID_RUNTIMES = new Set<RuntimeId>(['openclaw', 'hermes', 'claude', 'codex', 'cursor', 'opencode'])
 const VALID_MODES = new Set<DeploymentMode>(['local', 'docker'])
@@ -18,7 +19,7 @@ export async function GET(request: NextRequest) {
   const activeJobs = getActiveJobs()
   const isDocker = existsSync('/.dockerenv')
 
-  return NextResponse.json({ runtimes, activeJobs, isDocker })
+  return NextResponse.json({ runtimes, activeJobs, isDocker, runtimeInstallsEnabled: runtimeInstallsEnabled() })
 }
 
 export async function POST(request: NextRequest) {
@@ -42,6 +43,9 @@ export async function POST(request: NextRequest) {
     }
     if (!VALID_MODES.has(mode)) {
       return NextResponse.json({ error: 'Invalid mode. Use: local, docker' }, { status: 400 })
+    }
+    if (mode === 'local' && !runtimeInstallsEnabled()) {
+      return NextResponse.json({ error: 'Local runtime installs are disabled' }, { status: 403 })
     }
     if (!getMainAgentRuntimeMeta(runtime)?.installSupported) {
       return NextResponse.json({ error: `${runtime} does not support automatic install` }, { status: 400 })

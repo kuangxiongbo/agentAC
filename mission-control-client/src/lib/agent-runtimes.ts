@@ -1,9 +1,16 @@
 import crypto from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { config } from './config'
 import { runCommand } from './command'
 import { isHermesInstalled, isHermesGatewayRunning, clearHermesDetectionCache } from './hermes-sessions'
 import { logger } from './logger'
+import {
+  isValidInstallerSha256,
+  resolvePinnedNpmRuntimeSpec,
+  verifyInstallerSha256,
+} from './runtime-install-security'
 import {
   getMainAgentRuntimeMeta,
   type MainAgentRuntimeId,
@@ -78,14 +85,14 @@ const RUNTIME_META: Record<RuntimeId, RuntimeMeta> = {
     description: 'Cursor IDE runtime for AI-assisted coding and local sessions.',
     authRequired: false,
     authHint: '',
-    installSupported: true,
+    installSupported: false,
   },
   opencode: {
     name: 'OpenCode',
     description: 'OpenCode runtime for local coding and agent workflows.',
     authRequired: false,
     authHint: '',
-    installSupported: true,
+    installSupported: false,
   },
 }
 
@@ -402,11 +409,62 @@ async function runInstallCmd(cmd: string, args: string[], job: InstallJob): Prom
   }
 }
 
+async function downloadVerifiedInstaller(
+  url: string,
+  expectedSha256: string,
+  job: InstallJob,
+  env: NodeJS.ProcessEnv,
+): Promise<{ scriptPath: string; tempDir: string } | null> {
+  if (!isValidInstallerSha256(expectedSha256)) {
+    job.output += '> SECURITY: Installer blocked because no valid SHA-256 digest is configured.\n'
+    return null
+  }
+
+  const tempDir = mkdtempSync(join(tmpdir(), 'mc-install-'))
+  const scriptPath = join(tempDir, 'install.sh')
+  try {
+    const downloaded = await runCommand('curl', [
+      '--fail', '--silent', '--show-error', '--location',
+      '--proto', '=https', '--tlsv1.2', '--output', scriptPath, url,
+    ], { timeoutMs: 60_000, env })
+    if (downloaded.code !== 0) {
+      job.output += `> Installer download failed (exit ${downloaded.code}).\n`
+      rmSync(tempDir, { recursive: true, force: true })
+      return null
+    }
+
+    const verified = verifyInstallerSha256(readFileSync(scriptPath), expectedSha256)
+    if (!verified.valid) {
+      job.output += `> SECURITY: Installer SHA-256 mismatch (received ${verified.actualSha256}).\n`
+      rmSync(tempDir, { recursive: true, force: true })
+      return null
+    }
+    job.output += `> Verified installer SHA-256: ${verified.actualSha256}\n`
+    return { scriptPath, tempDir }
+  } catch (err) {
+    rmSync(tempDir, { recursive: true, force: true })
+    job.output += `> Installer download failed: ${err instanceof Error ? err.message : String(err)}\n`
+    return null
+  }
+}
+
 async function installOpenClawLocal(job: InstallJob): Promise<void> {
   job.output += '> Installing OpenClaw...\n'
   const env = getInstallEnv()
+  const reviewed = await downloadVerifiedInstaller(
+    'https://get.openclaw.dev',
+    process.env.MC_OPENCLAW_INSTALLER_SHA256 || '',
+    job,
+    env,
+  )
+  if (!reviewed) {
+    job.status = 'failed'
+    job.error = 'Installer download or SHA-256 verification failed'
+    job.finishedAt = Date.now()
+    return
+  }
   try {
-    const result = await runCommand('bash', ['-c', 'curl -fsSL https://get.openclaw.dev | bash'], {
+    const result = await runCommand('bash', [reviewed.scriptPath, '--non-interactive'], {
       timeoutMs: 300_000, env,
     })
     if (result.stdout) job.output += result.stdout + '\n'
@@ -431,6 +489,8 @@ async function installOpenClawLocal(job: InstallJob): Promise<void> {
     job.status = 'failed'
     job.error = err?.message || 'Unknown error'
     job.output += `\n> Error: ${job.error}\n`
+  } finally {
+    rmSync(reviewed.tempDir, { recursive: true, force: true })
   }
   job.finishedAt = Date.now()
 }
@@ -438,8 +498,20 @@ async function installOpenClawLocal(job: InstallJob): Promise<void> {
 async function installHermesLocal(job: InstallJob): Promise<void> {
   job.output += '> Installing Hermes Agent via official installer...\n'
   const env = getInstallEnv()
+  const reviewed = await downloadVerifiedInstaller(
+    'https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh',
+    process.env.MC_HERMES_INSTALLER_SHA256 || '',
+    job,
+    env,
+  )
+  if (!reviewed) {
+    job.status = 'failed'
+    job.error = 'Installer download or SHA-256 verification failed'
+    job.finishedAt = Date.now()
+    return
+  }
   try {
-    const result = await runCommand('bash', ['-c', 'curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash'], {
+    const result = await runCommand('bash', [reviewed.scriptPath, '--skip-setup'], {
       timeoutMs: 600_000, env,
     })
     if (result.stdout) job.output += result.stdout + '\n'
@@ -458,13 +530,20 @@ async function installHermesLocal(job: InstallJob): Promise<void> {
     job.status = 'failed'
     job.error = err?.message || 'Unknown error'
     job.output += `\n> Error: ${job.error}\n`
+  } finally {
+    rmSync(reviewed.tempDir, { recursive: true, force: true })
   }
   job.finishedAt = Date.now()
 }
 
 async function installClaudeLocal(job: InstallJob): Promise<void> {
   job.output += '> Installing Claude Code...\n'
-  if (await runInstallCmd('npm', ['install', '-g', '@anthropic-ai/claude-code'], job)) {
+  const pinned = resolvePinnedNpmRuntimeSpec('claude')
+  if ('error' in pinned) {
+    job.status = 'failed'
+    job.error = pinned.error
+    job.output += `> SECURITY: ${pinned.error}\n`
+  } else if (await runInstallCmd('npm', ['install', '-g', pinned.spec], job)) {
     job.status = 'success'
     job.output += '\n> Claude Code installed successfully.\n'
     job.output += '> Run "claude login" to authenticate.\n'
@@ -477,7 +556,12 @@ async function installClaudeLocal(job: InstallJob): Promise<void> {
 
 async function installCodexLocal(job: InstallJob): Promise<void> {
   job.output += '> Installing Codex CLI...\n'
-  if (await runInstallCmd('npm', ['install', '-g', '@openai/codex'], job)) {
+  const pinned = resolvePinnedNpmRuntimeSpec('codex')
+  if ('error' in pinned) {
+    job.status = 'failed'
+    job.error = pinned.error
+    job.output += `> SECURITY: ${pinned.error}\n`
+  } else if (await runInstallCmd('npm', ['install', '-g', pinned.spec], job)) {
     job.status = 'success'
     job.output += '\n> Codex CLI installed successfully.\n'
     job.output += '> Run "codex auth" to authenticate.\n'
@@ -488,49 +572,18 @@ async function installCodexLocal(job: InstallJob): Promise<void> {
   job.finishedAt = Date.now()
 }
 
-async function runShellInstall(job: InstallJob, label: string, command: string, successMessage: string): Promise<void> {
-  job.output += `> ${label}\n`
-  const env = getInstallEnv()
-  try {
-    const result = await runCommand('bash', ['-lc', command], { timeoutMs: 600_000, env })
-    if (result.stdout) job.output += result.stdout + '\n'
-    if (result.stderr) job.output += result.stderr + '\n'
-    if (result.code === 0) {
-      job.status = 'success'
-      job.output += `\n> ${successMessage}\n`
-    } else {
-      job.status = 'failed'
-      job.error = `Installer exited with code ${result.code}`
-      job.output += `\n> Install failed (exit code ${result.code}).\n`
-    }
-  } catch (err: any) {
-    job.status = 'failed'
-    job.error = err?.message || 'Unknown error'
-    job.output += `\n> Error: ${job.error}\n`
-  }
+async function installCursorLocal(job: InstallJob): Promise<void> {
+  job.status = 'failed'
+  job.error = 'Cursor automatic installation is not supported; install it through a reviewed local channel'
+  job.output += `> SECURITY: ${job.error}\n`
   job.finishedAt = Date.now()
 }
 
-async function installCursorLocal(job: InstallJob): Promise<void> {
-  const override = process.env.MC_INSTALL_CURSOR_CMD?.trim()
-  const command = override || 'brew install --cask cursor'
-  await runShellInstall(
-    job,
-    'Installing Cursor...',
-    command,
-    'Cursor install command completed. Refresh detection to verify installation.'
-  )
-}
-
 async function installOpenCodeLocal(job: InstallJob): Promise<void> {
-  const override = process.env.MC_INSTALL_OPENCODE_CMD?.trim()
-  const command = override || 'npm install -g opencode'
-  await runShellInstall(
-    job,
-    'Installing OpenCode...',
-    command,
-    'OpenCode install command completed. Refresh detection to verify installation.'
-  )
+  job.status = 'failed'
+  job.error = 'OpenCode automatic installation is not supported; install it through a reviewed local channel'
+  job.output += `> SECURITY: ${job.error}\n`
+  job.finishedAt = Date.now()
 }
 
 export function getInstallJob(id: string): InstallJob | null {
