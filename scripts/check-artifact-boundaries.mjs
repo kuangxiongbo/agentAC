@@ -6,6 +6,7 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const forbiddenNames = new Set(['.git', '.npmrc', 'id_rsa', 'id_ed25519'])
 const forbiddenSuffixes = ['.pem', '.key', '.p12']
 const failures = []
+const canonicalSanitizer = readFileSync(path.join(repo, 'scripts', 'sanitize-standalone-artifact.mjs'), 'utf8')
 
 function walk(root, current = root) {
   if (!existsSync(current)) return
@@ -26,6 +27,14 @@ if (packages.some((name) => !['mission-control', 'mission-control-client'].inclu
 }
 for (const packageName of packages) {
   const packageRoot = path.join(repo, packageName)
+  const packageJson = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'))
+  const localSanitizerPath = path.join(packageRoot, 'scripts', 'sanitize-standalone-artifact.mjs')
+  if (!packageJson.scripts?.build?.includes(`node scripts/sanitize-standalone-artifact.mjs ${packageName}`)) {
+    failures.push(`${packageName}: build does not use its Docker-context sanitizer`)
+  }
+  if (!existsSync(localSanitizerPath) || readFileSync(localSanitizerPath, 'utf8') !== canonicalSanitizer) {
+    failures.push(`${packageName}: Docker-context sanitizer differs from canonical script`)
+  }
   const standalone = path.join(packageRoot, '.next', 'standalone')
   if (!existsSync(standalone)) failures.push(`${packageName}: missing .next/standalone`)
   walk(standalone)
