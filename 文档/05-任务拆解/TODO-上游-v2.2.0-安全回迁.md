@@ -53,13 +53,13 @@
 
 ## 发布门禁
 
-- [ ] 主 PRD、主架构、主接口文档同步
-- [ ] Server/Edge 全量单测通过
-- [ ] Server/Edge typecheck 和 production build 通过
-- [ ] 数据库从生产 schema 升级、重复迁移和备份恢复通过
+- [x] 主 PRD、主架构、主接口文档同步
+- [x] Server/Edge 全量单测通过
+- [x] Server/Edge typecheck 和 production build 通过
+- [x] 数据库从生产 schema 升级、重复迁移和备份恢复通过
 - [ ] Human Watch 真实问答自动回复通过
 - [ ] 监督目标生成、派发、纠偏和完成证明通过
-- [ ] Edge runtime/tray 发布面校验通过
+- [x] Edge runtime/tray 发布面校验通过
 - [ ] 新版本 Git 提交和推送完成
 - [ ] version/latest 镜像摘要一致
 - [ ] 生产灰度部署、健康、资源和真实链路验证通过
@@ -68,8 +68,8 @@
 
 | 批次 | 提交 | 测试报告 | 发布版本 | 生产证据 |
 |---|---|---|---|---|
-| A | `a0bfb27` | Server 111、Edge 114 项聚焦测试；双端 typecheck/build；双端 Dockerfile check | 待完成 | 待完成 |
-| B | `7d66b60` | Server 23、Edge 21 项安全测试；沙箱链路额外 Server 9、Edge 29 项；双端 typecheck/build | 待完成 | 待完成 |
-| C | 待提交 | 迁移/租户/值守/监督综合测试纳入 C-D 49+11 项 | 待完成 | 待完成 |
-| D | 待提交 | strict Workspace owned Edge、跨 Workspace 和权限请求测试通过 | 待完成 | 待完成 |
-| E | 待提交 | 双端 typecheck/build、Tray build、action pin、Docker check、产物边界通过 | 待完成 | 待完成 |
+| A | `a0bfb27` | Server 111、Edge 114 项聚焦测试；双端 typecheck/build；双端 Dockerfile check | 2.1.60 | 待完成 |
+| B | `7d66b60` | Server 23、Edge 21 项安全测试；沙箱链路额外 Server 9、Edge 29 项；双端 typecheck/build | 2.1.60 | 待完成 |
+| C | `f7a6250` | 迁移/租户/值守/监督综合测试纳入 C-D 49+11 项 | 2.1.60 | 生产 SQLite 快照重复迁移通过 |
+| D | `f7a6250` | strict Workspace owned Edge、跨 Workspace 和权限请求测试通过 | 2.1.60 | 待完成 |
+| E | `f7a6250` | 双端 typecheck/build、Tray build、action pin、Docker check、产物边界通过 | 2.1.60 | 待完成 |
