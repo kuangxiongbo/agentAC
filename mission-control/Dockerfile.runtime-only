@@ -26,6 +26,7 @@ COPY .next/standalone ./
 COPY .next/static ./.next/static
 COPY public ./public
 COPY src/lib/schema.sql ./src/lib/schema.sql
+COPY license-schema.json ./license-schema.json
 
 RUN mkdir -p .data && chown nextjs:nodejs .data
 RUN echo 'const http=require("http");const r=http.get("http://localhost:"+(process.env.PORT||3000)+"/api/status?action=health",s=>{process.exit(s.statusCode===200?0:1)});r.on("error",()=>process.exit(1));r.setTimeout(4000,()=>{r.destroy();process.exit(1)})' > /app/healthcheck.js

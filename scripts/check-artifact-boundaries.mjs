@@ -50,6 +50,15 @@ for (const packageName of packages) {
   const dockerfile = readFileSync(path.join(packageRoot, 'Dockerfile'), 'utf8')
   if (!/^ARG NODE_IMAGE=.*@sha256:[0-9a-f]{64}$/m.test(dockerfile)) failures.push(`${packageName}: unpinned default NODE_IMAGE`)
   if (!dockerfile.includes('COPY --from=build /app/.next/standalone ./')) failures.push(`${packageName}: runtime does not use standalone boundary`)
+  if (packageName === 'mission-control' && !dockerfile.includes('COPY --from=build /app/license-schema.json ./license-schema.json')) {
+    failures.push(`${packageName}: runtime omits license-schema.json required by entitlement checks`)
+  }
+  if (packageName === 'mission-control') {
+    const runtimeOnly = readFileSync(path.join(packageRoot, 'Dockerfile.runtime-only'), 'utf8')
+    if (!runtimeOnly.includes('COPY license-schema.json ./license-schema.json')) {
+      failures.push(`${packageName}: runtime-only image omits license-schema.json required by entitlement checks`)
+    }
+  }
   const runtime = dockerfile.split(/FROM \$\{NODE_IMAGE\} AS runtime/)[1] || ''
   if (/^COPY\s+\.\s+\./m.test(runtime)) failures.push(`${packageName}: runtime copies the full build context`)
   if (!/USER nextjs/.test(runtime)) failures.push(`${packageName}: runtime is not non-root`)

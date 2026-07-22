@@ -99,6 +99,7 @@ COPY --from=build /app/public ./public
 # Edge 托盘 .dmg：构建前执行 scripts/sync-edge-tray-bundle.sh，将 dmg 放入 public/edge-tray/
 # Copy schema.sql needed by migration 001_init at runtime
 COPY --from=build /app/src/lib/schema.sql ./src/lib/schema.sql
+COPY --from=build /app/license-schema.json ./license-schema.json
 # Create data directory with correct ownership for SQLite
 RUN mkdir -p .data && chown nextjs:nodejs .data
 RUN echo 'const http=require("http");const r=http.get("http://localhost:"+(process.env.PORT||3000)+"/api/status?action=health",s=>{process.exit(s.statusCode===200?0:1)});r.on("error",()=>process.exit(1));r.setTimeout(4000,()=>{r.destroy();process.exit(1)})' > /app/healthcheck.js
