@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "version": "2.1.65",
-  "published_at": "2026-07-22T20:20:50Z",
+  "published_at": "2026-07-22T20:27:44Z",
   "documents": {
     "master_prd": "/project-docs/core/01-主需求文档.md",
     "master_architecture": "/project-docs/core/02-主架构文档.md",

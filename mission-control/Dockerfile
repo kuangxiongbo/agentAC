@@ -57,8 +57,8 @@ FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NODE_TLS_REJECT_UNAUTHORIZED=0
-ENV NEXT_BUILD_CPUS=2
-ENV NODE_OPTIONS=--max-old-space-size=4096
+ENV NEXT_BUILD_CPUS=1
+ENV NODE_OPTIONS=--max-old-space-size=3072
 RUN rm -rf .next && pnpm build
 
 FROM ${NODE_IMAGE} AS runtime
