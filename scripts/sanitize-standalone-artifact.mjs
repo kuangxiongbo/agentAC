@@ -1,11 +1,12 @@
 import { access, readdir, rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const packageName = process.argv[2]
 if (!['mission-control', 'mission-control-client'].includes(packageName)) throw new Error('Expected package name')
 const scriptRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const packageRoot = path.basename(scriptRoot) === packageName ? scriptRoot : path.join(scriptRoot, packageName)
+const packageRoot = existsSync(path.join(scriptRoot, '.next', 'standalone')) ? scriptRoot : path.join(scriptRoot, packageName)
 const root = path.join(packageRoot, '.next', 'standalone')
 // public is copied separately by Docker and Edge packaging; keeping it here duplicates multi-GB release assets.
 const allowedRoots = new Set(['.next', 'messages', 'node_modules', 'openapi.json', 'ops', 'package.json', 'scripts', 'server.js', 'src'])
