@@ -10,19 +10,24 @@ import { mutationLimiter } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
 import { config } from '@/lib/config'
 import { listSyncedSessions } from '@/lib/sync-sessions'
+import { denyResourceOutsideWorkspace, getWorkspaceIsolation } from '@/lib/workspace-isolation'
 
 const LOCAL_SESSION_ACTIVE_WINDOW_MS = 90 * 60 * 1000
 
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  if (!config.centralMode) {
+    const denied = denyResourceOutsideWorkspace(auth.user, 'gateway_sessions', new URL(request.url).pathname)
+    if (denied) return denied
+  }
 
   try {
     const gatewaySessions = getAllGatewaySessions()
-    const mappedGatewaySessions = mapGatewaySessions(gatewaySessions)
+    const mappedGatewaySessions = getWorkspaceIsolation(auth.user) === 'strict' ? [] : mapGatewaySessions(gatewaySessions)
 
     if (config.centralMode) {
-      const syncedSessions = listSyncedSessions()
+      const syncedSessions = listSyncedSessions(auth.user.workspace_id ?? 1)
       return NextResponse.json({ sessions: dedupeAndSortSessions([...mappedGatewaySessions, ...syncedSessions]) })
     }
 
@@ -53,6 +58,8 @@ const SESSION_KEY_RE = /^[a-zA-Z0-9:_.-]+$/
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDenied = denyResourceOutsideWorkspace(auth.user, 'gateway_sessions', new URL(request.url).pathname)
+  if (isolationDenied) return isolationDenied
 
   const rateCheck = mutationLimiter(request)
   if (rateCheck) return rateCheck
@@ -137,6 +144,8 @@ export async function POST(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   const auth = requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDenied = denyResourceOutsideWorkspace(auth.user, 'gateway_sessions', new URL(request.url).pathname)
+  if (isolationDenied) return isolationDenied
 
   const rateCheck = mutationLimiter(request)
   if (rateCheck) return rateCheck

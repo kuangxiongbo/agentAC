@@ -236,6 +236,14 @@ function assertLease(row: EdgeMessageRow, leaseOwner?: string | null) {
   }
 }
 
+function assertClientWorkspaceOwnership(db: Database.Database, clientId: string, workspaceId: number) {
+  const client = db.prepare(`SELECT workspace_id FROM sync_clients WHERE client_id = ? LIMIT 1`)
+    .get(clientId) as { workspace_id?: number } | undefined
+  if (client && client.workspace_id !== workspaceId) {
+    throw new Error('Edge client does not belong to message workspace')
+  }
+}
+
 export function createEdgeMessage(
   input: CreateEdgeMessageInput,
   database?: Database.Database,
@@ -250,6 +258,7 @@ export function createEdgeMessage(
   if (!input.payload || typeof input.payload !== 'object' || Array.isArray(input.payload)) {
     throw new Error('payload must be an object')
   }
+  assertClientWorkspaceOwnership(db, clientId, input.workspaceId)
 
   const existing = db.prepare(`
     SELECT * FROM edge_messages
@@ -405,6 +414,7 @@ export function ackEdgeMessage(input: AckEdgeMessageInput, database?: Database.D
   return db.transaction(() => {
     const row = getRow(db, input.id)
     if (!row || row.client_id !== input.clientId) throw new Error('Edge message not found')
+    assertClientWorkspaceOwnership(db, row.client_id, row.workspace_id)
     assertLease(row, input.leaseOwner)
     db.prepare(`
       UPDATE edge_messages
@@ -432,6 +442,7 @@ export function failEdgeMessage(input: FailEdgeMessageInput, database?: Database
   return db.transaction(() => {
     const row = getRow(db, input.id)
     if (!row || row.client_id !== input.clientId) throw new Error('Edge message not found')
+    assertClientWorkspaceOwnership(db, row.client_id, row.workspace_id)
     assertLease(row, input.leaseOwner)
     const canRetry = input.retryable && row.attempt_count < row.max_attempts
     const nextStatus: EdgeMessageStatus = canRetry ? 'failed_retryable' : 'dead_letter'

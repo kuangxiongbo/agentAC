@@ -94,7 +94,7 @@ export async function POST(request: Request) {
     try {
       const db = getDatabase()
       db.prepare(
-        'INSERT INTO audit_log (action, actor, detail) VALUES (?, ?, ?)'
+        'INSERT INTO audit_log (action, actor, detail, workspace_id) VALUES (?, ?, ?, ?)'
       ).run(
         'system.update',
         user.username,
@@ -102,7 +102,8 @@ export async function POST(request: Request) {
           previousVersion: APP_VERSION,
           newVersion,
           tag,
-        })
+        }),
+        user.workspace_id ?? 1,
       )
     } catch {
       // Non-critical -- don't fail the update if audit logging fails

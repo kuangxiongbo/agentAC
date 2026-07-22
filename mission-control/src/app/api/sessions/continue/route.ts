@@ -6,6 +6,7 @@ import { logger } from '@/lib/logger'
 import { config } from '@/lib/config'
 import { notifySessionTranscriptUpdated } from '@/lib/session-realtime'
 import { mutationLimiter } from '@/lib/rate-limit'
+import { denyResourceOutsideWorkspace } from '@/lib/workspace-isolation'
 import {
   enqueueLocalSessionPrompt,
   isLocalSessionKind,
@@ -173,6 +174,13 @@ export async function POST(request: NextRequest) {
     if (!prompt || prompt.length > 6000) {
       return NextResponse.json({ error: 'prompt is required (max 6000 chars)' }, { status: 400 })
     }
+    const isolationDenied = denyResourceOutsideWorkspace(
+      auth.user,
+      'local_sessions',
+      new URL(request.url).pathname,
+      clientId ? { clientId, sessionId, sessionKind: kind } : null,
+    )
+    if (isolationDenied) return isolationDenied
 
     if (clientId || config.centralMode) {
       if (!clientId) {

@@ -1,7 +1,8 @@
 import { NextRequest , NextResponse } from 'next/server'
-import { eventBus, ServerEvent } from '@/lib/event-bus'
+import { eventBelongsToWorkspace, eventBus, ServerEvent } from '@/lib/event-bus'
 import { requireRole } from '@/lib/auth'
 import { ensureSessionRealtimeBridge } from '@/lib/session-realtime'
+import { getWorkspaceIsolation } from '@/lib/workspace-isolation'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -30,9 +31,13 @@ export async function GET(request: NextRequest) {
 
       // Forward workspace-scoped server events to this SSE client
       const userWorkspaceId = auth.user.workspace_id ?? 1
+      const strictWorkspace = getWorkspaceIsolation(auth.user) === 'strict'
       const handler = (event: ServerEvent) => {
-        // Skip events from other workspaces (if event carries workspace_id)
-        if (event.data?.workspace_id && event.data.workspace_id !== userWorkspaceId) return
+        if (typeof event.data?.workspace_id === 'number') {
+          if (!eventBelongsToWorkspace(event, userWorkspaceId)) return
+        } else if (strictWorkspace) {
+          return
+        }
         try {
           controller.enqueue(
             encoder.encode(`data: ${JSON.stringify(event)}\n\n`)

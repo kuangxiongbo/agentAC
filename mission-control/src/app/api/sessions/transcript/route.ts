@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { requestBridgeClientSessionTranscript } from '@/lib/bridge-server'
 import { logger } from '@/lib/logger'
+import { denyResourceOutsideWorkspace } from '@/lib/workspace-isolation'
 import {
   readHermesTranscriptFromDbPath,
   readLocalSessionTranscriptPage,
@@ -37,6 +38,13 @@ export async function GET(request: NextRequest) {
     if (!sessionId || (kind !== 'claude-code' && kind !== 'codex-cli' && kind !== 'hermes')) {
       return NextResponse.json({ error: 'kind and id are required' }, { status: 400 })
     }
+    const isolationDenied = denyResourceOutsideWorkspace(
+      auth.user,
+      'session_transcripts',
+      new URL(request.url).pathname,
+      clientId ? { clientId, sessionId, sessionKind: kind } : null,
+    )
+    if (isolationDenied) return isolationDenied
 
     if (clientId) {
       try {

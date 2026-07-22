@@ -6,6 +6,7 @@ import type Database from 'better-sqlite3'
 export type Migration = {
   id: string
   up: (db: Database.Database) => void
+  foreignKeysOff?: boolean
 }
 
 // Plugin hook: extensions can register additional migrations without modifying this file.
@@ -2093,6 +2094,61 @@ const migrations: Migration[] = [
         ON steward_memory_usage(memory_id, created_at DESC)`)
     },
   },
+  {
+    id: '071_workspace_audit_and_agent_identity',
+    foreignKeysOff: true,
+    up(db: Database.Database) {
+      const auditColumns = db.prepare(`PRAGMA table_info(audit_log)`).all() as Array<{ name: string }>
+      if (!auditColumns.some((column) => column.name === 'workspace_id')) {
+        db.exec(`ALTER TABLE audit_log ADD COLUMN workspace_id INTEGER NOT NULL DEFAULT 1`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_log_workspace_created ON audit_log(workspace_id, created_at DESC)`)
+
+      const agentSql = (db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agents'`)
+        .get() as { sql?: string } | undefined)?.sql || ''
+      if (/name\s+TEXT\s+NOT\s+NULL\s+UNIQUE/i.test(agentSql)) {
+        db.exec(`
+          CREATE TABLE agents_workspace_unique (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, role TEXT NOT NULL,
+            session_key TEXT UNIQUE, soul_content TEXT, status TEXT NOT NULL DEFAULT 'offline',
+            last_seen INTEGER, last_activity TEXT, created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            updated_at INTEGER NOT NULL DEFAULT (unixepoch()), config TEXT,
+            workspace_id INTEGER NOT NULL DEFAULT 1, source TEXT DEFAULT 'manual', content_hash TEXT,
+            workspace_path TEXT, hidden INTEGER NOT NULL DEFAULT 0, working_memory TEXT DEFAULT '',
+            node_id TEXT, framework TEXT DEFAULT 'openclaw', parent_id INTEGER,
+            UNIQUE(name, workspace_id)
+          );
+          INSERT INTO agents_workspace_unique (
+            id, name, role, session_key, soul_content, status, last_seen, last_activity,
+            created_at, updated_at, config, workspace_id, source, content_hash,
+            workspace_path, hidden, working_memory, node_id, framework, parent_id
+          ) SELECT
+            id, name, role, session_key, soul_content, status, last_seen, last_activity,
+            created_at, updated_at, config, workspace_id, source, content_hash,
+            workspace_path, hidden, working_memory, node_id, framework, parent_id FROM agents;
+          DROP TABLE agents;
+          ALTER TABLE agents_workspace_unique RENAME TO agents;
+          CREATE INDEX idx_agents_session_key ON agents(session_key);
+          CREATE INDEX idx_agents_status ON agents(status);
+          CREATE INDEX idx_agents_workspace_id ON agents(workspace_id);
+          CREATE INDEX idx_agents_source ON agents(source);
+        `)
+      }
+    },
+  },
+  {
+    id: '072_workspace_isolation_policy',
+    up(db: Database.Database) {
+      const columns = db.prepare(`PRAGMA table_info(workspaces)`).all() as Array<{ name: string }>
+      if (!columns.some((column) => column.name === 'brand')) {
+        db.exec(`ALTER TABLE workspaces ADD COLUMN brand TEXT`)
+      }
+      if (!columns.some((column) => column.name === 'isolation')) {
+        db.exec(`ALTER TABLE workspaces ADD COLUMN isolation TEXT NOT NULL DEFAULT 'shared'`)
+      }
+      db.exec(`UPDATE workspaces SET isolation = 'shared' WHERE isolation NOT IN ('shared', 'strict')`)
+    },
+  },
 ]
 
 export function runMigrations(db: Database.Database) {
@@ -2109,9 +2165,26 @@ export function runMigrations(db: Database.Database) {
 
   for (const migration of [...migrations, ...extraMigrations]) {
     if (applied.has(migration.id)) continue
-    db.transaction(() => {
-      migration.up(db)
-      db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(migration.id)
-    })()
+    const baselineForeignKeyViolations = migration.foreignKeysOff
+      ? new Set((db.pragma('foreign_key_check') as unknown[]).map((row) => JSON.stringify(row)))
+      : new Set<string>()
+    const restoreForeignKeys = migration.foreignKeysOff
+      && db.pragma('foreign_keys', { simple: true }) === 1
+    if (restoreForeignKeys) db.pragma('foreign_keys = OFF')
+    try {
+      db.transaction(() => {
+        migration.up(db)
+        if (migration.foreignKeysOff) {
+          const violations = (db.pragma('foreign_key_check') as unknown[])
+            .filter((row) => !baselineForeignKeyViolations.has(JSON.stringify(row)))
+          if (violations.length > 0) {
+            throw new Error(`Migration ${migration.id} introduced ${violations.length} foreign-key violation(s)`)
+          }
+        }
+        db.prepare('INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)').run(migration.id)
+      })()
+    } finally {
+      if (restoreForeignKeys) db.pragma('foreign_keys = ON')
+    }
   }
 }

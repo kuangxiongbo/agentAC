@@ -68,12 +68,17 @@ export async function PUT(
     if (!existing) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 })
     }
+    const isolation = body.isolation == null ? existing.isolation : String(body.isolation)
+    const brand = body.brand === undefined ? existing.brand : (body.brand == null ? null : String(body.brand).trim() || null)
+    if (isolation !== 'shared' && isolation !== 'strict') {
+      return NextResponse.json({ error: 'Isolation must be shared or strict' }, { status: 400 })
+    }
 
     // Don't allow renaming the default workspace slug
     const now = Math.floor(Date.now() / 1000)
     db.prepare(
-      'UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ? AND tenant_id = ?'
-    ).run(name.trim(), now, Number(id), tenantId)
+      'UPDATE workspaces SET name = ?, brand = ?, isolation = ?, updated_at = ? WHERE id = ? AND tenant_id = ?'
+    ).run(name.trim(), brand, isolation, now, Number(id), tenantId)
 
     logAuditEvent({
       action: 'workspace_updated',
@@ -81,7 +86,8 @@ export async function PUT(
       actor_id: auth.user.id,
       target_type: 'workspace',
       target_id: Number(id),
-      detail: { old_name: existing.name, new_name: name.trim() },
+      workspace_id: Number(id),
+      detail: { old_name: existing.name, new_name: name.trim(), old_isolation: existing.isolation, isolation, brand },
     })
 
     const updated = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(Number(id))
@@ -151,7 +157,8 @@ export async function DELETE(
         actor: auth.user.username,
         actor_id: auth.user.id,
         target_type: 'workspace',
-        target_id: workspaceId,
+      target_id: workspaceId,
+      workspace_id: workspaceId,
         detail: {
           name: existing.name,
           slug: existing.slug,

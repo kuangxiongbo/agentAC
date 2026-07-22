@@ -28,28 +28,28 @@
 
 ## 批次 C：租户和审计闭环
 
-- [ ] C1 新迁移为 audit_log 增加 workspace_id
-- [ ] C2 所有审计写入、查询、导出按 Workspace/Tenant 约束
-- [ ] C3 Agent 名称改为 Workspace 内唯一，保留本地扩展字段
-- [ ] C4 Event、scheduler、background sync 携带 Workspace 上下文
-- [ ] C5 Edge 回执和值守/监督跨表归属校验
-- [ ] C6 双 Tenant/双 Workspace 数据库迁移与越权 E2E
+- [x] C1 `071` 迁移为 audit_log 增加 workspace_id
+- [x] C2 审计写入、查询、导出、搜索、统计和清理按 Workspace 约束
+- [x] C3 Agent 名称改为 Workspace 内唯一，保留本地扩展字段
+- [x] C4 Event、scheduler、background sync 携带 Workspace 上下文
+- [x] C5 Edge 回执和值守/监督跨表归属校验
+- [x] C6 双 Tenant/双 Workspace 数据库迁移与越权测试
 
 ## 批次 D：strict Workspace
 
-- [ ] D1 定义 Tenant/Workspace/Client/Agent/Session/Kind 统一归属模型
-- [ ] D2 Gateway、sync client、session index、permission request 完整归属
-- [ ] D3 shared/strict 策略、管理接口和 fail-closed helper
-- [ ] D4 值守和监督链路适配 strict Workspace
-- [ ] D5 两个 Edge、两个 Workspace 的跨域访问 E2E
+- [x] D1 定义 Tenant/Workspace/Client/Agent/Session/Kind 统一归属模型
+- [x] D2 Gateway、sync client、session index、permission request 完整归属
+- [x] D3 shared/strict 策略、管理接口和 fail-closed helper
+- [x] D4 值守和监督链路适配 strict Workspace
+- [x] D5 两个 Edge、两个 Workspace 的跨域访问测试
 
 ## 批次 E：CI 和发布供应链
 
-- [ ] E1 根目录三包 CodeQL/OSV 检查
-- [ ] E2 GitHub Actions 固定审核后的 commit SHA
-- [ ] E3 定制 standalone/Docker 产物边界检查
-- [ ] E4 固定 Docker 基础镜像 digest并保留国内代理
-- [ ] E5 安全属性测试与 release hard gate
+- [x] E1 根目录三包 CodeQL/OSV 检查
+- [x] E2 GitHub Actions 固定审核后的 commit SHA
+- [x] E3 定制 standalone/Docker 产物边界检查
+- [x] E4 固定 Docker 基础镜像 digest并保留国内代理
+- [x] E5 安全属性测试与 release hard gate
 
 ## 发布门禁
 
@@ -69,7 +69,7 @@
 | 批次 | 提交 | 测试报告 | 发布版本 | 生产证据 |
 |---|---|---|---|---|
 | A | `a0bfb27` | Server 111、Edge 114 项聚焦测试；双端 typecheck/build；双端 Dockerfile check | 待完成 | 待完成 |
-| B | 待提交 | Server 23、Edge 21 项安全测试；沙箱链路额外 Server 9、Edge 29 项；双端 typecheck/build | 待完成 | 待完成 |
-| C | 待完成 | 待完成 | 待完成 | 待完成 |
-| D | 待完成 | 待完成 | 待完成 | 待完成 |
-| E | 待完成 | 待完成 | 待完成 | 待完成 |
+| B | `7d66b60` | Server 23、Edge 21 项安全测试；沙箱链路额外 Server 9、Edge 29 项；双端 typecheck/build | 待完成 | 待完成 |
+| C | 待提交 | 迁移/租户/值守/监督综合测试纳入 C-D 49+11 项 | 待完成 | 待完成 |
+| D | 待提交 | strict Workspace owned Edge、跨 Workspace 和权限请求测试通过 | 待完成 | 待完成 |
+| E | 待提交 | 双端 typecheck/build、Tray build、action pin、Docker check、产物边界通过 | 待完成 | 待完成 |

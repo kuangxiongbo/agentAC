@@ -459,6 +459,7 @@ export const db_helpers = {
     // Broadcast agent status change to SSE clients
     if (agent) {
       eventBus.broadcast('agent.status_changed', {
+        workspace_id: workspaceId,
         id: agent.id,
         name: agentName,
         status,
@@ -555,11 +556,19 @@ export function logAuditEvent(event: {
   detail?: any
   ip_address?: string
   user_agent?: string
+  workspace_id?: number
 }) {
   const db = getDatabase()
+  let workspaceId = Number.isInteger(event.workspace_id) && Number(event.workspace_id) > 0
+    ? Number(event.workspace_id)
+    : 1
+  if (event.workspace_id == null && event.actor_id != null) {
+    const owner = db.prepare('SELECT workspace_id FROM users WHERE id = ?').get(event.actor_id) as { workspace_id?: number } | undefined
+    if (owner?.workspace_id) workspaceId = owner.workspace_id
+  }
   db.prepare(`
-    INSERT INTO audit_log (action, actor, actor_id, target_type, target_id, detail, ip_address, user_agent)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO audit_log (action, actor, actor_id, target_type, target_id, detail, ip_address, user_agent, workspace_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     event.action,
     event.actor,
@@ -569,6 +578,7 @@ export function logAuditEvent(event: {
     event.detail ? JSON.stringify(event.detail) : null,
     event.ip_address ?? null,
     event.user_agent ?? null,
+    workspaceId,
   )
 
   // Broadcast audit events (webhooks listen here too)
@@ -579,6 +589,7 @@ export function logAuditEvent(event: {
       actor: event.actor,
       target_type: event.target_type ?? null,
       target_id: event.target_id ?? null,
+      workspace_id: workspaceId,
       timestamp: Math.floor(Date.now() / 1000),
     })
   }

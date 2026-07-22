@@ -10,6 +10,7 @@ import { elevatedFlagToPermissionMode, isLocalCliElevatedFlag } from '@/lib/pars
 import { assertLocalCliElevationAllowed } from '@/lib/local-cli-elevation-auth'
 import { createLocalCliElevationGrant, logLocalCliElevationDenied } from '@/lib/local-cli-elevation-audit'
 import { mutationLimiter } from '@/lib/rate-limit'
+import { denyResourceOutsideWorkspace } from '@/lib/workspace-isolation'
 /**
  * POST /api/sessions/continue
  * Body: { kind: 'claude-code'|'codex-cli'|'cursor'|'opencode'|'hermes', id: string, prompt: string }
@@ -70,6 +71,13 @@ export async function POST(request: NextRequest) {
     if (!isLocalSessionKind(kind)) {
       return NextResponse.json({ error: 'Invalid kind' }, { status: 400 })
     }
+    const isolationDenied = denyResourceOutsideWorkspace(
+      auth.user,
+      'local_sessions',
+      new URL(request.url).pathname,
+      managedByPlatform ? { localAgentId: workerLocalAgentId, sessionId, sessionKind: kind } : null,
+    )
+    if (isolationDenied) return isolationDenied
     enqueueLocalSessionPrompt(kind, sessionId, prompt, {
       workingDirectory: workingDir || null,
       permissionMode,

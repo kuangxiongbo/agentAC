@@ -24,6 +24,8 @@ export async function GET(request: NextRequest) {
 
   const conditions: string[] = []
   const params: any[] = []
+  conditions.push('workspace_id = ?')
+  params.push(auth.user.workspace_id ?? 1)
 
   if (action) {
     conditions.push('action = ?')

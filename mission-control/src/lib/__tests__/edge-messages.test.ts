@@ -69,6 +69,21 @@ describe('edge-messages', () => {
     expect(second.message.payload.prompt).toBe('help')
   })
 
+  it('rejects messages and receipts when the client workspace does not match', () => {
+    db.prepare(`INSERT INTO sync_clients (client_id, client_name, workspace_id) VALUES ('mc-edge-1', 'Edge', 2)`).run()
+    expect(() => createBase()).toThrow('does not belong')
+
+    db.prepare(`UPDATE sync_clients SET workspace_id = 1 WHERE client_id = 'mc-edge-1'`).run()
+    const created = createBase()
+    leaseEdgeMessages({ clientId: 'mc-edge-1', leaseOwner: 'runtime-1' }, db)
+    db.prepare(`UPDATE sync_clients SET workspace_id = 2 WHERE client_id = 'mc-edge-1'`).run()
+    expect(() => ackEdgeMessage({
+      id: created.message.id,
+      clientId: 'mc-edge-1',
+      leaseOwner: 'runtime-1',
+    }, db)).toThrow('does not belong')
+  })
+
   it('leases and acknowledges a message', () => {
     const created = createBase()
     const leased = leaseEdgeMessages({ clientId: 'mc-edge-1', leaseOwner: 'runtime-1' }, db)

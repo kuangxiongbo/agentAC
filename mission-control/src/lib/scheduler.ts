@@ -1,4 +1,5 @@
 import { getDatabase, logAuditEvent } from './db'
+import { resolveSharedRuntimeWorkspaceId } from './workspace-isolation'
 import { syncAgentsFromConfig } from './agent-sync'
 import { config, ensureDirExists } from './config'
 import { join, dirname } from 'path'
@@ -173,49 +174,50 @@ async function runHeartbeatCheck(): Promise<{ ok: boolean; message: string }> {
 
     // Find agents that are not offline but haven't been seen recently
     const staleAgents = db.prepare(`
-      SELECT id, name, status, last_seen FROM agents
+      SELECT id, name, status, last_seen, workspace_id FROM agents
       WHERE status != 'offline' AND (last_seen IS NULL OR last_seen < ?)
-    `).all(threshold) as Array<{ id: number; name: string; status: string; last_seen: number | null }>
+    `).all(threshold) as Array<{ id: number; name: string; status: string; last_seen: number | null; workspace_id: number }>
 
     if (staleAgents.length === 0) {
       return { ok: true, message: 'All agents healthy' }
     }
 
     // Mark stale agents as offline
-    const markOffline = db.prepare('UPDATE agents SET status = ?, updated_at = ? WHERE id = ?')
+    const markOffline = db.prepare('UPDATE agents SET status = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
     const logActivity = db.prepare(`
-      INSERT INTO activities (type, entity_type, entity_id, actor, description)
-      VALUES ('agent_status_change', 'agent', ?, 'heartbeat', ?)
+      INSERT INTO activities (type, entity_type, entity_id, actor, description, workspace_id)
+      VALUES ('agent_status_change', 'agent', ?, 'heartbeat', ?, ?)
     `)
 
-    const names: string[] = []
+    const namesByWorkspace = new Map<number, string[]>()
     db.transaction(() => {
       for (const agent of staleAgents) {
-        markOffline.run('offline', now, agent.id)
-        logActivity.run(agent.id, `Agent "${agent.name}" marked offline (no heartbeat for ${timeoutMinutes}m)`)
+        markOffline.run('offline', now, agent.id, agent.workspace_id)
+        logActivity.run(agent.id, `Agent "${agent.name}" marked offline (no heartbeat for ${timeoutMinutes}m)`, agent.workspace_id)
+        const names = namesByWorkspace.get(agent.workspace_id) ?? []
         names.push(agent.name)
+        namesByWorkspace.set(agent.workspace_id, names)
 
         // Create notification for each stale agent
         try {
           db.prepare(`
-            INSERT INTO notifications (recipient, type, title, message, source_type, source_id)
-            VALUES ('system', 'heartbeat', ?, ?, 'agent', ?)
+            INSERT INTO notifications (recipient, type, title, message, source_type, source_id, workspace_id)
+            VALUES ('system', 'heartbeat', ?, ?, 'agent', ?, ?)
           `).run(
             `Agent offline: ${agent.name}`,
             `Agent "${agent.name}" was marked offline after ${timeoutMinutes} minutes without heartbeat`,
-            agent.id
+            agent.id,
+            agent.workspace_id,
           )
         } catch { /* notification creation failed */ }
       }
     })()
 
-    logAuditEvent({
-      action: 'heartbeat_check',
-      actor: 'scheduler',
-      detail: { marked_offline: names },
-    })
+    for (const [workspaceId, names] of namesByWorkspace) {
+      logAuditEvent({ action: 'heartbeat_check', actor: 'scheduler', workspace_id: workspaceId, detail: { marked_offline_count: names.length } })
+    }
 
-    return { ok: true, message: `Marked ${staleAgents.length} agent(s) offline: ${names.join(', ')}` }
+    return { ok: true, message: `Marked ${staleAgents.length} agent(s) offline` }
   } catch (err: any) {
     return { ok: false, message: `Heartbeat check failed: ${err.message}` }
   }
@@ -227,11 +229,13 @@ async function syncAgentLiveStatuses(): Promise<number> {
   if (liveStatuses.size === 0) return 0
 
   const db = getDatabase()
-  const agents = db.prepare('SELECT id, name, config FROM agents').all() as Array<{
+  const workspaceId = resolveSharedRuntimeWorkspaceId()
+  if (!workspaceId) return 0
+  const agents = db.prepare('SELECT id, name, config FROM agents WHERE workspace_id = ?').all(workspaceId) as Array<{
     id: number; name: string; config: string | null
   }>
 
-  const update = db.prepare('UPDATE agents SET status = ?, last_seen = ?, last_activity = ?, updated_at = ? WHERE id = ?')
+  const update = db.prepare('UPDATE agents SET status = ?, last_seen = ?, last_activity = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
   let refreshed = 0
 
   const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9._-]+/g, '-')
@@ -263,10 +267,11 @@ async function syncAgentLiveStatuses(): Promise<number> {
 
       const now = Math.floor(Date.now() / 1000)
       const activity = `Gateway session (${matched.channel || 'unknown'})`
-      update.run(matched.status, now, activity, now, agent.id)
+      update.run(matched.status, now, activity, now, agent.id, workspaceId)
       refreshed++
 
       eventBus.broadcast('agent.status_changed', {
+        workspace_id: workspaceId,
         id: agent.id,
         name: agent.name,
         status: matched.status,

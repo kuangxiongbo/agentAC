@@ -5,9 +5,13 @@ export interface WorkspaceRecord {
   slug: string
   name: string
   tenant_id: number
+  brand: string | null
+  isolation: WorkspaceIsolation
   created_at: number
   updated_at: number
 }
+
+export type WorkspaceIsolation = 'shared' | 'strict'
 
 export interface ProjectTenantRecord {
   id: number
@@ -39,8 +43,8 @@ function logTenantAccessDenied(
   context: AccessAuditContext
 ) {
   db.prepare(`
-    INSERT INTO audit_log (action, actor, actor_id, target_type, target_id, detail, ip_address, user_agent)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO audit_log (action, actor, actor_id, target_type, target_id, detail, ip_address, user_agent, workspace_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT workspace_id FROM users WHERE id = ?), 1))
   `).run(
     'tenant_access_denied',
     context.actor || 'unknown',
@@ -52,7 +56,8 @@ function logTenantAccessDenied(
       route: context.route || null,
     }),
     context.ipAddress ?? null,
-    context.userAgent ?? null
+    context.userAgent ?? null,
+    context.actorId ?? null,
   )
 }
 

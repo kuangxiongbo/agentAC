@@ -40,11 +40,12 @@ export async function POST(request: Request) {
     try {
       const db = getDatabase()
       db.prepare(
-        'INSERT INTO audit_log (action, actor, detail) VALUES (?, ?, ?)'
+        'INSERT INTO audit_log (action, actor, detail, workspace_id) VALUES (?, ?, ?, ?)'
       ).run(
         'openclaw.update',
         auth.user.username,
-        JSON.stringify({ previousVersion: installedBefore, newVersion: installedAfter })
+        JSON.stringify({ previousVersion: installedBefore, newVersion: installedAfter }),
+        auth.user.workspace_id ?? 1,
       )
     } catch { /* non-critical */ }
 

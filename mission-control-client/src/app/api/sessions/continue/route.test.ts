@@ -7,6 +7,7 @@ vi.mock('@/lib/auth', () => ({
   requireRole: () => ({ user: { id: 1, role: 'operator', workspace_id: 1 } }),
 }))
 vi.mock('@/lib/rate-limit', () => ({ mutationLimiter: () => null }))
+vi.mock('@/lib/workspace-isolation', () => ({ denyResourceOutsideWorkspace: () => null }))
 vi.mock('@/lib/local-session-executor', () => ({
   enqueueLocalSessionPrompt,
   isLocalSessionKind: (kind: string) => kind === 'codex-cli',

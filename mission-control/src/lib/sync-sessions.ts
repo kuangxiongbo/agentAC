@@ -97,10 +97,10 @@ export function replaceSyncedSessions(clientId: string, clientName: string, sess
   } satisfies SessionRealtimePayload)
 }
 
-export function listSyncedSessions() {
+export function listSyncedSessions(workspaceId?: number) {
   const db = getDatabase()
   const onlineClients = new Set(
-    listSyncClients()
+    listSyncClients(workspaceId)
       .filter((client) => client.status === 'connected')
       .map((client) => client.client_id)
   )

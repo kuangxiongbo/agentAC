@@ -1,0 +1,53 @@
+name: Quality Gate
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  web:
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [mission-control, mission-control-client]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+        with:
+          version: 10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: ${{ matrix.package }}/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:env
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: node ../scripts/check-workflow-action-pins.mjs
+      - run: node ../scripts/check-artifact-boundaries.mjs ${{ matrix.package }}
+  tray:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: mission-control-tray
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+        with:
+          version: 10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: mission-control-tray/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build

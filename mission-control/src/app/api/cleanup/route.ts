@@ -176,6 +176,7 @@ export async function POST(request: NextRequest) {
       actor_id: auth.user.id,
       detail: { total_deleted: totalDeleted, results },
       ip_address: ipAddress,
+      workspace_id: workspaceId,
     })
   }
 
@@ -190,7 +191,7 @@ function getRetentionTargets() {
   const ret = config.retention
   return [
     { table: 'activities', column: 'created_at', days: ret.activities, label: 'Activities', scoped: true },
-    { table: 'audit_log', column: 'created_at', days: ret.auditLog, label: 'Audit Log', scoped: false }, // instance-global, admin-only
+    { table: 'audit_log', column: 'created_at', days: ret.auditLog, label: 'Audit Log', scoped: true },
     { table: 'notifications', column: 'created_at', days: ret.notifications, label: 'Notifications', scoped: true },
     { table: 'pipeline_runs', column: 'created_at', days: ret.pipelineRuns, label: 'Pipeline Runs', scoped: true },
   ]

@@ -404,6 +404,16 @@ export async function createHumanWatchBinding(
   if (!validated.ok) return validated
 
   const db = dbOr(database)
+  const clientOwner = db.prepare(`SELECT workspace_id FROM sync_clients WHERE client_id = ? LIMIT 1`)
+    .get(input.clientId) as { workspace_id?: number } | undefined
+  if (clientOwner && clientOwner.workspace_id !== input.workspaceId) {
+    return { error: 'client_id does not belong to workspace', status: 400 }
+  }
+  const workspaceOwner = db.prepare(`SELECT tenant_id FROM workspaces WHERE id = ? LIMIT 1`)
+    .get(input.workspaceId) as { tenant_id?: number } | undefined
+  if (input.tenantId != null && workspaceOwner && workspaceOwner.tenant_id !== input.tenantId) {
+    return { error: 'workspace does not belong to tenant', status: 400 }
+  }
   const now = Math.floor(Date.now() / 1000)
   const enabled = input.enabled !== false ? 1 : 0
   const mode = input.mode || 'auto_send'

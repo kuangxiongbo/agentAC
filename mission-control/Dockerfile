@@ -1,4 +1,4 @@
-ARG NODE_IMAGE=docker.m.daocloud.io/library/node:22.22.0-slim
+ARG NODE_IMAGE=docker.m.daocloud.io/library/node:22.22.0-slim@sha256:dd9d21971ec4395903fa6143c2b9267d048ae01ca6d3ea96f16cb30df6187d94
 FROM ${NODE_IMAGE} AS base
 # Pin pnpm 9.x: pnpm 10+ blocks dependency install scripts unless explicitly approved,
 # which breaks native modules (better-sqlite3, sharp, @swc/core, etc.) in this image.

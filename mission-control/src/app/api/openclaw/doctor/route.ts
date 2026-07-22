@@ -99,11 +99,12 @@ export async function POST(request: Request) {
     try {
       const db = getDatabase()
       db.prepare(
-        'INSERT INTO audit_log (action, actor, detail) VALUES (?, ?, ?)'
+        'INSERT INTO audit_log (action, actor, detail, workspace_id) VALUES (?, ?, ?, ?)'
       ).run(
         'openclaw.doctor.fix',
         auth.user.username,
-        JSON.stringify({ level: status.level, healthy: status.healthy, issues: status.issues })
+        JSON.stringify({ level: status.level, healthy: status.healthy, issues: status.issues }),
+        auth.user.workspace_id ?? 1,
       )
     } catch {
       // Non-critical.

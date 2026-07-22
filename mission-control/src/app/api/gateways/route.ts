@@ -79,6 +79,7 @@ export async function POST(request: NextRequest) {
   const db = getDatabase()
   ensureTable(db)
   const body = await request.json()
+  const workspaceId = auth.user?.workspace_id ?? 1
 
   const { name, host, port, token, is_primary, agents } = body
 
@@ -99,7 +100,6 @@ export async function POST(request: NextRequest) {
     // Auto-register agents reported by the gateway (k8s sidecar support)
     let agentsRegistered = 0
     if (Array.isArray(agents) && agents.length > 0) {
-      const workspaceId = auth.user?.workspace_id ?? 1
       const now = Math.floor(Date.now() / 1000)
       const upsertAgent = db.prepare(`
         INSERT INTO agents (name, role, status, last_seen, source, workspace_id, updated_at)
@@ -120,8 +120,8 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      db.prepare('INSERT INTO audit_log (action, actor, detail) VALUES (?, ?, ?)').run(
-        'gateway_added', auth.user?.username || 'system', `Added gateway: ${name} (${host}:${port})${agentsRegistered ? `, registered ${agentsRegistered} agent(s)` : ''}`
+      db.prepare('INSERT INTO audit_log (action, actor, detail, workspace_id) VALUES (?, ?, ?, ?)').run(
+        'gateway_added', auth.user?.username || 'system', `Added gateway: ${name} (${host}:${port})${agentsRegistered ? `, registered ${agentsRegistered} agent(s)` : ''}`, workspaceId
       )
     } catch { /* audit might not exist */ }
 
@@ -225,8 +225,8 @@ export async function DELETE(request: NextRequest) {
   const result = db.prepare('DELETE FROM gateways WHERE id = ?').run(id)
 
   try {
-    db.prepare('INSERT INTO audit_log (action, actor, detail) VALUES (?, ?, ?)').run(
-      'gateway_removed', auth.user?.username || 'system', `Removed gateway: ${gw?.name}`
+    db.prepare('INSERT INTO audit_log (action, actor, detail, workspace_id) VALUES (?, ?, ?, ?)').run(
+      'gateway_removed', auth.user?.username || 'system', `Removed gateway: ${gw?.name}`, auth.user.workspace_id ?? 1
     )
   } catch { /* audit might not exist */ }
 

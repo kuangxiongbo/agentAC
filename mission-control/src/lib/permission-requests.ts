@@ -327,11 +327,35 @@ function toView(row: PermissionRequestRow): PermissionRequestView {
   }
 }
 
+function assertPermissionRequestOwnership(db: Database.Database, input: CreatePermissionRequestInput) {
+  const workspace = db.prepare(`SELECT tenant_id FROM workspaces WHERE id = ? LIMIT 1`)
+    .get(input.workspaceId) as { tenant_id?: number } | undefined
+  if (!workspace) throw new Error('Permission request workspace not found')
+  if (input.tenantId != null && workspace.tenant_id !== input.tenantId) {
+    throw new Error('Permission request tenant does not own workspace')
+  }
+  if (input.clientId) {
+    const client = db.prepare(`SELECT workspace_id FROM sync_clients WHERE client_id = ? LIMIT 1`)
+      .get(input.clientId) as { workspace_id?: number } | undefined
+    if (client && client.workspace_id !== input.workspaceId) {
+      throw new Error('Permission request client does not own workspace')
+    }
+  }
+  if (input.bindingId != null) {
+    const binding = db.prepare(`SELECT workspace_id, client_id FROM human_watch_bindings WHERE id = ? LIMIT 1`)
+      .get(input.bindingId) as { workspace_id: number; client_id: string } | undefined
+    if (!binding || binding.workspace_id !== input.workspaceId || (input.clientId && binding.client_id !== input.clientId)) {
+      throw new Error('Permission request binding ownership mismatch')
+    }
+  }
+}
+
 export function createPermissionRequest(
   input: CreatePermissionRequestInput,
   database?: Database.Database,
 ): PermissionRequestView {
   const db = dbOr(database)
+  assertPermissionRequestOwnership(db, input)
   const id = String(input.id || randomUUID()).trim()
   const requestType = String(input.requestType || '').trim()
   const title = String(input.title || '').trim()

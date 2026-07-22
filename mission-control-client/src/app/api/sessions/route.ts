@@ -5,6 +5,7 @@ import { scanCodexSessions } from '@/lib/codex-sessions'
 import { scanHermesSessions } from '@/lib/hermes-sessions'
 import { getDatabase, db_helpers } from '@/lib/db'
 import { requireRole } from '@/lib/auth'
+import { denyResourceOutsideWorkspace } from '@/lib/workspace-isolation'
 import { callOpenClawGateway } from '@/lib/openclaw-gateway'
 import { mutationLimiter } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
@@ -50,6 +51,8 @@ async function collectMergedSessions(options: { skipSync?: boolean; refresh?: bo
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDenied = denyResourceOutsideWorkspace(auth.user, 'local_sessions', new URL(request.url).pathname)
+  if (isolationDenied) return isolationDenied
 
   try {
     const { searchParams } = new URL(request.url)
@@ -81,6 +84,8 @@ const SESSION_KEY_RE = /^[a-zA-Z0-9:_.-]+$/
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDenied = denyResourceOutsideWorkspace(auth.user, 'local_sessions', new URL(request.url).pathname)
+  if (isolationDenied) return isolationDenied
 
   const rateCheck = mutationLimiter(request)
   if (rateCheck) return rateCheck
@@ -165,6 +170,8 @@ export async function POST(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   const auth = requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDenied = denyResourceOutsideWorkspace(auth.user, 'local_sessions', new URL(request.url).pathname)
+  if (isolationDenied) return isolationDenied
 
   const rateCheck = mutationLimiter(request)
   if (rateCheck) return rateCheck
