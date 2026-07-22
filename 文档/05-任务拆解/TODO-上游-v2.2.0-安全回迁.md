@@ -57,12 +57,12 @@
 - [x] Server/Edge 全量单测通过
 - [x] Server/Edge typecheck 和 production build 通过
 - [x] 数据库从生产 schema 升级、重复迁移和备份恢复通过
-- [ ] Human Watch 真实问答自动回复通过
+- [x] Human Watch 真实问答自动回复通过
 - [ ] 监督目标生成、派发、纠偏和完成证明通过
 - [x] Edge runtime/tray 发布面校验通过
-- [ ] 新版本 Git 提交和推送完成
-- [ ] version/latest 镜像摘要一致
-- [ ] 生产灰度部署、健康、资源和真实链路验证通过
+- [x] 新版本 Git 提交和推送完成
+- [x] version/latest 镜像摘要一致
+- [x] 生产灰度部署、健康、资源和真实链路验证通过
 
 ## 证据记录
 
@@ -73,3 +73,4 @@
 | C | `f7a6250` | 迁移/租户/值守/监督综合测试纳入 C-D 49+11 项 | 2.1.60 | 生产 SQLite 快照重复迁移通过 |
 | D | `f7a6250` | strict Workspace owned Edge、跨 Workspace 和权限请求测试通过 | 2.1.60 | 待完成 |
 | E | `f7a6250` | 双端 typecheck/build、Tray build、action pin、Docker check、产物边界通过 | 2.1.60 | 待完成 |
+| 生产补验 | `390eb0e` | 2.1.65 值守授权产物修复报告；值守/授权聚焦 42 项、双端 typecheck/build、发布面和产物边界通过 | 2.1.65 | 事件 `6fb6f19c-93d0-4507-aa05-025a2326ffb5`；干预 `34621` success；同 Worker session 收到并复述 A（只读通过）；binding 4 已关闭 |
