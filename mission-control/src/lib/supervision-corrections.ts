@@ -5,6 +5,7 @@ import { createEdgeMessage } from './edge-messages'
 import { getSupervisionGoal } from './supervision-goals'
 import type { SupervisionGoalPlanDraft, SupervisionGoalPlanRow, SupervisionPlanTask } from './supervision-plans'
 import { matchSupervisionWorker, type SupervisionWorkerCandidate } from './supervision-worker-matcher'
+import { SUPERVISION_WORKER_TIMEOUT_MS } from './supervision-dispatcher'
 
 export type SupervisionCorrectionAction =
   | 'request_progress'
@@ -175,6 +176,7 @@ function createWorkerMessage(db: Database.Database, input: {
       task_id: input.task.task_id,
       correction_action: input.action,
       source_event_id: input.sourceEventId ?? null,
+      execution_timeout_ms: SUPERVISION_WORKER_TIMEOUT_MS,
     },
   }, db)
 }

@@ -36,7 +36,7 @@ describe('local-mailbox session continue handler', () => {
     db.close()
   })
 
-  function insertContinueMessage(messageId: string) {
+  function insertContinueMessage(messageId: string, payloadOverride: Record<string, unknown> = {}) {
     db.prepare(`
       INSERT INTO local_message_inbox (
         message_id, client_id, type, status, idempotency_key,
@@ -48,6 +48,8 @@ describe('local-mailbox session continue handler', () => {
       session_kind: 'codex-cli',
       worker_local_agent_id: 6,
       content: 'continue once',
+      execution_timeout_ms: 1_800_000,
+      ...payloadOverride,
     }))
   }
 
@@ -66,6 +68,7 @@ describe('local-mailbox session continue handler', () => {
         agent: { id: 6 },
         workerSessionId: 'sess-1',
         sessionKind: 'codex-cli',
+        timeoutMs: 1_800_000,
       }),
     )
 
@@ -90,5 +93,18 @@ describe('local-mailbox session continue handler', () => {
       .get('msg-continue-failed')).toEqual({ status: 'failed', last_error: 'codex resume failed' })
     expect(db.prepare(`SELECT action FROM local_message_outbox WHERE message_id = ?`)
       .get('msg-continue-failed')).toEqual({ action: 'fail' })
+  })
+
+  it('caps a remote execution timeout to two hours', async () => {
+    const { processInbox } = await import('@/lib/local-mailbox')
+    insertContinueMessage('msg-continue-capped', { execution_timeout_ms: 24 * 60 * 60_000 })
+
+    expect(await processInbox(db)).toEqual({ executed: 1, failed: 0 })
+    expect(executeLocalSessionPromptAndWait).toHaveBeenCalledWith(
+      'codex-cli',
+      'sess-1',
+      'continue once',
+      expect.objectContaining({ timeoutMs: 2 * 60 * 60_000 }),
+    )
   })
 })

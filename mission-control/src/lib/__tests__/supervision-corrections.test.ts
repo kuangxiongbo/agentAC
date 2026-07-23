@@ -103,6 +103,7 @@ describe('supervision corrections', () => {
       session_id: 'worker-a-session',
       session_kind: 'codex-cli',
       worker_local_agent_id: 11,
+      execution_timeout_ms: 1_800_000,
     })
     expect(wakeup).toHaveBeenCalledOnce()
     expect(listSupervisionGoalEvents('goal-correct', 1, db)).toEqual(expect.arrayContaining([

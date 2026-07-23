@@ -25,6 +25,7 @@ export const SUPERVISION_WORKER_ALLOWED_TOOLS = [
   'Task', 'Bash', 'Glob', 'Grep', 'Read', 'Edit', 'Write', 'TodoWrite',
 ] as const
 export const SUPERVISION_DEFAULT_TASK_BUDGET_USD = 5
+export const SUPERVISION_WORKER_TIMEOUT_MS = 30 * 60_000
 
 export interface DispatchedSupervisionTask {
   task_id: number
@@ -226,6 +227,7 @@ export function dispatchSupervisionGoal(
             dispatch_allowed_tools: SUPERVISION_WORKER_ALLOWED_TOOLS,
             dispatch_max_budget_usd: taskBudgetUsd,
             dispatch_cwd: '.',
+            execution_timeout_ms: SUPERVISION_WORKER_TIMEOUT_MS,
           }),
           goal.workspace_id,
         )
@@ -390,6 +392,7 @@ export function dispatchSupervisionGoal(
           dispatch_allowed_tools: SUPERVISION_WORKER_ALLOWED_TOOLS,
           dispatch_max_budget_usd: taskBudgetUsd,
           dispatch_cwd: '.',
+          execution_timeout_ms: SUPERVISION_WORKER_TIMEOUT_MS,
         },
       }, db)
       db.prepare(`

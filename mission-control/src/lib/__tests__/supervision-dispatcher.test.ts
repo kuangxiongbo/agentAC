@@ -134,6 +134,7 @@ describe('supervision dispatcher', () => {
       dispatch_allowed_tools: ['Task', 'Bash', 'Glob', 'Grep', 'Read', 'Edit', 'Write', 'TodoWrite'],
       dispatch_max_budget_usd: 5,
       dispatch_cwd: '.',
+      execution_timeout_ms: 1_800_000,
     })
 
     const repeated = dispatchSupervisionGoal({ goalId: 'goal-dispatch', workspaceId: 1 }, {

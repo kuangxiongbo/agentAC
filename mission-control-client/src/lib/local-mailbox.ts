@@ -15,6 +15,9 @@ import { resolveLocalClientId } from './edge-client-identity'
 export type LocalMailboxAction = 'ack' | 'fail' | 'permission_decision_sync'
 export type LocalMailboxStatus = 'pending' | 'processing' | 'completed' | 'failed'
 
+const MIN_REMOTE_EXECUTION_TIMEOUT_MS = 10_000
+const MAX_REMOTE_EXECUTION_TIMEOUT_MS = 2 * 60 * 60_000
+
 export interface LocalInboxRow {
   message_id: string
   client_id: string
@@ -238,6 +241,10 @@ async function handleSessionContinueMessage(message: {
   const workerAgent = Number.isFinite(workerLocalAgentId) && workerLocalAgentId > 0
     ? { id: workerLocalAgentId }
     : null
+  const requestedTimeoutMs = Number(message.payload.execution_timeout_ms ?? message.payload.executionTimeoutMs)
+  const executionTimeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0
+    ? Math.min(MAX_REMOTE_EXECUTION_TIMEOUT_MS, Math.max(MIN_REMOTE_EXECUTION_TIMEOUT_MS, Math.floor(requestedTimeoutMs)))
+    : null
   if (!sessionId || !isLocalSessionKind(sessionKind)) {
     return {
       ok: false,
@@ -265,6 +272,7 @@ async function handleSessionContinueMessage(message: {
     dispatchAllowedTools: message.payload.dispatch_allowed_tools ?? message.payload.dispatchAllowedTools,
     dispatchMaxBudgetUsd: message.payload.dispatch_max_budget_usd ?? message.payload.dispatchMaxBudgetUsd,
     dispatchCwd: message.payload.dispatch_cwd ?? message.payload.dispatchCwd,
+    timeoutMs: executionTimeoutMs,
   })
 
   return {
