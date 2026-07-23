@@ -159,7 +159,7 @@ echo "==> verify clean extraction and runtime startup"
 VERIFY_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/edge-runtime-verify.XXXXXX")"
 VERIFY_HOME="$VERIFY_ROOT/home"
 VERIFY_LOG="$VERIFY_ROOT/runtime.log"
-VERIFY_PORT="${EDGE_RUNTIME_VERIFY_PORT:-15191}"
+VERIFY_PORT="${EDGE_RUNTIME_VERIFY_PORT:-$(node -e "const s=require('net').createServer(); s.listen(0,'127.0.0.1',()=>{ console.log(s.address().port); s.close(); });")}"
 VERIFY_PID=""
 cleanup_verify() {
   if [[ -n "$VERIFY_PID" ]]; then
@@ -185,7 +185,7 @@ for file in "${required_runtime_files[@]}"; do
 done
 (
   cd "$VERIFY_RUNTIME"
-  HOME="$VERIFY_HOME" PORT="$VERIFY_PORT" HOSTNAME="127.0.0.1" node server.js >"$VERIFY_LOG" 2>&1
+  HOME="$VERIFY_HOME" PORT="$VERIFY_PORT" HOSTNAME="127.0.0.1" exec node server.js >"$VERIFY_LOG" 2>&1
 ) &
 VERIFY_PID=$!
 healthy=""

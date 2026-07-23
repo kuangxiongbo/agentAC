@@ -144,6 +144,9 @@ if (!trayConfigSource.includes(`DEFAULT_CLIENT_VERSION: &str = "${targetVersion}
 
 const runtimeManifest = readJson(path.join(serverRoot, 'public/edge-runtime/manifest.json'));
 assertEqual('edge runtime manifest client_version', runtimeManifest.client_version, targetVersion);
+assertTextIncludes('docker runtime artifact allowlist', path.join(serverRoot, '.dockerignore'), [
+  `!public/edge-runtime/client-runtime-${targetVersion}-darwin-aarch64.zip`,
+]);
 for (const [platform, artifact] of Object.entries(runtimeManifest.platforms || {})) {
   if (!artifact.url?.includes(`client-runtime-${targetVersion}-`)) {
     fail(`edge runtime ${platform}: url does not include target version ${targetVersion}`);
