@@ -155,6 +155,59 @@ else
   (cd "$STAGING/.." && zip -ry "$OUT_ZIP" "$(basename "$STAGING")")
 fi
 
+echo "==> verify clean extraction and runtime startup"
+VERIFY_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/edge-runtime-verify.XXXXXX")"
+VERIFY_HOME="$VERIFY_ROOT/home"
+VERIFY_LOG="$VERIFY_ROOT/runtime.log"
+VERIFY_PORT="${EDGE_RUNTIME_VERIFY_PORT:-15191}"
+VERIFY_PID=""
+cleanup_verify() {
+  if [[ -n "$VERIFY_PID" ]]; then
+    kill "$VERIFY_PID" 2>/dev/null || true
+    wait "$VERIFY_PID" 2>/dev/null || true
+  fi
+  rm -rf "$VERIFY_ROOT"
+}
+trap cleanup_verify EXIT
+mkdir -p "$VERIFY_HOME"
+if command -v ditto >/dev/null 2>&1; then
+  ditto -xk "$OUT_ZIP" "$VERIFY_ROOT/extracted"
+else
+  unzip -q "$OUT_ZIP" -d "$VERIFY_ROOT/extracted"
+fi
+VERIFY_RUNTIME="$VERIFY_ROOT/extracted/$(basename "$STAGING")/runtime"
+for file in "${required_runtime_files[@]}"; do
+  rel="${file#"$STAGING/runtime/"}"
+  if [[ ! -f "$VERIFY_RUNTIME/$rel" ]]; then
+    echo "error: clean extraction missing required runtime file: $rel" >&2
+    exit 1
+  fi
+done
+(
+  cd "$VERIFY_RUNTIME"
+  HOME="$VERIFY_HOME" PORT="$VERIFY_PORT" HOSTNAME="127.0.0.1" node server.js >"$VERIFY_LOG" 2>&1
+) &
+VERIFY_PID=$!
+healthy=""
+for _ in $(seq 1 60); do
+  if curl -fsS "http://127.0.0.1:$VERIFY_PORT/api/status?action=health" >"$VERIFY_ROOT/health.json" 2>/dev/null; then
+    healthy="yes"
+    break
+  fi
+  if ! kill -0 "$VERIFY_PID" 2>/dev/null; then
+    break
+  fi
+  sleep 0.5
+done
+if [[ -z "$healthy" ]]; then
+  echo "error: cleanly extracted runtime failed health startup" >&2
+  cat "$VERIFY_LOG" >&2 || true
+  exit 1
+fi
+node -e "const h=require('$VERIFY_ROOT/health.json'); if (h.version !== '$VERSION') throw new Error('health version mismatch: '+JSON.stringify(h)); console.log('clean runtime health OK', h.version)"
+cleanup_verify
+trap - EXIT
+
 if command -v shasum >/dev/null 2>&1; then
   echo "==> sha256"
   shasum -a 256 "$OUT_ZIP"

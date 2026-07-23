@@ -1006,13 +1006,15 @@ pub fn install_from_local_standalone(version: &str) -> Result<String, String> {
             continue;
         }
         let dest = config::runtime_root();
-        if dest.exists() {
-            fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
+        let candidate = dest.with_extension(format!("installing-local-{}", std::process::id()));
+        let rollback = dest.with_extension(format!("rollback-local-{}", std::process::id()));
+        if candidate.exists() {
+            fs::remove_dir_all(&candidate).map_err(|e| e.to_string())?;
         }
-        copy_tree_preserve_symlinks(&dir, &dest)?;
-        if let Some(server_js) = resolve_server_js() {
+        copy_tree_preserve_symlinks(&dir, &candidate)?;
+        if let Some(server_js) = resolve_server_js_in(&candidate) {
             if let Some(root) = server_js.parent() {
-                let _ = repair_runtime_peer_links(root);
+                repair_runtime_peer_links(root)?;
             }
         }
 
@@ -1021,22 +1023,37 @@ pub fn install_from_local_standalone(version: &str) -> Result<String, String> {
         if let Some(root) = project_root {
             let static_src = root.join(".next").join("static");
             if static_src.is_dir() {
-                let static_dest = dest.join(".next").join("static");
-                let _ = fs::create_dir_all(dest.join(".next"));
-                let _ = copy_dir_recursive(&static_src, &static_dest);
+                let static_dest = candidate.join(".next").join("static");
+                fs::create_dir_all(candidate.join(".next")).map_err(|e| e.to_string())?;
+                copy_dir_recursive(&static_src, &static_dest)?;
             }
             let public_src = root.join("public");
             if public_src.is_dir() {
-                let _ = copy_dir_recursive(&public_src, &dest.join("public"));
+                copy_dir_recursive(&public_src, &candidate.join("public"))?;
+            }
+
+            // Next standalone tracing may retain only the files observed during build.
+            // A developer fallback can safely supplement them from the same project install.
+            let compiled_src = root
+                .join("node_modules/next/dist/compiled/next-server");
+            let compiled_dest = candidate
+                .join("node_modules/next/dist/compiled/next-server");
+            if compiled_src.is_dir() {
+                copy_dir_recursive(&compiled_src, &compiled_dest)?;
             }
         }
 
-        fs::write(dest.join("VERSION"), format!("{version}\n")).map_err(|e| e.to_string())?;
-        let installed_runtime_dir = validate_installed_runtime(version).map_err(|e| {
-            format!("复制 standalone 后 runtime 仍不可用: {} ({e})", dir.display())
-        })?;
-        fs::write(installed_runtime_dir.join("VERSION"), format!("{version}\n"))
+        fs::write(candidate.join("VERSION"), format!("{version}\n"))
             .map_err(|e| e.to_string())?;
+        let candidate_runtime_dir = validate_runtime_at(&candidate, version).map_err(|e| {
+            let _ = fs::remove_dir_all(&candidate);
+            format!("本机 standalone 候选 runtime 不可用: {} ({e})", dir.display())
+        })?;
+        fs::write(candidate_runtime_dir.join("VERSION"), format!("{version}\n"))
+            .map_err(|e| e.to_string())?;
+        replace_runtime_atomically(&dest, &candidate, &rollback, |root| {
+            validate_runtime_at(root, version).map(|_| ())
+        })?;
         return Ok(format!("已从本机 standalone 安装 runtime（{}）", dir.display()));
     }
     Err(
@@ -1160,6 +1177,15 @@ where
             Ok(())
         }
         Err(e) => {
+            // Activation may already have succeeded before a non-runtime post-install
+            // step (for example config persistence) failed. Never overwrite that valid
+            // target with a less complete local standalone fallback.
+            if validate_installed_runtime(&version).is_ok() {
+                eprintln!(
+                    "[E-Agent Edge] runtime {version} 已完整启用，忽略安装后错误: {e}"
+                );
+                return Ok(());
+            }
             if is_runtime_usable() && !requires_update {
                 eprintln!(
                     "[E-Agent Edge] 中心 runtime 下载失败（{e}），使用已安装的本地 runtime"
@@ -1180,7 +1206,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::replace_runtime_atomically;
+    use super::{replace_runtime_atomically, validate_runtime_at};
     use std::fs;
 
     fn test_root(name: &str) -> std::path::PathBuf {
@@ -1234,6 +1260,25 @@ mod tests {
         assert_eq!(fs::read_to_string(runtime.join("marker")).unwrap(), "old");
         assert!(!candidate.exists());
         assert!(!rollback.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incomplete_fallback_candidate_cannot_replace_existing_runtime() {
+        let root = test_root("incomplete-fallback");
+        let runtime = root.join("runtime");
+        let candidate = root.join("runtime.installing-local");
+        let rollback = root.join("runtime.rollback-local");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&candidate).unwrap();
+        fs::write(runtime.join("marker"), "complete").unwrap();
+        fs::write(candidate.join("server.js"), "incomplete").unwrap();
+
+        let validation = validate_runtime_at(&candidate, "test");
+        assert!(validation.is_err());
+        assert_eq!(fs::read_to_string(runtime.join("marker")).unwrap(), "complete");
+        assert!(!rollback.exists());
+
         fs::remove_dir_all(root).unwrap();
     }
 }

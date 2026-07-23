@@ -77,6 +77,9 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle().clone();
 
+            #[cfg(target_os = "macos")]
+            macos_launch::disable_legacy_runtime_launch_agent();
+
             keep_awake::start_system_keep_awake();
 
             #[cfg(target_os = "macos")]

@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 static CHILD: Mutex<Option<Child>> = Mutex::new(None);
+static PROCESS_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, serde::Deserialize)]
 struct HealthResponse {
@@ -81,7 +82,7 @@ pub fn is_running() -> bool {
     }
 }
 
-pub fn stop() -> Result<(), String> {
+fn stop_locked() -> Result<(), String> {
     let mut guard = CHILD.lock().unwrap();
     if let Some(mut child) = guard.take() {
         #[cfg(target_os = "macos")]
@@ -116,6 +117,13 @@ pub fn stop() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+pub fn stop() -> Result<(), String> {
+    let _guard = PROCESS_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "进程生命周期锁已损坏".to_string())?;
+    stop_locked()
 }
 
 fn node_binary() -> Result<PathBuf, String> {
@@ -590,7 +598,7 @@ fn recover_for_version_mismatch(
     if !stale && !owned {
         return Ok(false);
     }
-    start(cfg, bootstrap)?;
+    start_locked(cfg, bootstrap)?;
     wait_until_current_runtime_healthy(cfg, 40)?;
     Ok(true)
 }
@@ -607,11 +615,21 @@ fn apply_bootstrap_settings_if_needed(
 
 /// 确保边缘服务在跑：已配置用户启动托盘 / 安装完成后自动调用。
 pub fn ensure_running(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<(), String> {
+    let _guard = PROCESS_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "进程生命周期锁已损坏".to_string())?;
+    ensure_running_locked(cfg, bootstrap)
+}
+
+fn ensure_running_locked(
+    cfg: &EdgeConfig,
+    bootstrap: Option<&CenterBootstrap>,
+) -> Result<(), String> {
     let _ = recover_duplicate_owned_port(cfg)?;
     if is_running() {
         if !is_current_runtime_healthy(cfg) {
             eprintln!("[E-Agent Edge] 已跟踪的 Web 客户端版本不是当前 runtime，准备重启");
-            stop()?;
+            stop_locked()?;
         } else {
             wait_until_healthy(cfg, 40)?;
             return apply_bootstrap_settings_if_needed(cfg, bootstrap);
@@ -637,7 +655,7 @@ pub fn ensure_running(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> 
                     format_port_owner_infos(&infos)
                 );
                 kill_port_owner(cfg.port)?;
-                start(cfg, bootstrap)?;
+                start_locked(cfg, bootstrap)?;
                 wait_until_current_runtime_healthy(cfg, 40)?;
                 return apply_bootstrap_settings_if_needed(cfg, bootstrap);
             }
@@ -660,7 +678,7 @@ pub fn ensure_running(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> 
             cfg.port
         ));
     }
-    start(cfg, bootstrap)?;
+    start_locked(cfg, bootstrap)?;
     // 先等 5101 健康，再写入 apply-bootstrap（否则易误报「无法调用 apply-bootstrap」）
     if let Err(version_err) = wait_until_current_runtime_healthy(cfg, 40) {
         eprintln!("[E-Agent Edge] {version_err}");
@@ -696,7 +714,7 @@ fn command_for_node_server(node: &std::path::Path) -> Command {
     cmd
 }
 
-pub fn start(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<(), String> {
+fn start_locked(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<(), String> {
     runtime::ensure_runtime(cfg)?;
     let _ = recover_duplicate_owned_port(cfg)?;
     if is_running() {
@@ -818,7 +836,10 @@ pub fn start(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<()
 }
 
 pub fn restart(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<(), String> {
-    stop()?;
+    let _guard = PROCESS_LIFECYCLE_LOCK
+        .lock()
+        .map_err(|_| "进程生命周期锁已损坏".to_string())?;
+    stop_locked()?;
     let _ = recover_stale_healthy_port(cfg)?;
     let _ = recover_owned_port(cfg, "重启前检测到非当前 runtime")?;
     if port_in_use(cfg.port) && !is_healthy(cfg) {
@@ -847,7 +868,7 @@ pub fn restart(cfg: &EdgeConfig, bootstrap: Option<&CenterBootstrap>) -> Result<
             cfg.port
         );
     }
-    ensure_running(cfg, bootstrap)
+    ensure_running_locked(cfg, bootstrap)
 }
 
 #[cfg(test)]
