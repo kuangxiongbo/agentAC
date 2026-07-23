@@ -106,4 +106,28 @@ describe('sync-agent-inventory', () => {
     `).all() as Array<{ id: number; name: string }>
     expect(rows).toEqual([{ id: 2, name: 'new-agent' }])
   })
+
+  it('removes only legacy bridge rows represented by the live index', async () => {
+    db.prepare(`INSERT INTO sync_clients (client_id, client_name, workspace_id) VALUES ('client-a', 'Mac', 1)`).run()
+    db.prepare(`
+      INSERT INTO sync_agent_index (
+        client_id, client_name, local_agent_id, original_name, remote_name,
+        role, status, updated_at
+      ) VALUES ('client-a', 'Mac', 9, '值守云端', 'client-a-值守云端', 'human-watch', 'idle', 100)
+    `).run()
+    db.prepare(`
+      INSERT INTO agents (name, role, status, workspace_id, source, node_id)
+      VALUES
+        ('client-a-值守云端', 'human-watch', 'offline', 1, 'bridge', 'client-a'),
+        ('client-a-unmatched', 'agent', 'offline', 1, 'bridge', 'client-a'),
+        ('client-a-值守云端-copy', 'agent', 'offline', 1, 'bridge', 'client-b')
+    `).run()
+
+    const { cleanupLegacyBridgeAgents } = await import('@/lib/sync-agent-inventory')
+    expect(cleanupLegacyBridgeAgents(1, 'client-a')).toEqual({ removed: 1 })
+    expect(db.prepare(`SELECT name FROM agents ORDER BY name`).all()).toEqual([
+      { name: 'client-a-unmatched' },
+      { name: 'client-a-值守云端-copy' },
+    ])
+  })
 })

@@ -210,3 +210,39 @@ export function cleanupDuplicateClientAgents(
 
   return { removed: toRemove.length }
 }
+
+/** Remove bridge rows persisted while a central server was accidentally running in local mode. */
+export function cleanupLegacyBridgeAgents(
+  workspaceId: number,
+  clientId: string,
+): { removed: number } {
+  const db = getDatabase()
+  const rows = db.prepare(`
+    SELECT a.id, a.name
+    FROM agents a
+    WHERE a.workspace_id = ?
+      AND a.source = 'bridge'
+      AND a.node_id = ?
+      AND EXISTS (
+        SELECT 1
+        FROM sync_agent_index sai
+        WHERE sai.client_id = a.node_id
+          AND sai.remote_name = a.name COLLATE NOCASE
+      )
+  `).all(workspaceId, clientId) as Array<{ id: number; name: string }>
+
+  if (rows.length === 0) return { removed: 0 }
+
+  const deleteStmt = db.prepare(`
+    DELETE FROM agents
+    WHERE id = ? AND workspace_id = ? AND source = 'bridge' AND node_id = ?
+  `)
+  db.transaction(() => {
+    for (const row of rows) deleteStmt.run(row.id, workspaceId, clientId)
+  })()
+
+  for (const row of rows) {
+    eventBus.broadcast('agent.deleted', { id: row.id, name: row.name })
+  }
+  return { removed: rows.length }
+}

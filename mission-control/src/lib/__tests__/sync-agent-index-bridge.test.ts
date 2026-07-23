@@ -93,6 +93,26 @@ describe('sync-agent-index bridge hybrid', () => {
     expect(mergedOffline[0]).toMatchObject({ source: 'client' })
   })
 
+  it('hides legacy bridge rows after the server returns to central mode', async () => {
+    const { replaceBridgeAgentIndex, listBridgeAgentIndex, mergeDbAgentsWithBridgeIndex } =
+      await import('@/lib/sync-agent-index')
+
+    replaceBridgeAgentIndex('client-a', 'Mac', [
+      { id: 9, name: '值守云端', role: 'human-watch', status: 'idle', framework: 'claude' },
+    ])
+    const rows = listBridgeAgentIndex('client-a')
+    const legacyBridgeAgent = {
+      source: 'bridge',
+      node_id: 'client-a',
+      name: 'client-a-值守云端',
+      status: 'offline',
+      config: { bridge_client_id: 'client-a' },
+    }
+
+    expect(mergeDbAgentsWithBridgeIndex([legacyBridgeAgent], rows, () => true)).toHaveLength(1)
+    expect(mergeDbAgentsWithBridgeIndex([legacyBridgeAgent], rows, () => false)).toHaveLength(1)
+  })
+
   it('resolves bridge recipient by remote_name or original_name', async () => {
     const { replaceBridgeAgentIndex, listBridgeAgentIndex, getBridgeAgentIndexByRecipient } =
       await import('@/lib/sync-agent-index')

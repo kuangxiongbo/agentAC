@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { upsertSyncClientHeartbeat } from '@/lib/sync-clients'
 import { cleanupDuplicateClientAgents, parseAgentInventory, reconcileClientAgentInventory } from '@/lib/sync-agent-inventory'
+import { replaceBridgeAgentIndex } from '@/lib/sync-agent-index'
 import { config } from '@/lib/config'
 
 export const dynamic = 'force-dynamic'
@@ -47,12 +48,33 @@ export async function POST(request: NextRequest) {
   const agentSyncMode = config.centralMode ? 'clients-only' : 'full'
   let agentsPruned = 0
   let duplicateAgentsRemoved = 0
-  if (agentSyncMode === 'full' && body?.agent_inventory !== undefined) {
+  let agentIndexUpdated = 0
+  if (body?.agent_inventory !== undefined) {
     const workspaceId = auth.user.workspace_id ?? 1
     const inventory = parseAgentInventory(body.agent_inventory)
-    const result = reconcileClientAgentInventory(workspaceId, clientId, clientName, inventory)
-    agentsPruned = result.removed
-    duplicateAgentsRemoved = cleanupDuplicateClientAgents(workspaceId, clientId).removed
+    if (agentSyncMode === 'clients-only') {
+      const indexableInventory = inventory.filter(
+        (agent): agent is typeof agent & { local_agent_id: number } =>
+          typeof agent.local_agent_id === 'number' && Number.isFinite(agent.local_agent_id),
+      )
+      if (indexableInventory.length === inventory.length) {
+        agentIndexUpdated = replaceBridgeAgentIndex(
+          clientId,
+          clientName,
+          indexableInventory.map((agent) => ({
+            id: agent.local_agent_id,
+            name: agent.original_name,
+            role: agent.role || 'agent',
+            status: agent.status || 'idle',
+            framework: agent.framework,
+          })),
+        ).upserted
+      }
+    } else {
+      const result = reconcileClientAgentInventory(workspaceId, clientId, clientName, inventory)
+      agentsPruned = result.removed
+      duplicateAgentsRemoved = cleanupDuplicateClientAgents(workspaceId, clientId).removed
+    }
   }
 
   return NextResponse.json({
@@ -61,5 +83,6 @@ export async function POST(request: NextRequest) {
     agent_sync_mode: agentSyncMode,
     agents_pruned: agentsPruned,
     duplicate_agents_removed: duplicateAgentsRemoved,
+    agent_index_updated: agentIndexUpdated,
   })
 }

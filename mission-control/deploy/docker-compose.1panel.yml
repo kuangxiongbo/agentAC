@@ -5,7 +5,7 @@
 services:
   mission-control:
     # 升级版本时改此处 tag，并 docker compose pull && up -d
-    image: crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.1.65
+    image: crpi-c9b9bml2ajb23n5d.cn-shenzhen.personal.cr.aliyuncs.com/1sheng/agentcenter:2.1.66
     container_name: agentcenter
     restart: unless-stopped
 
@@ -20,6 +20,8 @@ services:
       PORT: "3000"
       NODE_ENV: production
       HOSTNAME: "0.0.0.0"
+      # 公网 AgentCenter 只汇聚 Edge/托盘数据，不扫描容器本机运行时。
+      MC_ENABLE_LOCAL_MONITORING: "false"
 
     volumes:
       # 必须：SQLite、tokens、自动生成密钥等

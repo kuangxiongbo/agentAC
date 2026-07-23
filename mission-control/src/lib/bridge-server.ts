@@ -9,7 +9,7 @@ import type { LocalSessionTranscriptKind, TranscriptMessage } from './session-tr
 import { notifySessionTranscriptUpdated } from './session-realtime'
 import { replaceBridgeAgentIndex, type BridgeAgentIndexInput } from './sync-agent-index'
 import { resolveBridgeClientWorkspaceId, upsertBridgeAgentInventory } from './bridge-agent-registration'
-import { cleanupDuplicateClientAgents, reconcileClientAgentInventory } from './sync-agent-inventory'
+import { cleanupDuplicateClientAgents, cleanupLegacyBridgeAgents, reconcileClientAgentInventory } from './sync-agent-inventory'
 import { decidePermissionRequest, recordWorkerHumanReply, type PermissionRequestView } from './permission-requests'
 import { forwardPermissionDecisionToExecApproval } from './permission-request-exec-bridge'
 import type { LocalCliElevationGrantContext } from './local-cli-elevation-audit'
@@ -1001,6 +1001,7 @@ async function ingestBridgeAgentList(clientId: string, clientLabel: string, agen
       }))
       reconcileClientAgentInventory(workspaceId, clientId, clientLabel, inventory)
       cleanupDuplicateClientAgents(workspaceId, clientId)
+      cleanupLegacyBridgeAgents(workspaceId, clientId)
     } else {
       await registerRemoteAgents(clientId, clientLabel, workspaceId, normalized)
     }

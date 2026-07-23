@@ -276,6 +276,7 @@ assertTextIncludes('license verifier app id', path.join(serverRoot, 'src/lib/lic
 ]);
 assertTextIncludes('1Panel compose image tag', path.join(serverRoot, 'deploy/docker-compose.1panel.yml'), [
   `agentcenter:${targetVersion}`,
+  'MC_ENABLE_LOCAL_MONITORING: "false"',
 ]);
 for (const deployDoc of ['deploy/README.md', 'deploy/EDGE-RUNTIME.md']) {
   const content = readText(path.join(serverRoot, deployDoc));

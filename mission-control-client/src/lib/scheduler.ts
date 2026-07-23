@@ -435,7 +435,13 @@ export function initScheduler() {
   
   // Real-time synchronization: trigger upstream sync whenever local agents change
   eventBus.on('server-event', (event) => {
-    if (event.type === 'agent.status_changed' || event.type === 'agent.synced') {
+    if (
+      event.type === 'agent.created' ||
+      event.type === 'agent.updated' ||
+      event.type === 'agent.deleted' ||
+      event.type === 'agent.status_changed' ||
+      event.type === 'agent.synced'
+    ) {
       logger.info({ event: event.type }, 'Triggering real-time gateway sync')
       runServerGatewaySync().catch(err => logger.error('Real-time sync failed:', err))
     }

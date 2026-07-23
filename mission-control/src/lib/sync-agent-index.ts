@@ -258,7 +258,7 @@ function clientAgentLocalIdKey(
   return `${nodeId}:${localAgentId}`
 }
 
-export function mergeDbAgentsWithBridgeIndex<T extends { source?: string; node_id?: string | null; config?: unknown }>(
+export function mergeDbAgentsWithBridgeIndex<T extends { name?: string; source?: string; node_id?: string | null; config?: unknown }>(
   dbAgents: T[],
   indexRows: SyncAgentIndexRow[],
   bridgeOnline: (clientId: string) => boolean,
@@ -268,6 +268,9 @@ export function mergeDbAgentsWithBridgeIndex<T extends { source?: string; node_i
   )
   const indexByLocalId = new Map<string, SyncAgentIndexRow>(
     indexRows.map((row) => [`${row.client_id}:${row.local_agent_id}`, row]),
+  )
+  const indexByRemoteName = new Map<string, SyncAgentIndexRow>(
+    indexRows.map((row) => [`${row.client_id}:${row.remote_name.toLowerCase()}`, row]),
   )
 
   const clientMirrorKeys = new Set<string>()
@@ -281,6 +284,10 @@ export function mergeDbAgentsWithBridgeIndex<T extends { source?: string; node_i
 
   // Bridge 在线：同 key 的 HTTP client 镜像让位给 bridge_index（以边缘实时索引为准）
   const filteredDbAgents = dbAgents.filter((agent) => {
+    if (agent.source === 'bridge') {
+      const legacyKey = `${String(agent.node_id || '').trim()}:${String(agent.name || '').trim().toLowerCase()}`
+      if (indexByRemoteName.has(legacyKey)) return false
+    }
     if (agent.source !== 'client') return true
     const localIdKey = clientAgentLocalIdKey(agent.node_id, agent.config)
     if (localIdKey && bridgeOnline(agent.node_id || '') && indexByLocalId.has(localIdKey)) {

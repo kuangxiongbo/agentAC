@@ -195,6 +195,24 @@ function getLocalAgentList(): Array<{
   }
 }
 
+const AGENT_INVENTORY_EVENT_TYPES = new Set([
+  'agent.created',
+  'agent.updated',
+  'agent.deleted',
+  'agent.synced',
+  'agent.status_changed',
+])
+
+function pushLocalAgentInventory(ws: WebSocket | null): boolean {
+  return safeSend(ws, {
+    type: 'agent_status',
+    clientId: getLocalClientId(),
+    clientLabel: getLocalClientLabel(),
+    agents: getLocalAgentList(),
+    timestamp: Date.now(),
+  })
+}
+
 function getLocalAgentDetail(localAgentId: number): Record<string, unknown> | null {
   try {
     const db = getDatabase()
@@ -1619,11 +1637,18 @@ async function connect(): Promise<void> {
     }
     eventBus.on('chat.message', chatHandler)
 
+    const agentInventoryHandler = (event: { type?: string }) => {
+      if (!AGENT_INVENTORY_EVENT_TYPES.has(String(event?.type || ''))) return
+      pushLocalAgentInventory(ws)
+    }
+    eventBus.on('server-event', agentInventoryHandler)
+
     startHeartbeat()
     bridgeEmitter.emit('connected', { url: resolved.wsUrl, discoverySource: resolved.discoverySource })
 
     // Store handler for cleanup
     ;(ws as any)._chatHandler = chatHandler
+    ;(ws as any)._agentInventoryHandler = agentInventoryHandler
   }
 
   ws.onmessage = (event: MessageEvent) => {
@@ -1649,6 +1674,8 @@ async function connect(): Promise<void> {
 
     const handler = (ws as any)._chatHandler
     if (handler) eventBus.off('chat.message', handler)
+    const agentInventoryHandler = (ws as any)._agentInventoryHandler
+    if (agentInventoryHandler) eventBus.off('server-event', agentInventoryHandler)
 
     safeLog('info', '[RemoteBridge] Disconnected from remote server', {
       code: event?.code,
