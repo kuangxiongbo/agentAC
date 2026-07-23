@@ -3,7 +3,7 @@ import { getDatabase } from './db'
 import { edgeUpstreamFetch, formatUpstreamFetchError } from './edge-upstream-fetch'
 import { getRemoteUpstreamConfig } from './remote-server-bridge'
 import {
-  enqueueLocalSessionPrompt,
+  executeLocalSessionPromptAndWait,
   isLocalSessionKind,
   type LocalSessionKind,
 } from './local-session-executor'
@@ -200,7 +200,7 @@ async function handleHumanWatchAssistMessage(message: {
     }
   }
 
-  enqueueLocalSessionPrompt(sessionKind as LocalSessionKind, sessionId, reply, {
+  const execution = await executeLocalSessionPromptAndWait(sessionKind as LocalSessionKind, sessionId, reply, {
     workerSessionId: sessionId,
     sessionKind: sessionKind as LocalSessionKind,
   })
@@ -211,16 +211,17 @@ async function handleHumanWatchAssistMessage(message: {
       delivered: true,
       steward_reply: reply,
       steward_session_id: judge.sessionId,
+      worker_reply: execution.reply,
     },
   }
 }
 
-function handleSessionContinueMessage(message: {
+async function handleSessionContinueMessage(message: {
   id: string
   clientId: string
   type: string
   payload: Record<string, unknown>
-}): LocalMessageHandlerResult {
+}): Promise<LocalMessageHandlerResult> {
   const sessionId = String(message.payload.session_id || message.payload.worker_session_id || '').trim()
   const sessionKind = String(message.payload.session_kind || '').trim()
   const content = String(message.payload.content || message.payload.prompt || '').trim()
@@ -254,7 +255,7 @@ function handleSessionContinueMessage(message: {
     }
   }
 
-  enqueueLocalSessionPrompt(sessionKind as LocalSessionKind, sessionId, content, {
+  const execution = await executeLocalSessionPromptAndWait(sessionKind as LocalSessionKind, sessionId, content, {
     managedByPlatform: true,
     agent: workerAgent,
     workerSessionId: sessionId,
@@ -273,6 +274,7 @@ function handleSessionContinueMessage(message: {
       delivered: true,
       session_id: sessionId,
       session_kind: sessionKind,
+      reply: execution.reply,
     },
   }
 }

@@ -467,9 +467,25 @@ export function listSupervisionGoalTasks(
            sgt.assigned_agent_id, sgt.assigned_session_id, sgt.retry_count,
            sgt.reassignment_count, t.title, t.description, t.status,
            t.priority, t.assigned_to, t.outcome, t.resolution,
-           t.error_message, t.metadata, t.updated_at
+           t.error_message, t.metadata, t.updated_at,
+           g.client_id,
+           COALESCE(
+             json_extract(t.metadata, '$.session_kind'),
+             CASE lower(COALESCE(sai.framework, ''))
+               WHEN 'codex' THEN 'codex-cli'
+               WHEN 'codex-cli' THEN 'codex-cli'
+               WHEN 'claude' THEN 'claude-code'
+               WHEN 'claude-code' THEN 'claude-code'
+               WHEN 'hermes' THEN 'hermes'
+               ELSE NULL
+             END
+           ) AS session_kind
     FROM supervision_goal_tasks sgt
     JOIN tasks t ON t.id = sgt.task_id AND t.workspace_id = ?
+    JOIN supervision_goals g ON g.id = sgt.goal_id AND g.workspace_id = t.workspace_id
+    LEFT JOIN sync_agent_index sai
+      ON sai.client_id = g.client_id
+     AND CAST(sai.local_agent_id AS TEXT) = sgt.assigned_agent_id
     WHERE sgt.goal_id = ?
     ORDER BY sgt.plan_version DESC, t.id ASC
   `).all(workspaceId, goalId) as Array<Record<string, unknown>>

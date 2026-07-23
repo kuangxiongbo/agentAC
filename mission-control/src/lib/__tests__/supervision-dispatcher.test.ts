@@ -170,4 +170,35 @@ describe('supervision dispatcher', () => {
     const events = listSupervisionGoalEvents('goal-dispatch', 1, db)
     expect(events.filter((event) => event.event_type === 'goal_task_dispatched')).toHaveLength(2)
   })
+
+  it('does not dispatch two ready tasks to the same active worker session', () => {
+    db.prepare(`UPDATE sync_agent_index SET session_key = 'backend-session' WHERE local_agent_id = 12`).run()
+    const planRow = db.prepare(`
+      SELECT id, plan_json FROM supervision_goal_plans
+      WHERE goal_id = 'goal-dispatch' AND version = 1
+    `).get() as { id: string; plan_json: string }
+    const plan = JSON.parse(planRow.plan_json)
+    plan.tasks.push({
+      logical_key: 'implement-secondary',
+      title: 'Implement secondary',
+      description: 'Implement another backend change',
+      dependencies: [],
+      required_capabilities: ['backend'],
+      preferred_framework: 'codex-cli',
+      acceptance_criteria: ['Unit tests pass'],
+      risk: 'low',
+    })
+    db.prepare(`UPDATE supervision_goal_plans SET plan_json = ? WHERE id = ?`)
+      .run(JSON.stringify(plan), planRow.id)
+
+    const result = dispatchSupervisionGoal({ goalId: 'goal-dispatch', workspaceId: 1 }, {
+      isClientOnline: () => true,
+      wakeup: () => true,
+    }, db)
+
+    const backendTasks = result.tasks.filter((task) => task.logical_key.startsWith('implement'))
+    expect(backendTasks.filter((task) => task.status === 'in_progress')).toHaveLength(1)
+    expect(backendTasks.filter((task) => task.blocked_reason === 'no_eligible_worker')).toHaveLength(1)
+    expect((db.prepare(`SELECT COUNT(*) AS count FROM edge_messages`).get() as { count: number }).count).toBe(1)
+  })
 })

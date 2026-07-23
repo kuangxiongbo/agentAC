@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { runMigrations } from '@/lib/migrations'
 
-const enqueueLocalSessionPrompt = vi.fn()
+const executeLocalSessionPromptAndWait = vi.fn()
 
 vi.mock('@/lib/local-session-executor', () => ({
-  enqueueLocalSessionPrompt,
+  executeLocalSessionPromptAndWait,
   isLocalSessionKind: (kind: string) => ['claude-code', 'codex-cli', 'hermes'].includes(kind),
 }))
 
@@ -21,7 +21,8 @@ describe('local-mailbox session continue handler', () => {
   let db: Database.Database
 
   beforeEach(() => {
-    enqueueLocalSessionPrompt.mockReset()
+    executeLocalSessionPromptAndWait.mockReset()
+    executeLocalSessionPromptAndWait.mockResolvedValue({ sessionId: 'sess-1', reply: 'completed' })
     db = new Database(':memory:')
     runMigrations(db)
     db.prepare(`INSERT OR REPLACE INTO settings (key, value, category) VALUES ('device.client_id', 'edge-test', 'device')`).run()
@@ -55,8 +56,8 @@ describe('local-mailbox session continue handler', () => {
 
     insertContinueMessage('msg-continue-1')
     expect(await processInbox(db)).toEqual({ executed: 1, failed: 0 })
-    expect(enqueueLocalSessionPrompt).toHaveBeenCalledTimes(1)
-    expect(enqueueLocalSessionPrompt).toHaveBeenLastCalledWith(
+    expect(executeLocalSessionPromptAndWait).toHaveBeenCalledTimes(1)
+    expect(executeLocalSessionPromptAndWait).toHaveBeenLastCalledWith(
       'codex-cli',
       'sess-1',
       'continue once',
@@ -70,12 +71,24 @@ describe('local-mailbox session continue handler', () => {
 
     insertContinueMessage('msg-continue-2')
     expect(await processInbox(db)).toEqual({ executed: 1, failed: 0 })
-    expect(enqueueLocalSessionPrompt).toHaveBeenCalledTimes(1)
+    expect(executeLocalSessionPromptAndWait).toHaveBeenCalledTimes(1)
 
     const duplicateAck = db.prepare(`
       SELECT payload_json FROM local_message_outbox
       WHERE message_id = 'msg-continue-2' AND action = 'ack'
     `).get() as { payload_json: string }
     expect(JSON.parse(duplicateAck.payload_json).duplicate).toBe(true)
+  })
+
+  it('does not acknowledge the message when the CLI execution fails', async () => {
+    const { processInbox } = await import('@/lib/local-mailbox')
+    executeLocalSessionPromptAndWait.mockRejectedValueOnce(new Error('codex resume failed'))
+    insertContinueMessage('msg-continue-failed')
+
+    expect(await processInbox(db)).toEqual({ executed: 0, failed: 1 })
+    expect(db.prepare(`SELECT status, last_error FROM local_message_inbox WHERE message_id = ?`)
+      .get('msg-continue-failed')).toEqual({ status: 'failed', last_error: 'codex resume failed' })
+    expect(db.prepare(`SELECT action FROM local_message_outbox WHERE message_id = ?`)
+      .get('msg-continue-failed')).toEqual({ action: 'fail' })
   })
 })

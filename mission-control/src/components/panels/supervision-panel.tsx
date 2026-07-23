@@ -1,8 +1,9 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
+import { SessionMessage, shouldShowTimestamp, type SessionTranscriptMessage } from '@/components/chat/session-message'
 import { useAgentCenterStore } from '@/store'
 
 interface Goal {
@@ -31,10 +32,16 @@ interface GoalTask {
   title: string
   status: string
   assigned_to: string | null
+  assigned_agent_id: string | null
+  assigned_session_id: string | null
+  client_id: string
+  session_kind: 'claude-code' | 'codex-cli' | 'hermes' | null
   retry_count: number
   reassignment_count: number
   outcome: string | null
   resolution: string | null
+  error_message: string | null
+  updated_at: number
 }
 
 interface GoalPlan {
@@ -94,6 +101,21 @@ function StatusBadge({ value }: { value: string }) {
 
 function dateTime(timestamp: number) {
   return timestamp ? new Date(timestamp * 1000).toLocaleString() : '-'
+}
+
+const TASK_STATUS_LABELS: Record<string, string> = {
+  inbox: '等待依赖/分派',
+  assigned: '已分派',
+  in_progress: '执行中',
+  review: '待审核',
+  quality_review: '质量审核',
+  done: '已完成',
+  failed: '执行失败',
+}
+
+function taskStatus(task: GoalTask): { label: string; stale: boolean } {
+  const stale = task.status === 'in_progress' && Date.now() / 1000 - task.updated_at > 300
+  return { label: stale ? '长时间无进展' : TASK_STATUS_LABELS[task.status] || task.status, stale }
 }
 
 async function api(path: string, init?: RequestInit) {
@@ -190,6 +212,7 @@ function GoalDetail({ goalId, onChanged }: { goalId: string; onChanged: () => Pr
   const [plans, setPlans] = useState<GoalPlan[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [processTask, setProcessTask] = useState<GoalTask | null>(null)
 
   const load = useCallback(async () => {
     setError(null)
@@ -208,6 +231,11 @@ function GoalDetail({ goalId, onChanged }: { goalId: string; onChanged: () => Pr
   }, [goalId])
 
   useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    if (goal?.status !== 'running') return
+    const timer = window.setInterval(() => void load(), 5000)
+    return () => window.clearInterval(timer)
+  }, [goal?.status, load])
 
   const act = async (name: string, request: () => Promise<unknown>) => {
     setBusy(name); setError(null)
@@ -259,7 +287,10 @@ function GoalDetail({ goalId, onChanged }: { goalId: string; onChanged: () => Pr
       <section>
         <h3 className="mb-2 text-sm font-semibold">任务执行</h3>
         <div className="overflow-x-auto border-y border-border">
-          <table className="w-full min-w-[680px] text-left text-xs"><thead className="text-muted-foreground"><tr><th className="py-2 pr-3">任务</th><th className="py-2 pr-3">状态</th><th className="py-2 pr-3">Worker</th><th className="py-2 pr-3">重试/换人</th><th className="py-2">结果</th></tr></thead><tbody className="divide-y divide-border">{activeTasks.map((task) => <tr key={task.task_id}><td className="py-2 pr-3"><span className="font-medium">#{task.task_id} {task.title}</span><div className="font-mono text-[10px] text-muted-foreground">{task.logical_task_key}</div></td><td className="py-2 pr-3"><StatusBadge value={task.status} /></td><td className="py-2 pr-3 text-muted-foreground">{task.assigned_to || '-'}</td><td className="py-2 pr-3">{task.retry_count}/{task.reassignment_count}</td><td className="max-w-xs truncate py-2 text-muted-foreground">{task.resolution || task.outcome || '-'}</td></tr>)}</tbody></table>
+          <table className="w-full min-w-[820px] text-left text-xs"><thead className="text-muted-foreground"><tr><th className="py-2 pr-3">任务</th><th className="py-2 pr-3">状态</th><th className="py-2 pr-3">Worker</th><th className="py-2 pr-3">最后变化</th><th className="py-2 pr-3">重试/换人</th><th className="py-2 pr-3">结果</th><th className="py-2">过程</th></tr></thead><tbody className="divide-y divide-border">{activeTasks.map((task) => {
+            const display = taskStatus(task)
+            return <tr key={task.task_id}><td className="py-2 pr-3"><span className="font-medium">#{task.task_id} {task.title}</span><div className="font-mono text-[10px] text-muted-foreground">{task.logical_task_key}</div></td><td className="py-2 pr-3"><span className={`inline-flex rounded border px-1.5 py-0.5 text-[10px] ${display.stale ? STATUS_STYLE.failed : STATUS_STYLE[task.status] || 'text-muted-foreground border-border'}`}>{display.label}</span></td><td className="py-2 pr-3 text-muted-foreground">{task.assigned_to || '-'}</td><td className="whitespace-nowrap py-2 pr-3 text-muted-foreground">{dateTime(task.updated_at)}</td><td className="py-2 pr-3">{task.retry_count}/{task.reassignment_count}</td><td className="max-w-xs truncate py-2 pr-3 text-muted-foreground">{task.error_message || task.resolution || task.outcome || '-'}</td><td className="py-2">{task.assigned_session_id ? <Button size="xs" variant="outline" onClick={() => setProcessTask(task)}>查看过程</Button> : <span className="text-muted-foreground">-</span>}</td></tr>
+          })}</tbody></table>
         </div>
       </section>
 
@@ -270,8 +301,59 @@ function GoalDetail({ goalId, onChanged }: { goalId: string; onChanged: () => Pr
           {events.length === 0 ? <p className="py-4 text-xs text-muted-foreground">暂无事件</p> : null}
         </div>
       </section>
+      {processTask ? <TaskProcessDialog task={processTask} onClose={() => setProcessTask(null)} /> : null}
     </div>
   )
+}
+
+function TaskProcessDialog({ task, onClose }: { task: GoalTask; onClose: () => void }) {
+  const [messages, setMessages] = useState<SessionTranscriptMessage[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const fetchTranscript = useCallback(async () => {
+    if (!task.assigned_session_id || !task.session_kind) {
+      setError('任务缺少 session_kind，无法读取执行会话。')
+      setLoading(false)
+      return
+    }
+    try {
+      const params = new URLSearchParams({
+        kind: task.session_kind,
+        id: task.assigned_session_id,
+        client_id: task.client_id,
+        limit: '120',
+        nocache: '1',
+      })
+      const response = await fetch(`/api/sessions/transcript?${params}`)
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`)
+      setMessages(Array.isArray(body.messages) ? body.messages : [])
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '读取执行过程失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [task.assigned_session_id, task.client_id, task.session_kind])
+
+  useEffect(() => { void fetchTranscript() }, [fetchTranscript])
+  useEffect(() => {
+    if (task.status !== 'in_progress') return
+    const timer = window.setInterval(() => void fetchTranscript(), 5000)
+    return () => window.clearInterval(timer)
+  }, [fetchTranscript, task.status])
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+  }, [messages.length])
+
+  const latestTimestamp = messages.reduce((latest, message) => {
+    const value = message.timestamp ? new Date(message.timestamp).getTime() : 0
+    return Math.max(latest, Number.isFinite(value) ? value : 0)
+  }, 0)
+  const hasCurrentTaskActivity = latestTimestamp >= (task.updated_at - 10) * 1000
+
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose() }}><div className="flex max-h-[88vh] w-full max-w-4xl flex-col rounded-md border border-border bg-background shadow-2xl"><header className="flex shrink-0 items-start justify-between border-b border-border px-4 py-3"><div className="min-w-0"><h2 className="truncate text-sm font-semibold">#{task.task_id} {task.title}</h2><p className="mt-1 font-mono text-[10px] text-muted-foreground">{task.session_kind || 'unknown'} · {task.assigned_session_id}</p></div><button className="h-8 w-8 text-xl text-muted-foreground hover:text-foreground" onClick={onClose} aria-label="关闭">×</button></header><div className="flex items-center justify-between border-b border-border px-4 py-2 text-xs"><span className="text-muted-foreground">Worker：{task.assigned_to || '-'} · 任务状态：{taskStatus(task).label}</span><Button size="xs" variant="outline" onClick={() => void fetchTranscript()}>刷新</Button></div>{!loading && !error && !hasCurrentTaskActivity ? <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-300">该会话中尚未发现本次任务派发后的新记录，任务可能仍在排队或派发失败。</div> : null}{error ? <div className="border-b border-rose-500/30 bg-rose-500/10 px-4 py-2 text-xs text-rose-300">{error}</div> : null}<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto p-3">{loading ? <Loader variant="panel" label="加载执行过程" /> : messages.length === 0 ? <p className="py-12 text-center text-sm text-muted-foreground">暂无会话记录</p> : messages.map((message, index) => <SessionMessage key={`${message.timestamp || 'message'}-${index}`} message={message} showTimestamp={shouldShowTimestamp(message, messages[index - 1])} />)}</div></div></div>
 }
 
 function Metric({ label, value }: { label: string; value: string }) {

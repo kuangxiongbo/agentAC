@@ -1982,34 +1982,54 @@ function scheduleSerializedLocalPrompt(
   pendingPrompt?: string,
   agentId?: number | null,
 ): void {
+  void executeSerializedLocalPrompt(
+    executionKey,
+    kind,
+    sessionIdHint,
+    operation,
+    pendingPrompt,
+    agentId,
+  ).catch((error) => {
+    logger.error({ err: error, kind, sessionIdHint, agentId }, 'Background local prompt failed')
+    if (typeof agentId === 'number') {
+      const rebound = getFreshAgentRecord({ id: agentId })
+      const parsed = getParsedLocalAgentSessionConfig(rebound)
+      if (parsed.state === 'broken' || parsed.lastSessionError) {
+        eventBus.broadcast('agent.updated', {
+          id: agentId,
+          session_key: rebound.session_key ?? null,
+          session_state: parsed.state,
+          last_session_error: parsed.lastSessionError,
+        })
+      }
+    }
+  })
+}
+
+async function executeSerializedLocalPrompt(
+  executionKey: string,
+  kind: LocalSessionKind,
+  sessionIdHint: string | null,
+  operation: () => Promise<LocalSessionExecutionResult>,
+  pendingPrompt?: string,
+  agentId?: number | null,
+): Promise<LocalSessionExecutionResult> {
   if (sessionIdHint || pendingPrompt) {
     notifyPromptLifecycle(kind, sessionIdHint, 'prompt_queued', pendingPrompt, agentId)
   }
 
-  void runSerializedAgentExecution(executionKey, operation)
-    .then((result) => {
-      const sessionId = result.sessionId || sessionIdHint
-      notifyPromptLifecycle(kind, sessionId, 'prompt_completed', undefined, agentId)
-      if (result.sessionId && result.sessionId !== sessionIdHint) {
-        notifyLocalSessionVisibility(kind, result.sessionId, 'session_provisioned', agentId)
-      }
-    })
-    .catch((error) => {
-      logger.error({ err: error, kind, sessionIdHint, agentId }, 'Background local prompt failed')
-      notifyPromptLifecycle(kind, sessionIdHint, 'prompt_failed', undefined, agentId)
-      if (typeof agentId === 'number') {
-        const rebound = getFreshAgentRecord({ id: agentId })
-        const parsed = getParsedLocalAgentSessionConfig(rebound)
-        if (parsed.state === 'broken' || parsed.lastSessionError) {
-          eventBus.broadcast('agent.updated', {
-            id: agentId,
-            session_key: rebound.session_key ?? null,
-            session_state: parsed.state,
-            last_session_error: parsed.lastSessionError,
-          })
-        }
-      }
-    })
+  try {
+    const result = await runSerializedAgentExecution(executionKey, operation)
+    const sessionId = result.sessionId || sessionIdHint
+    notifyPromptLifecycle(kind, sessionId, 'prompt_completed', undefined, agentId)
+    if (result.sessionId && result.sessionId !== sessionIdHint) {
+      notifyLocalSessionVisibility(kind, result.sessionId, 'session_provisioned', agentId)
+    }
+    return result
+  } catch (error) {
+    notifyPromptLifecycle(kind, sessionIdHint, 'prompt_failed', undefined, agentId)
+    throw error
+  }
 }
 
 /** Queue agent prompt; returns immediately. Reply appears in session transcript. */
@@ -2128,4 +2148,40 @@ export function enqueueLocalSessionPrompt(
   )
 
   return { accepted: true, sessionKey: sessionId, kind }
+}
+
+/** Run a session continuation through the per-session queue and resolve after the CLI exits. */
+export async function executeLocalSessionPromptAndWait(
+  kind: LocalSessionKind,
+  sessionId: string,
+  promptInput: string,
+  options: LocalSessionExecutionOptions = {},
+): Promise<LocalSessionExecutionResult> {
+  const prompt = sanitizePrompt(promptInput)
+  if (!prompt || prompt.length > 6000) {
+    throw new Error('prompt is required (max 6000 chars)')
+  }
+  ensureValidSessionId(sessionId)
+
+  const agent = options.agent ? getFreshAgentRecord(options.agent) : null
+  const executionCwd = resolveLocalExecutionWorkingDirectory(
+    kind,
+    sessionId,
+    agent,
+    options.workingDirectory ?? undefined,
+  )
+  return executeSerializedLocalPrompt(
+    `session:${kind}:${sessionId}`,
+    kind,
+    sessionId,
+    () => executeLocalSessionPrompt(kind, sessionId, prompt, {
+      ...options,
+      agent,
+      workingDirectory: executionCwd,
+      workerSessionId: options.workerSessionId || sessionId,
+      sessionKind: options.sessionKind || kind,
+    }),
+    prompt,
+    agent?.id,
+  )
 }

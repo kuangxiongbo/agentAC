@@ -305,7 +305,7 @@ export function dispatchSupervisionGoal(
         goalId: goal.id,
         workspaceId: goal.workspace_id,
         task: planTask,
-        maxActiveTasks: 3,
+        maxActiveTasks: 1,
         projectId: project.id,
       }, { isClientOnline: dependencies.isClientOnline }, db)
       if (!blockedReason && !match?.selected) blockedReason = 'no_eligible_worker'
@@ -398,6 +398,7 @@ export function dispatchSupervisionGoal(
           '$.target_session', ?,
           '$.worker_local_agent_id', ?,
           '$.worker_client_id', ?,
+          '$.session_kind', ?,
           '$.worker_match_score', ?
         ), updated_at = unixepoch()
         WHERE id = ? AND status = 'inbox'
@@ -406,6 +407,7 @@ export function dispatchSupervisionGoal(
         worker.session_id,
         worker.local_agent_id,
         worker.client_id,
+        worker.framework,
         worker.score,
         taskId,
       )

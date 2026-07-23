@@ -176,7 +176,7 @@ export function matchSupervisionWorker(
     WHERE workspace_id = ? AND hidden = 0
   `).all(input.workspaceId) as MirroredAgentRow[]
   const taskRows = db.prepare(`
-    SELECT assigned_to, status, outcome, project_id
+    SELECT assigned_to, status, outcome, project_id, metadata
     FROM tasks
     WHERE workspace_id = ? AND assigned_to IS NOT NULL
   `).all(input.workspaceId) as Array<{
@@ -184,6 +184,7 @@ export function matchSupervisionWorker(
     status: string
     outcome: string | null
     project_id: number | null
+    metadata: string | null
   }>
 
   const candidates: SupervisionWorkerCandidate[] = []
@@ -232,7 +233,16 @@ export function matchSupervisionWorker(
       continue
     }
     const aliases = new Set([row.original_name, row.remote_name, mirror.row?.name].filter(Boolean) as string[])
-    const workerTasks = taskRows.filter((task) => aliases.has(task.assigned_to))
+    const workerTasks = taskRows.filter((task) => {
+      if (aliases.has(task.assigned_to)) return true
+      try {
+        const metadata = task.metadata ? JSON.parse(task.metadata) as Record<string, unknown> : {}
+        return String(metadata.target_session || '') === row.session_key
+          && String(metadata.worker_client_id || '') === row.client_id
+      } catch {
+        return false
+      }
+    })
     const activeTasks = workerTasks.filter((task) => ['assigned', 'in_progress', 'review', 'quality_review'].includes(task.status)).length
     if (activeTasks >= maxActiveTasks) {
       reject(row, 'worker_at_capacity')

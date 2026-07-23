@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { runMigrations } from '@/lib/migrations'
 
-const enqueueLocalSessionPrompt = vi.fn()
+const executeLocalSessionPromptAndWait = vi.fn()
 const runStewardJudgeOnEdge = vi.fn()
 const readLocalSessionTranscriptPage = vi.fn()
 
 vi.mock('@/lib/local-session-executor', () => ({
-  enqueueLocalSessionPrompt,
+  executeLocalSessionPromptAndWait,
   isLocalSessionKind: (kind: string) => ['claude-code', 'codex-cli', 'hermes'].includes(kind),
 }))
 
@@ -23,7 +23,8 @@ describe('local-mailbox human-watch assist handler', () => {
   let db: Database.Database
 
   beforeEach(() => {
-    enqueueLocalSessionPrompt.mockReset()
+    executeLocalSessionPromptAndWait.mockReset()
+    executeLocalSessionPromptAndWait.mockResolvedValue({ sessionId: 'worker-session-1', reply: '正在继续执行。' })
     runStewardJudgeOnEdge.mockReset()
     readLocalSessionTranscriptPage.mockReset()
     db = new Database(':memory:')
@@ -86,7 +87,7 @@ describe('local-mailbox human-watch assist handler', () => {
       22,
       expect.stringContaining('Worker 主动求助'),
     )
-    expect(enqueueLocalSessionPrompt).toHaveBeenCalledWith(
+    expect(executeLocalSessionPromptAndWait).toHaveBeenCalledWith(
       'codex-cli',
       'worker-session-1',
       '继续执行下一步，并在完成后报告结果。',
@@ -103,11 +104,35 @@ describe('local-mailbox human-watch assist handler', () => {
       delivered: true,
       steward_reply: '继续执行下一步，并在完成后报告结果。',
       steward_session_id: 'steward-session-1',
+      worker_reply: '正在继续执行。',
     })
 
     const outbox = db.prepare(`SELECT action, payload_json FROM local_message_outbox WHERE message_id = 'msg-assist-1'`)
       .get() as { action: string; payload_json: string }
     expect(outbox.action).toBe('ack')
     expect(JSON.parse(outbox.payload_json).result.delivered).toBe(true)
+  })
+
+  it('reports failure when the steward reply cannot be executed by the Worker', async () => {
+    readLocalSessionTranscriptPage.mockReturnValue({ messages: [] })
+    runStewardJudgeOnEdge.mockResolvedValue({ reply: '继续执行。', sessionId: 'steward-session-1' })
+    executeLocalSessionPromptAndWait.mockRejectedValueOnce(new Error('worker session unavailable'))
+    db.prepare(`
+      INSERT INTO local_message_inbox (
+        message_id, client_id, type, status, idempotency_key,
+        serial_key, payload_json, lease_owner, lease_expires_at, received_at
+      ) VALUES ('msg-assist-failed', 'edge-test', 'human_watch.assist.requested', 'pending',
+        'idem-assist-failed', 'edge-test:codex-cli:worker-session-1', ?, 'lease-1', 9999999999, 1)
+    `).run(JSON.stringify({
+      worker_session_id: 'worker-session-1',
+      session_kind: 'codex-cli',
+      steward_local_agent_id: 22,
+      prompt: '请继续',
+    }))
+
+    const { processInbox } = await import('@/lib/local-mailbox')
+    expect(await processInbox(db)).toEqual({ executed: 0, failed: 1 })
+    expect(db.prepare(`SELECT status, last_error FROM local_message_inbox WHERE message_id = ?`)
+      .get('msg-assist-failed')).toEqual({ status: 'failed', last_error: 'worker session unavailable' })
   })
 })
