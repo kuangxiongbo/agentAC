@@ -216,6 +216,35 @@ function recordAction(db: Database.Database, input: {
   )
 }
 
+function resumeBlockedGoalForWorkerRecovery(
+  db: Database.Database,
+  goal: NonNullable<ReturnType<typeof getSupervisionGoal>>,
+  action: Extract<SupervisionCorrectionAction, 'retry_task' | 'reassign_task'>,
+  reason: string,
+) {
+  const updated = db.prepare(`
+    UPDATE supervision_goals
+    SET status = 'running', version = version + 1, updated_at = unixepoch()
+    WHERE id = ? AND workspace_id = ? AND status = 'blocked'
+  `).run(goal.id, goal.workspace_id)
+  if (updated.changes !== 1) return
+
+  db.prepare(`
+    INSERT INTO supervision_events (
+      workspace_id, tenant_id, goal_id, event_type, actor_type,
+      actor_id, decision, reason, action_json, idempotency_key
+    ) VALUES (?, ?, ?, 'goal_status_changed', 'steward_agent',
+      'goal-supervisor', 'resume', ?, ?, ?)
+  `).run(
+    goal.workspace_id,
+    goal.tenant_id,
+    goal.id,
+    reason,
+    JSON.stringify({ from_status: 'blocked', to_status: 'running', correction_action: action }),
+    `goal:${goal.id}:version:${goal.version}:correction:${action}:resume`,
+  )
+}
+
 export function applySupervisionCorrection(
   input: {
     goalId: string
@@ -298,6 +327,10 @@ export function applySupervisionCorrection(
     const task = taskContext(db, goal.id, input.taskId)
     const planTask = planTaskFor(db, goal.id, goal.current_plan_version, task.logical_task_key)
     let worker: SupervisionWorkerCandidate
+
+    if (goal.status === 'blocked' && (input.action === 'retry_task' || input.action === 'reassign_task')) {
+      resumeBlockedGoalForWorkerRecovery(db, goal, input.action, input.reason)
+    }
 
     if (input.action === 'reassign_task') {
       if (task.reassignment_count >= goal.budget.max_retries_per_task) {

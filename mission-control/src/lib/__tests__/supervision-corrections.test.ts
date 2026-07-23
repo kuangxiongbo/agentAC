@@ -171,6 +171,27 @@ describe('supervision corrections', () => {
     expect(getSupervisionGoal('goal-correct', 1, db)).toMatchObject({ status: 'planning' })
   })
 
+  it('resumes a blocked goal when retrying its worker task', () => {
+    db.prepare(`UPDATE supervision_goals SET status = 'blocked' WHERE id = 'goal-correct'`).run()
+
+    applySupervisionCorrection({
+      goalId: 'goal-correct',
+      workspaceId: 1,
+      taskId,
+      action: 'retry_task',
+      reason: 'Retry after resolving the blocker',
+    }, { wakeup: () => true }, db)
+
+    expect(getSupervisionGoal('goal-correct', 1, db)).toMatchObject({ status: 'running' })
+    expect(listSupervisionGoalEvents('goal-correct', 1, db)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        event_type: 'goal_status_changed',
+        actor_type: 'steward_agent',
+        decision: 'resume',
+      }),
+    ]))
+  })
+
   it('escalates to a human when automatic reassignment has no candidate', () => {
     db.prepare(`DELETE FROM sync_agent_index WHERE local_agent_id = 12`).run()
     const eventId = observation('worker_offline_detected', 'Only worker is offline')
