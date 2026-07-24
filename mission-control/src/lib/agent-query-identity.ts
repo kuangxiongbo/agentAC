@@ -69,6 +69,40 @@ export function resolveAgentQueryIdentity(
   let config: Record<string, unknown> = {}
   try { config = JSON.parse(local.config || '{}') } catch {}
   const localAgentId = Number(config.local_agent_id)
+  const clientId = String(local.node_id || config.bridge_client_id || config.sync_client_id || '').trim() || null
+  if (clientId && Number.isFinite(localAgentId)) {
+    const linkedEdge = db.prepare(`
+      SELECT sai.*
+      FROM sync_agent_index sai
+      JOIN sync_clients sc ON sc.client_id = sai.client_id
+      WHERE sc.workspace_id = ?
+        AND sai.client_id = ?
+        AND sai.local_agent_id = ?
+      LIMIT 1
+    `).get(workspaceId, clientId, localAgentId) as any
+    if (linkedEdge) {
+      return {
+        id: linkedEdge.id,
+        name: linkedEdge.remote_name,
+        role: linkedEdge.role,
+        status: linkedEdge.status,
+        sessionKey: linkedEdge.session_key || local.session_key || null,
+        aliases: uniqueAgentAliases([
+          linkedEdge.remote_name,
+          linkedEdge.original_name,
+          linkedEdge.session_key,
+          local.name,
+          config.original_name as string,
+          local.session_key,
+        ]),
+        clientId: linkedEdge.client_id,
+        localAgentId: linkedEdge.local_agent_id,
+        syncIndexId: linkedEdge.id,
+        source: 'bridge_index',
+        record: linkedEdge,
+      }
+    }
+  }
   return {
     id: local.id,
     name: local.name,
@@ -76,7 +110,7 @@ export function resolveAgentQueryIdentity(
     status: local.status,
     sessionKey: local.session_key || null,
     aliases: uniqueAgentAliases([local.name, config.original_name as string, local.session_key]),
-    clientId: String(local.node_id || config.bridge_client_id || config.sync_client_id || '').trim() || null,
+    clientId,
     localAgentId: Number.isFinite(localAgentId) ? localAgentId : null,
     syncIndexId: null,
     source: 'agent',

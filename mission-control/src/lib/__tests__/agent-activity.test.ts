@@ -79,6 +79,31 @@ describe('agent activity aggregation', () => {
     ]))
   })
 
+  it('resolves a legacy client mirror id to the current bridge index identity', () => {
+    db.prepare(`
+      INSERT INTO agents (
+        id, name, role, status, source, node_id, session_key, config, workspace_id
+      ) VALUES (31, 'edge-a-legacy-video', 'worker', 'offline', 'client', 'edge-a',
+        'legacy-session', ?, 1)
+    `).run(JSON.stringify({ local_agent_id: 10, original_name: '宣传视频制作' }))
+    db.prepare(`
+      INSERT INTO tasks (id, title, status, assigned_to, workspace_id, created_at, updated_at)
+      VALUES (50, 'Legacy assigned task', 'in_progress', 'edge-a-legacy-video', 1, 151, 151)
+    `).run()
+
+    const result = listAgentActivity(db, { agentId: '31', workspaceId: 1, limit: 50 })
+
+    expect(result?.identity).toMatchObject({
+      source: 'bridge_index',
+      clientId: 'edge-a',
+      localAgentId: 10,
+    })
+    expect(result?.identity.aliases).toContain('edge-a-legacy-video')
+    expect(result?.activities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'task', task_id: 50, status: 'in_progress' }),
+    ]))
+  })
+
   it('does not expose an edge agent across workspaces', () => {
     const index = db.prepare(`SELECT id FROM sync_agent_index WHERE client_id = 'edge-a'`).get() as { id: number }
     expect(listAgentActivity(db, { agentId: String(index.id), workspaceId: 2, limit: 50 })).toBeNull()
