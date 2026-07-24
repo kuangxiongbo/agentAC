@@ -23,6 +23,7 @@ interface SearchResult {
   created_at: number
   panel?: string
   source?: 'command' | 'entity'
+  data_source?: 'cloud_control' | 'local_runtime'
 }
 
 const QUICK_NAV_COMMANDS: Array<{ panel: string; titleKey: string; title: string; aliases: string[] }> = [
@@ -255,7 +256,7 @@ export function HeaderBar() {
     try {
       const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=12`)
       const data = await res.json()
-      const entityResults: SearchResult[] = (data.results || []).map((r: SearchResult) => ({ ...r, source: 'entity' }))
+      const entityResults: SearchResult[] = (data.results || []).map((r: SearchResult & { source?: 'cloud_control' | 'local_runtime' }) => ({ ...r, data_source: r.source, source: 'entity' }))
       const merged = [...quickResults, ...entityResults].slice(0, 16)
       setSearchResults(merged)
       setSelectedIndex(0)
@@ -453,7 +454,12 @@ export function HeaderBar() {
                         {typeIcons[r.type] || '?'}
                       </span>
                       <div className="flex-1 min-w-0">
-                        <div className="text-xs font-medium text-foreground truncate">{r.title}</div>
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <div className="text-xs font-medium text-foreground truncate">{r.title}</div>
+                          {r.data_source === 'local_runtime' && (
+                            <span className="shrink-0 rounded border border-cyan-500/30 bg-cyan-500/10 px-1 py-0.5 text-2xs text-cyan-300">local_runtime</span>
+                          )}
+                        </div>
                         {r.subtitle && <div className="text-2xs text-muted-foreground truncate">{r.subtitle}</div>}
                         {r.excerpt && <div className="text-2xs text-muted-foreground/70 truncate mt-0.5">{r.excerpt}</div>}
                       </div>

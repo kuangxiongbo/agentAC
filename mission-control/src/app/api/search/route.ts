@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { getDatabase } from '@/lib/db'
 import { heavyLimiter } from '@/lib/rate-limit'
+import { getConnectedBridgeClients, requestBridgeClientWorkSearch } from '@/lib/bridge-server'
+import { projectedWorkTaskId } from '@/lib/work-task-projection'
+import { projectedWorkActivityId } from '@/lib/work-activity-projection'
 
 interface SearchResult {
   type: 'task' | 'agent' | 'activity' | 'audit' | 'message' | 'notification' | 'webhook' | 'pipeline'
@@ -11,6 +14,12 @@ interface SearchResult {
   excerpt?: string
   created_at: number
   relevance: number
+  source?: 'cloud_control' | 'local_runtime'
+  authority?: 'cloud' | 'local_runtime'
+  client_id?: string
+  local_entity_id?: string | number
+  agent_name?: string
+  original_agent_name?: string
 }
 
 /**
@@ -190,12 +199,55 @@ export async function GET(request: NextRequest) {
   }
 
   // Sort by relevance then recency
+  const allowedClients = new Set(
+    (db.prepare('SELECT client_id FROM sync_clients WHERE workspace_id = ?').all(workspaceId) as Array<{ client_id: string }>).map((row) => row.client_id),
+  )
+  const localTypes = typeFilter && ['task', 'activity'].includes(typeFilter) ? [typeFilter] : typeFilter ? [] : ['task', 'activity']
+  const connected = localTypes.length > 0
+    ? getConnectedBridgeClients('work_search').filter((client) => allowedClients.has(client.clientId))
+    : []
+  const remote = await Promise.allSettled(connected.map(async (client) => ({
+    client,
+    response: await requestBridgeClientWorkSearch({ clientId: client.clientId, query, types: localTypes, limit }),
+  })))
+  const localErrors: Array<{ client_id: string; error: string }> = []
+  remote.forEach((item, index) => {
+    const client = connected[index]
+    if (item.status === 'rejected') {
+      localErrors.push({ client_id: client.clientId, error: item.reason instanceof Error ? item.reason.message : String(item.reason) })
+      return
+    }
+    for (const row of item.value.response.results) {
+      const type = row.type === 'task' ? 'task' : row.type === 'activity' ? 'activity' : null
+      const localId = String(row.local_id ?? '').trim()
+      if (!type || !localId) continue
+      const originalAgentName = typeof row.agent_name === 'string' ? row.agent_name : ''
+      const mapped = originalAgentName ? db.prepare(`SELECT remote_name FROM sync_agent_index WHERE client_id = ? AND original_name = ? COLLATE NOCASE LIMIT 1`).get(client.clientId, originalAgentName) as any : null
+      results.push({
+        type,
+        id: type === 'task' ? projectedWorkTaskId(client.clientId, Number(localId)) : projectedWorkActivityId(client.clientId, localId),
+        title: String(row.title || ''), subtitle: typeof row.subtitle === 'string' ? row.subtitle : undefined,
+        excerpt: typeof row.excerpt === 'string' ? row.excerpt : undefined,
+        created_at: Number(row.created_at || 0), relevance: Number(row.relevance || 1),
+        source: 'local_runtime', authority: 'local_runtime', client_id: client.clientId,
+        local_entity_id: /^\d+$/.test(localId) ? Number(localId) : localId,
+        agent_name: mapped?.remote_name || (originalAgentName ? `${client.clientId}-${originalAgentName}` : undefined),
+        original_agent_name: originalAgentName || undefined,
+      })
+    }
+  })
+  for (const result of results) {
+    if (!result.source) { result.source = 'cloud_control'; result.authority = 'cloud' }
+  }
   results.sort((a, b) => b.relevance - a.relevance || b.created_at - a.created_at)
 
   return NextResponse.json({
     query,
     count: results.length,
     results: results.slice(0, limit),
+    authority: connected.length > 0 ? 'combined' : 'cloud',
+    local_live: connected.length > 0,
+    local_errors: localErrors,
   })
 }
 

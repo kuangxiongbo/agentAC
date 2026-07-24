@@ -215,6 +215,8 @@ type BridgePendingKind =
   | 'agent_metrics'
   | 'task_snapshot'
   | 'activity_snapshot'
+  | 'work_search'
+  | 'standup_snapshot'
   | 'agents_by_session'
   | 'agent_session_update'
   | 'steward_create'
@@ -487,6 +489,25 @@ function resolvePendingRequest(msg: any) {
       activities: Array.isArray(msg?.activities) ? msg.activities : [],
       total: typeof msg?.total === 'number' ? msg.total : 0,
       truncated: Boolean(msg?.truncated),
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
+    return true
+  }
+
+  if (pending.kind === 'work_search') {
+    pending.resolve({
+      results: Array.isArray(msg?.results) ? msg.results : [],
+      truncated: Boolean(msg?.truncated),
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
+    return true
+  }
+
+  if (pending.kind === 'standup_snapshot') {
+    pending.resolve({
+      agents: Array.isArray(msg?.agents) ? msg.agents : [],
+      tasks: Array.isArray(msg?.tasks) ? msg.tasks : [],
+      activityCounts: msg?.activityCounts && typeof msg.activityCounts === 'object' ? msg.activityCounts : {},
       source: typeof msg?.source === 'string' ? msg.source : 'bridge',
     })
     return true
@@ -851,6 +872,8 @@ export function initBridgeServer(port: number = 5002) {
             case 'agent_metrics_response':
             case 'task_snapshot_response':
             case 'activity_snapshot_response':
+            case 'work_search_response':
+            case 'standup_snapshot_response':
             case 'agents_by_session_response':
             case 'agent_session_update_response':
             case 'steward_create_response':
@@ -1187,6 +1210,50 @@ export async function requestBridgeClientActivitySnapshot(input: {
       clearTimeout(timeout)
       bridgePendingRequests.delete(requestId)
       reject(error instanceof Error ? error : new Error('Failed to send activity snapshot request'))
+    }
+  })
+}
+
+export async function requestBridgeClientWorkSearch(input: {
+  clientId: string
+  query: string
+  types?: string[]
+  limit?: number
+  timeoutMs?: number
+}): Promise<{ results: Array<Record<string, unknown>>; truncated: boolean; source: string }> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(1000, input.timeoutMs || 5000)
+  return new Promise((resolve, reject) => {
+    const timeout = makePendingTimeout(requestId, 'work_search', input.clientId, timeoutMs, reject)
+    bridgePendingRequests.set(requestId, { requestId, clientId: input.clientId, connectionId, timeout, kind: 'work_search', resolve: resolve as (value: unknown) => void, reject })
+    try {
+      ws.send(JSON.stringify({ type: 'work_search_request', requestId, query: input.query, types: input.types, limit: Math.max(1, Math.min(input.limit || 30, 100)) }))
+    } catch (error) {
+      clearTimeout(timeout); bridgePendingRequests.delete(requestId)
+      reject(error instanceof Error ? error : new Error('Failed to send work search request'))
+    }
+  })
+}
+
+export async function requestBridgeClientStandupSnapshot(input: {
+  clientId: string
+  startAt: number
+  endAt: number
+  agentNames?: string[]
+  timeoutMs?: number
+}): Promise<{ agents: Array<Record<string, unknown>>; tasks: Array<Record<string, unknown>>; activityCounts: Record<string, number>; source: string }> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(1000, input.timeoutMs || 5000)
+  return new Promise((resolve, reject) => {
+    const timeout = makePendingTimeout(requestId, 'standup_snapshot', input.clientId, timeoutMs, reject)
+    bridgePendingRequests.set(requestId, { requestId, clientId: input.clientId, connectionId, timeout, kind: 'standup_snapshot', resolve: resolve as (value: unknown) => void, reject })
+    try {
+      ws.send(JSON.stringify({ type: 'standup_snapshot_request', requestId, startAt: input.startAt, endAt: input.endAt, agentNames: input.agentNames }))
+    } catch (error) {
+      clearTimeout(timeout); bridgePendingRequests.delete(requestId)
+      reject(error instanceof Error ? error : new Error('Failed to send standup snapshot request'))
     }
   })
 }

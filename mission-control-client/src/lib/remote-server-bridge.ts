@@ -349,6 +349,39 @@ async function getLocalActivitySnapshot(limitInput: unknown): Promise<{
   return { activities, total, truncated: total > activities.length }
 }
 
+function getLocalWorkSearch(queryInput: unknown, typesInput: unknown, limitInput: unknown) {
+  const query = typeof queryInput === 'string' ? queryInput.trim() : ''
+  if (query.length < 2) throw new Error('Query must be at least 2 characters')
+  const limit = Math.max(1, Math.min(Number(limitInput) || 30, 100))
+  const types = new Set(Array.isArray(typesInput) ? typesInput.filter((value): value is string => typeof value === 'string') : [])
+  const include = (type: string) => types.size === 0 || types.has(type)
+  const db = getDatabase()
+  const like = `%${query}%`
+  const results: Array<Record<string, unknown>> = []
+  if (include('task')) {
+    const rows = db.prepare(`SELECT id, title, description, status, assigned_to, created_at, updated_at FROM tasks WHERE workspace_id = 1 AND (title LIKE ? OR description LIKE ? OR assigned_to LIKE ?) ORDER BY updated_at DESC LIMIT ?`).all(like, like, like, limit) as any[]
+    for (const row of rows) results.push({ type: 'task', local_id: row.id, title: row.title, subtitle: `${row.status}${row.assigned_to ? ` · ${row.assigned_to}` : ''}`, excerpt: String(row.description || '').slice(0, 240), agent_name: row.assigned_to, created_at: row.created_at, updated_at: row.updated_at, relevance: String(row.title || '').toLowerCase().includes(query.toLowerCase()) ? 2 : 1 })
+  }
+  if (include('activity')) {
+    const rows = db.prepare(`SELECT id, actor, description, created_at FROM activities WHERE workspace_id = 1 AND (description LIKE ? OR actor LIKE ?) ORDER BY created_at DESC LIMIT ?`).all(like, like, limit) as any[]
+    for (const row of rows) results.push({ type: 'activity', local_id: row.id, title: row.description, subtitle: `by ${row.actor}`, agent_name: row.actor, created_at: row.created_at, relevance: 1 })
+  }
+  results.sort((a, b) => Number(b.relevance) - Number(a.relevance) || Number(b.created_at) - Number(a.created_at))
+  return { results: results.slice(0, limit), truncated: results.length > limit }
+}
+
+function getLocalStandupSnapshot(startInput: unknown, endInput: unknown, agentNamesInput: unknown) {
+  const startAt = Number(startInput); const endAt = Number(endInput)
+  if (!Number.isInteger(startAt) || !Number.isInteger(endAt) || startAt <= 0 || endAt < startAt) throw new Error('Invalid standup range')
+  const names = Array.isArray(agentNamesInput) ? agentNamesInput.filter((value): value is string => typeof value === 'string' && value.trim().length > 0) : []
+  const db = getDatabase()
+  const placeholders = names.map(() => '?').join(',')
+  const agents = db.prepare(`SELECT id, name, role, status, last_seen, last_activity FROM agents WHERE workspace_id = 1 AND hidden = 0${names.length ? ` AND name IN (${placeholders})` : ''} ORDER BY name`).all(...names) as any[]
+  const tasks = db.prepare(`SELECT id, title, status, priority, assigned_to, created_at, updated_at, due_date, metadata FROM tasks WHERE workspace_id = 1${names.length ? ` AND assigned_to IN (${placeholders})` : ''} ORDER BY updated_at DESC`).all(...names) as any[]
+  const activityRows = db.prepare(`SELECT actor, COUNT(*) AS count FROM activities WHERE workspace_id = 1 AND created_at BETWEEN ? AND ?${names.length ? ` AND actor IN (${placeholders})` : ''} GROUP BY actor`).all(startAt, endAt, ...names) as Array<{ actor: string; count: number }>
+  return { agents, tasks: tasks.map((task) => ({ ...task, metadata: parseBridgeJsonValue(task.metadata, {}) })), activityCounts: Object.fromEntries(activityRows.map((row) => [row.actor, row.count])) }
+}
+
 function getLocalAgentDetail(localAgentId: number): Record<string, unknown> | null {
   try {
     const db = getDatabase()
@@ -859,6 +892,20 @@ async function handleActivitySnapshotRequest(message: any): Promise<void> {
       error: err?.message || 'Failed to read local activity snapshot',
     })
   }
+}
+
+function handleWorkSearchRequest(message: any): void {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  if (!requestId) return
+  try { safeSend(state.ws, { type: 'work_search_response', requestId, ok: true, ...getLocalWorkSearch(message.query, message.types, message.limit), source: 'local_runtime' }) }
+  catch (err: any) { safeSend(state.ws, { type: 'work_search_response', requestId, ok: false, error: err?.message || 'Failed to search local work' }) }
+}
+
+function handleStandupSnapshotRequest(message: any): void {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  if (!requestId) return
+  try { safeSend(state.ws, { type: 'standup_snapshot_response', requestId, ok: true, ...getLocalStandupSnapshot(message.startAt, message.endAt, message.agentNames), source: 'local_runtime' }) }
+  catch (err: any) { safeSend(state.ws, { type: 'standup_snapshot_response', requestId, ok: false, error: err?.message || 'Failed to build local standup' }) }
 }
 
 function safeSend(ws: WebSocket | null, data: object): boolean {
@@ -1730,6 +1777,12 @@ function handleMessage(raw: string): void {
         safeLog('error', '[RemoteBridge] activity_snapshot_request handler failed', { err: e }),
       )
       break
+    case 'work_search_request':
+      handleWorkSearchRequest(msg)
+      break
+    case 'standup_snapshot_request':
+      handleStandupSnapshotRequest(msg)
+      break
 
     case 'agents_by_session_request':
       handleAgentsBySessionRequest(msg)
@@ -1915,6 +1968,8 @@ async function connect(): Promise<void> {
         'agent_metrics',
         'task_snapshot',
         'activity_snapshot',
+        'work_search',
+        'standup_snapshot',
         'agents_by_session',
         'agent_session_update',
         'heartbeat',

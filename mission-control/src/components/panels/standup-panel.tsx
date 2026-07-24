@@ -27,6 +27,7 @@ interface StandupReport {
       status: string
       last_seen?: number
       last_activity?: string
+      source?: 'cloud_control' | 'local_runtime'
     }
     completedToday: Array<{
       id: number
@@ -420,7 +421,12 @@ export function StandupPanel() {
                   <div key={report.agent.name} className="bg-card rounded-lg p-4 border border-border">
                     <div className="flex justify-between items-start mb-4">
                       <div>
-                        <h5 className="font-semibold text-foreground">{report.agent.name}</h5>
+                        <div className="flex items-center gap-2">
+                          <h5 className="font-semibold text-foreground">{report.agent.name}</h5>
+                          {report.agent.source === 'local_runtime' && (
+                            <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-2xs text-cyan-300">local_runtime</span>
+                          )}
+                        </div>
                         <p className="text-muted-foreground text-sm">{report.agent.role}</p>
                       </div>
                       <div className="text-right text-sm">

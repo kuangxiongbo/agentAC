@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDatabase, db_helpers } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
 import { logger } from '@/lib/logger';
+import { getConnectedBridgeClients, requestBridgeClientStandupSnapshot } from '@/lib/bridge-server';
+import { projectedWorkTaskId } from '@/lib/work-task-projection';
 
 /**
  * POST /api/standup/generate - Generate daily standup report
@@ -37,6 +39,23 @@ export async function POST(request: NextRequest) {
     agentQuery += ' ORDER BY name';
     
     const agents = db.prepare(agentQuery).all(...agentParams) as any[];
+
+    const allowedClients = new Set(
+      (db.prepare('SELECT client_id FROM sync_clients WHERE workspace_id = ?').all(workspaceId) as Array<{ client_id: string }>).map((row) => row.client_id),
+    );
+    const connectedClients = getConnectedBridgeClients('standup_snapshot').filter((client) => allowedClients.has(client.clientId));
+    const edgeSnapshots = await Promise.allSettled(connectedClients.map(async (client) => ({
+      client,
+      snapshot: await requestBridgeClientStandupSnapshot({
+        clientId: client.clientId,
+        startAt: startOfDay,
+        endAt: endOfDay,
+        agentNames: Array.isArray(specificAgents) ? specificAgents.map((name) => {
+          const mapped = db.prepare(`SELECT original_name FROM sync_agent_index WHERE client_id = ? AND remote_name = ? COLLATE NOCASE LIMIT 1`).get(client.clientId, name) as any;
+          return String(mapped?.original_name || name);
+        }) : undefined,
+      }),
+    })));
     
     // Prepare statements once (avoids N+1 per agent)
     const completedTasksStmt = db.prepare(`
@@ -97,7 +116,7 @@ export async function POST(request: NextRequest) {
     `);
 
     // Generate standup data for each agent
-    const standupData = agents.map(agent => {
+    let standupData = agents.map(agent => {
       const completedTasks = completedTasksStmt.all(agent.name, workspaceId, startOfDay, endOfDay);
       const inProgressTasks = inProgressTasksStmt.all(agent.name, workspaceId);
       const assignedTasks = assignedTasksStmt.all(agent.name, workspaceId);
@@ -125,6 +144,43 @@ export async function POST(request: NextRequest) {
         }
       };
     });
+
+    const edgeErrors: Array<{ client_id: string; error: string }> = [];
+    const localReports: any[] = [];
+    edgeSnapshots.forEach((settled, index) => {
+      const client = connectedClients[index];
+      if (settled.status === 'rejected') {
+        edgeErrors.push({ client_id: client.clientId, error: settled.reason instanceof Error ? settled.reason.message : String(settled.reason) });
+        return;
+      }
+      const { snapshot } = settled.value;
+      for (const localAgent of snapshot.agents) {
+        const originalName = String(localAgent.name || '').trim();
+        if (!originalName) continue;
+        const mapped = db.prepare(`SELECT remote_name FROM sync_agent_index WHERE client_id = ? AND original_name = ? COLLATE NOCASE LIMIT 1`).get(client.clientId, originalName) as any;
+        const remoteName = mapped?.remote_name || `${client.clientId}-${originalName}`;
+        const ownedTasks: any[] = snapshot.tasks.filter((task) => String(task.assigned_to || '').toLowerCase() === originalName.toLowerCase()).map((task) => ({
+          ...task,
+          id: projectedWorkTaskId(client.clientId, Number(task.id)),
+          local_task_id: Number(task.id),
+          source: 'local_runtime',
+          authority: 'local_runtime',
+          bridge_client_id: client.clientId,
+        }));
+        const completedToday = ownedTasks.filter((task) => task.status === 'done' && Number(task.updated_at) >= startOfDay && Number(task.updated_at) <= endOfDay);
+        const inProgress = ownedTasks.filter((task) => task.status === 'in_progress');
+        const assigned = ownedTasks.filter((task) => task.status === 'assigned');
+        const review = ownedTasks.filter((task) => task.status === 'review' || task.status === 'quality_review');
+        const blocked = ownedTasks.filter((task) => task.status !== 'done' && (task.priority === 'urgent' || String(JSON.stringify(task.metadata || {})).includes('blocked')));
+        localReports.push({
+          agent: { name: remoteName, original_name: originalName, role: localAgent.role, status: localAgent.status, last_seen: localAgent.last_seen, last_activity: localAgent.last_activity, source: 'local_runtime', bridge_client_id: client.clientId },
+          completedToday, inProgress, assigned, review, blocked,
+          activity: { actionCount: Number(snapshot.activityCounts[originalName] || 0), commentsCount: 0 },
+        });
+      }
+    });
+    const localNames = new Set(localReports.map((report) => report.agent.name));
+    standupData = [...standupData.filter((report) => !localNames.has(report.agent.name)), ...localReports].sort((a, b) => a.agent.name.localeCompare(b.agent.name));
     
     // Generate summary statistics
     const totalCompleted = standupData.reduce((sum, agent) => sum + agent.completedToday.length, 0);
@@ -149,7 +205,7 @@ export async function POST(request: NextRequest) {
     
     // Get overdue tasks across all agents
     const now = Math.floor(Date.now() / 1000);
-    const overdueTasks = db.prepare(`
+    const cloudOverdueTasks = db.prepare(`
       SELECT t.*, a.name as agent_name
       FROM tasks t
       LEFT JOIN agents a ON t.assigned_to = a.name
@@ -158,7 +214,18 @@ export async function POST(request: NextRequest) {
       AND t.workspace_id = ?
       AND t.status NOT IN ('done')
       ORDER BY t.due_date ASC
-    `).all(now, workspaceId);
+    `).all(now, workspaceId) as any[];
+    const localOverdueTasks = edgeSnapshots.flatMap((settled) => settled.status === 'fulfilled'
+      ? settled.value.snapshot.tasks.filter((task) => Number(task.due_date) > 0 && Number(task.due_date) < now && task.status !== 'done').map((task) => ({
+          ...task,
+          id: projectedWorkTaskId(settled.value.client.clientId, Number(task.id)),
+          local_task_id: Number(task.id),
+          agent_name: String(task.assigned_to || ''),
+          source: 'local_runtime',
+          bridge_client_id: settled.value.client.clientId,
+        }))
+      : []);
+    const overdueTasks = [...cloudOverdueTasks, ...localOverdueTasks];
     
     const standupReport = {
       date: targetDate,
@@ -177,6 +244,12 @@ export async function POST(request: NextRequest) {
       teamAccomplishments: teamAccomplishments.slice(0, 10), // Top 10 recent completions
       teamBlockers,
       overdueTasks
+      ,sources: {
+        authority: connectedClients.length > 0 ? 'combined' : 'cloud',
+        local_live: connectedClients.length > 0,
+        clients: connectedClients.map((client) => ({ client_id: client.clientId, client_label: client.clientLabel })),
+        errors: edgeErrors,
+      }
     };
 
     // Persist standup report

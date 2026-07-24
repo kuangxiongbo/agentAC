@@ -18,6 +18,21 @@ class MockWebSocket {
 }
 
 const dbPrepare = vi.fn((sql: string) => {
+  if (sql.includes('SELECT id, title, description, status, assigned_to') && sql.includes('FROM tasks WHERE')) {
+    return { all: vi.fn(() => [{ id: 7, title: 'Local task', description: 'Run locally', status: 'in_progress', assigned_to: 'Worker', created_at: 10, updated_at: 20 }]) }
+  }
+  if (sql.includes('SELECT id, actor, description, created_at FROM activities')) {
+    return { all: vi.fn(() => [{ id: 9, actor: 'Worker', description: 'Local task moved', created_at: 20 }]) }
+  }
+  if (sql.includes('SELECT id, name, role, status, last_seen, last_activity FROM agents')) {
+    return { all: vi.fn(() => [{ id: 45, name: 'Worker', role: 'worker', status: 'busy', last_seen: 20, last_activity: 'Local task' }]) }
+  }
+  if (sql.includes('SELECT id, title, status, priority, assigned_to')) {
+    return { all: vi.fn(() => [{ id: 7, title: 'Local task', status: 'in_progress', priority: 'high', assigned_to: 'Worker', created_at: 10, updated_at: 20, due_date: null, metadata: '{}' }]) }
+  }
+  if (sql.includes('SELECT actor, COUNT(*) AS count FROM activities')) {
+    return { all: vi.fn(() => [{ actor: 'Worker', count: 2 }]) }
+  }
   if (sql.includes('SELECT * FROM agents WHERE id = ?')) {
     return {
       get: vi.fn(() => ({
@@ -318,6 +333,28 @@ describe('remote-server-bridge permission steward auto decision', () => {
         expect.objectContaining({ id: 9, type: 'task_updated', data: { status: 'in_progress' } }),
         expect.objectContaining({ type: 'session_activity', actor: 'Worker' }),
       ]),
+    }))
+  })
+
+  it('filters local Work search over the bridge protocol', async () => {
+    const mod = await import('@/lib/remote-server-bridge')
+    ;(mod as any).__testSetBridgeSocket?.(new MockWebSocket())
+    ;(mod as any).__testHandleBridgeMessage?.(JSON.stringify({ type: 'work_search_request', requestId: 'search-1', query: 'Local', types: ['task', 'activity'], limit: 20 }))
+    expect(safeSendCalls).toContainEqual(expect.objectContaining({
+      type: 'work_search_response', requestId: 'search-1', ok: true, source: 'local_runtime',
+      results: expect.arrayContaining([expect.objectContaining({ type: 'task', local_id: 7, agent_name: 'Worker' })]),
+    }))
+  })
+
+  it('returns a local standup snapshot over the bridge protocol', async () => {
+    const mod = await import('@/lib/remote-server-bridge')
+    ;(mod as any).__testSetBridgeSocket?.(new MockWebSocket())
+    ;(mod as any).__testHandleBridgeMessage?.(JSON.stringify({ type: 'standup_snapshot_request', requestId: 'standup-1', startAt: 1, endAt: 100 }))
+    expect(safeSendCalls).toContainEqual(expect.objectContaining({
+      type: 'standup_snapshot_response', requestId: 'standup-1', ok: true, source: 'local_runtime',
+      agents: [expect.objectContaining({ name: 'Worker' })],
+      tasks: [expect.objectContaining({ id: 7, metadata: {} })],
+      activityCounts: { Worker: 2 },
     }))
   })
 
