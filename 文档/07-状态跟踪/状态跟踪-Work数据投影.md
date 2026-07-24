@@ -6,8 +6,8 @@
 |---|---|---|---|
 | 0 | Work 详情本地主数据、云端监督合并、任务汇总 | 已完成 | Center/Runtime 2.1.74；主详情与各标签的新旧 Agent ID 均须实时 Bridge |
 | 1 | 全局任务投影与 Dashboard | 已完成 | 本地新建/更新/删除在云端正确展示 |
-| 2 | 全局活动投影 | 进行中 | 本地会话/任务里程碑进入云端活动流 |
-| 3 | Agent 指标投影 | 待开始 | 诊断/归因/成本/评估与本地一致 |
+| 2 | 全局活动投影 | 已完成 | 本地会话/任务里程碑进入云端活动流 |
+| 3 | Agent 指标投影 | 进行中 | 诊断/归因/成本/评估与本地一致 |
 | 4 | 搜索投影与站会 | 待开始 | 搜索和站会可定位本地 Work 事实 |
 | 5 | Work 资源可靠写回 | 待开始 | 云端命令经本地校验/ACK 后生效 |
 | 6 | 离线快照、来源标识和端到端回归 | 待开始 | 断线/重连/旧客户端/回滚均通过 |
@@ -38,3 +38,15 @@
 - 生产更新：本地任务更新为 `in_progress` 后，云端约 `145ms` 内同步状态和汇总。
 - 生产删除：本地删除后，云端约 `67ms` 内移除，Dashboard/客户端本地任务总数恢复为 0，无测试数据残留。
 - 生产 UI：临时任务 `UI-E2E-2.1.75-local-runtime` 可在云端任务板打开详情，显示 `local_runtime` 来源且不提供编辑/删除按钮；清理后页面确认任务消失，既有云端监督任务未受影响。
+
+## 第 2 项验收记录
+
+- 版本：Center/Runtime `2.1.76`，Agent 筛选兼容修复 `2.1.77`，Tray `3.0.10`
+- Git：`7d4416c feat(activity): project edge work into cloud feed`；`aa7a0ad fix(activity): filter bridge agents by original name`
+- 镜像：`agentcenter:2.1.77` 与 `latest`，digest `sha256:aa884aef95580e0c56a660b9b0bc7e9e41ae72ff1937b1c859a30641abecd1a1`，生产容器已健康运行。
+- Runtime：`client-runtime-2.1.77-darwin-aarch64.zip`，SHA-256 `7e444a8045c33947198c7f63ff49a5851740e0789de620eb877a4e63e3944a99`；Tray DMG SHA-256 `f84890223051a2d07a27eb16fcb69f7a661c43964ff4b54a3a660733b2cec610`。
+- 自测：Center `1160/1160`、Edge `1002/1002`；两端 typecheck、聚焦 lint、生产构建、Runtime 干净目录启动和发布面校验均通过。
+- 生产协议：Bridge capability 包含 `activity_snapshot`，云端合并本地 `activities` 与 CLI `session_activity`，保留 `source=local_runtime`、设备和客户端身份，且本地仍为权威数据源。
+- 生产延迟：任务更新约 `1792ms` 可见，删除约 `2728ms` 可见；稳定负 ID、分页、统计、会话里程碑和 SSE 刷新均通过。
+- 生产 Runtime：托盘从公网清单获取 `2.1.77`，完成 39MB 下载、原子替换和重启；`package.json`、`config.json`、`bootstrap.json` 与 `5101/api/status` 均为 `2.1.77`。
+- 生产 UI：活动流显示本地会话及任务里程碑；点击云端 Agent `mc-edge-a8901a06c732-安全专家` 时，实际请求为 `/api/activities?actor=安全专家&limit=50&offset=0`，正确返回 2 条本地 Agent 完成事件，无前缀名不匹配问题。
