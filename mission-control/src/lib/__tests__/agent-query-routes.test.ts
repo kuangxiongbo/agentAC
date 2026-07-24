@@ -102,6 +102,27 @@ describe('bridge agent query routes', () => {
       })),
     }))
 
+    db.prepare(`
+      INSERT INTO agents (
+        id, name, role, status, source, node_id, session_key, config, workspace_id
+      ) VALUES (31, 'edge-a-legacy-video', 'worker', 'offline', 'client', 'edge-a',
+        'legacy-session', ?, 1)
+    `).run(JSON.stringify({ local_agent_id: 10, original_name: '宣传视频制作' }))
+
+    const detailRoute = await import('@/app/api/agents/[id]/route')
+    const detailBody = await (await detailRoute.GET(
+      new NextRequest('http://localhost/api/agents/31'),
+      { params: Promise.resolve({ id: '31' }) },
+    )).json()
+    expect(detailBody.agent).toMatchObject({
+      id: syncIndexId,
+      source: 'bridge_index',
+      bridge_client_id: 'edge-a',
+      edge_local_agent_id: 10,
+      bridge_online: true,
+      detail_live: true,
+    })
+
     const params = { params: Promise.resolve({ id: String(syncIndexId) }) }
     const tasksRoute = await import('@/app/api/agents/[id]/tasks/route')
     const tasksBody = await (await tasksRoute.GET(

@@ -11,6 +11,7 @@ import {
   mergeBridgeIndexIntoConfig,
 } from '@/lib/sync-agent-index'
 import { isBridgeClientOnline, requestBridgeClientAgentDetail } from '@/lib/bridge-server'
+import { resolveAgentQueryIdentity } from '@/lib/agent-query-identity'
 import {
   deleteHumanWatchStewardOnEdge,
   resolveBridgeStewardHumanWatch,
@@ -32,87 +33,80 @@ export async function GET(
     const { id } = await params
     const workspaceId = auth.user.workspace_id ?? 1;
 
-    const numericId = Number(id)
-    if (!isNaN(numericId)) {
-      const indexRow = getBridgeAgentIndexById(numericId)
-      if (indexRow) {
-        const bridgeOnline = isBridgeClientOnline(indexRow.client_id)
-        if (bridgeOnline) {
-          try {
-            const remote = await requestBridgeClientAgentDetail({
-              clientId: indexRow.client_id,
-              localAgentId: indexRow.local_agent_id,
-            })
-            if (remote.agent) {
-              const remoteAgent = remote.agent as Record<string, unknown>
-              let config: Record<string, unknown> = {}
-              if (remoteAgent.config && typeof remoteAgent.config === 'object') {
-                config = remoteAgent.config as Record<string, unknown>
-              } else if (typeof remoteAgent.config === 'string') {
-                try {
-                  config = JSON.parse(remoteAgent.config) as Record<string, unknown>
-                } catch {
-                  config = {}
-                }
-              }
-              return NextResponse.json({
-                agent: {
-                  ...remoteAgent,
-                  id: indexRow.id,
-                  name: indexRow.remote_name,
-                  source: 'bridge_index',
-                  node_id: indexRow.client_id,
-                  edge_local_agent_id: indexRow.local_agent_id,
-                  bridge_client_id: indexRow.client_id,
-                  config: enrichAgentConfigFromWorkspace(
-                    mergeBridgeIndexIntoConfig(config, indexRow),
-                  ),
-                  bridge_online: true,
-                  remote: true,
-                  detail_live: true,
-                },
-              })
-            }
-          } catch (bridgeErr) {
-            const msg = bridgeErr instanceof Error ? bridgeErr.message : String(bridgeErr)
-            if (/not connected|socket unavailable|timed out/i.test(msg)) {
-              return NextResponse.json({
-                error:
-                  '边缘客户端未通过 Bridge 连接，无法读取智能体详情。请保持本地客户端运行并已连上中心 Bridge。',
-                code: 'bridge_offline',
-                client_id: indexRow.client_id,
-              }, { status: 503 })
-            }
-            throw bridgeErr
-          }
-        }
-
-        const cached = bridgeIndexRowToAgentListItem(indexRow, false)
-        return NextResponse.json({
-          agent: {
-            ...cached,
-            config: enrichAgentConfigFromWorkspace(cached.config as Record<string, unknown>),
-            bridge_online: false,
-            detail_cached: true,
-          },
-        })
-      }
-    }
-
-    let agent
-    if (isNaN(numericId)) {
-      agent = db.prepare('SELECT * FROM agents WHERE name = ? AND workspace_id = ?').get(id, workspaceId)
-    } else {
-      agent = db.prepare('SELECT * FROM agents WHERE id = ? AND workspace_id = ?').get(numericId, workspaceId)
-    }
-
-    if (!agent) {
+    const identity = resolveAgentQueryIdentity(db, id, workspaceId)
+    if (!identity) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
     }
+    if (identity.source === 'bridge_index') {
+      const indexRow = identity.record as any
+      const bridgeOnline = isBridgeClientOnline(indexRow.client_id)
+      if (bridgeOnline) {
+        try {
+          const remote = await requestBridgeClientAgentDetail({
+            clientId: indexRow.client_id,
+            localAgentId: indexRow.local_agent_id,
+          })
+          if (remote.agent) {
+            const remoteAgent = remote.agent as Record<string, unknown>
+            let config: Record<string, unknown> = {}
+            if (remoteAgent.config && typeof remoteAgent.config === 'object') {
+              config = remoteAgent.config as Record<string, unknown>
+            } else if (typeof remoteAgent.config === 'string') {
+              try {
+                config = JSON.parse(remoteAgent.config) as Record<string, unknown>
+              } catch {
+                config = {}
+              }
+            }
+            return NextResponse.json({
+              agent: {
+                ...remoteAgent,
+                id: indexRow.id,
+                name: indexRow.remote_name,
+                source: 'bridge_index',
+                node_id: indexRow.client_id,
+                edge_local_agent_id: indexRow.local_agent_id,
+                bridge_client_id: indexRow.client_id,
+                config: enrichAgentConfigFromWorkspace(
+                  mergeBridgeIndexIntoConfig(config, indexRow),
+                ),
+                bridge_online: true,
+                remote: true,
+                detail_live: true,
+              },
+            })
+          }
+        } catch (bridgeErr) {
+          const msg = bridgeErr instanceof Error ? bridgeErr.message : String(bridgeErr)
+          if (/not connected|socket unavailable|timed out/i.test(msg)) {
+            return NextResponse.json({
+              error:
+                '边缘客户端未通过 Bridge 连接，无法读取智能体详情。请保持本地客户端运行并已连上中心 Bridge。',
+              code: 'bridge_offline',
+              client_id: indexRow.client_id,
+            }, { status: 503 })
+          }
+          throw bridgeErr
+        }
+      }
 
+      const cached = bridgeIndexRowToAgentListItem(indexRow, false)
+      return NextResponse.json({
+        agent: {
+          ...cached,
+          config: enrichAgentConfigFromWorkspace(cached.config as Record<string, unknown>),
+          bridge_online: false,
+          detail_cached: true,
+        },
+      })
+    }
+
+    const agent = identity.record
     const parsed = {
-      ...(agent as any),
-      config: enrichAgentConfigFromWorkspace((agent as any).config ? JSON.parse((agent as any).config) : {}),
+      ...agent,
+      config: enrichAgentConfigFromWorkspace(
+        typeof agent.config === 'string' ? JSON.parse(agent.config || '{}') : (agent.config || {}),
+      ),
     }
 
     return NextResponse.json({ agent: parsed })
