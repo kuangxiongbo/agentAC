@@ -75,7 +75,14 @@ const INSECURE_PASSWORDS = new Set([
   'admin', 'password', 'change-me-on-first-login', 'changeme', 'testpass123',
 ])
 
-export function runSecurityScan(): ScanResult {
+const SECURITY_SCAN_CACHE_TTL_MS = 60_000
+let securityScanCache: { result: ScanResult; ts: number } | null = null
+
+export function runSecurityScan(options: { force?: boolean } = {}): ScanResult {
+  if (!options.force && securityScanCache && Date.now() - securityScanCache.ts < SECURITY_SCAN_CACHE_TTL_MS) {
+    return securityScanCache.result
+  }
+
   const credentials = scanCredentials()
   const network = scanNetwork()
   const openclaw = scanOpenClaw()
@@ -97,7 +104,9 @@ export function runSecurityScan(): ScanResult {
   else if (score >= 40) overall = 'needs-attention'
   else overall = 'at-risk'
 
-  return { overall, score, timestamp: Date.now(), categories }
+  const result = { overall, score, timestamp: Date.now(), categories }
+  securityScanCache = { result, ts: Date.now() }
+  return result
 }
 
 export function readSystemUptimeSeconds(): number | null {
@@ -122,7 +131,7 @@ function scoreCategory(checks: Check[]): Category {
 // All exec calls below use only hardcoded string literals — no user input.
 // ---------------------------------------------------------------------------
 
-function tryExec(cmd: string, timeout = 5000): string | null {
+function tryExec(cmd: string, timeout = 1000): string | null {
   try {
     return execSync(cmd, { encoding: 'utf-8', timeout, stdio: ['pipe', 'pipe', 'pipe'] }).trim()
   } catch {

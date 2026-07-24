@@ -151,7 +151,7 @@ export async function POST(request: NextRequest) {
     logger.info({ action, fixScope, force, dryRun, applied: applied.length, skipped: skipped.length }, 'Agent security scan+fix')
 
     // Re-scan after fixes to get updated score
-    const postFixScan = fixIds.length > 0 ? runSecurityScan() : scanResult
+    const postFixScan = fixIds.length > 0 ? runSecurityScan({ force: true }) : scanResult
 
     return NextResponse.json({
       scan: {
