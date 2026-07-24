@@ -7,8 +7,8 @@
 | 0 | Work 详情本地主数据、云端监督合并、任务汇总 | 已完成 | Center/Runtime 2.1.74；主详情与各标签的新旧 Agent ID 均须实时 Bridge |
 | 1 | 全局任务投影与 Dashboard | 已完成 | 本地新建/更新/删除在云端正确展示 |
 | 2 | 全局活动投影 | 已完成 | 本地会话/任务里程碑进入云端活动流 |
-| 3 | Agent 指标投影 | 进行中 | 诊断/归因/成本/评估与本地一致 |
-| 4 | 搜索投影与站会 | 待开始 | 搜索和站会可定位本地 Work 事实 |
+| 3 | Agent 指标投影 | 已完成 | 诊断/归因/成本/评估与本地一致 |
+| 4 | 搜索投影与站会 | 进行中 | 搜索和站会可定位本地 Work 事实 |
 | 5 | Work 资源可靠写回 | 待开始 | 云端命令经本地校验/ACK 后生效 |
 | 6 | 离线快照、来源标识和端到端回归 | 待开始 | 断线/重连/旧客户端/回滚均通过 |
 
@@ -50,3 +50,14 @@
 - 生产延迟：任务更新约 `1792ms` 可见，删除约 `2728ms` 可见；稳定负 ID、分页、统计、会话里程碑和 SSE 刷新均通过。
 - 生产 Runtime：托盘从公网清单获取 `2.1.77`，完成 39MB 下载、原子替换和重启；`package.json`、`config.json`、`bootstrap.json` 与 `5101/api/status` 均为 `2.1.77`。
 - 生产 UI：活动流显示本地会话及任务里程碑；点击云端 Agent `mc-edge-a8901a06c732-安全专家` 时，实际请求为 `/api/activities?actor=安全专家&limit=50&offset=0`，正确返回 2 条本地 Agent 完成事件，无前缀名不匹配问题。
+
+## 第 3 项验收记录
+
+- 版本：Center/Runtime `2.1.78`，生产延迟修复 `2.1.79`，Tray `3.0.10`。
+- Git：`0275837 feat(metrics): project edge agent metrics to center`；`356bf96 fix(metrics): bound security audit scan latency`。
+- 镜像：`agentcenter:2.1.79` 与 `latest`，`linux/amd64` digest `sha256:925202d13866064b5c4f702478d7fad1ef0bb3b4392d92728f3ac7491cb50d05`。
+- Runtime：`client-runtime-2.1.79-darwin-aarch64.zip`，SHA-256 `1b0458286df6369b533328c740c096eb4fd023fdaac172185ee978941d38c0f8`；Tray DMG SHA-256 `7379be6c1366888edc787d6bc31ec1f9265cbdd19ee068fdbddb21b33d639000`。
+- 自测：Center `1164/1164`，Edge 指标 Bridge `9/9`，安全扫描聚焦 `5/5`；两端 typecheck、生产构建、Runtime 干净解压启动和发布面门禁通过。
+- 生产诊断/归因：云端 Agent `305652` 实时解析本地 Agent `6` `安全专家`，`authority=local_runtime`、`local_live=true`，诊断活动数和归因成本结构正确。
+- 生产评估/成本：`/api/agents/evals?timeframe=day` 返回 `200/authority=combined`；`stats/trends/by-agent/task-costs/session-costs` 全部返回 `200`，空数据场景不再返回 400。
+- 生产 UI：`v2.1.79` 安全审计页正常显示 Agent 评估仪表板，热访问两个聚合请求约 `1.8s`；成本页四个聚合请求约 `0.81s`，页面无 400、空白或持续加载。
