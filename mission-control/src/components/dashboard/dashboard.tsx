@@ -1,10 +1,11 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useTranslations } from 'next-intl'
 import { useAgentCenterStore } from '@/store'
 import { useNavigateToPanel } from '@/lib/navigation'
 import { useSmartPoll } from '@/lib/use-smart-poll'
+import { TASK_PROJECTION_UPDATED_EVENT } from '@/lib/use-server-events'
 import { SignalPill, getLocalOsStatus, getProviderHealth, getMcHealth } from './widget-primitives'
 import { OnboardingChecklistWidget } from './widgets/onboarding-checklist-widget'
 import { EmptyStateLaunchpad } from './empty-state-launchpad'
@@ -122,6 +123,12 @@ export function Dashboard() {
   }, [isLocal, setSessions])
 
   useSmartPoll(loadDashboard, isLocal ? 15000 : 60000, { pauseWhenConnected: true })
+
+  useEffect(() => {
+    const refresh = () => loadDashboard()
+    window.addEventListener(TASK_PROJECTION_UPDATED_EVENT, refresh)
+    return () => window.removeEventListener(TASK_PROJECTION_UPDATED_EVENT, refresh)
+  }, [loadDashboard])
 
   // Computed values
   const isSystemLoading = loading.system && !systemStats

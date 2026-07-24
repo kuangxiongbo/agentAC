@@ -10,6 +10,7 @@ import { normalizeTaskCreateStatus } from '@/lib/task-status';
 import { pushTaskToGitHub } from '@/lib/github-sync-engine';
 import { pushTaskToGnap } from '@/lib/gnap-sync';
 import { config } from '@/lib/config';
+import { getLiveWorkTaskProjection, mergeCloudAndProjectedTasks } from '@/lib/work-task-projection';
 
 function formatTicketRef(prefix?: string | null, num?: number | null): string | undefined {
   if (!prefix || typeof num !== 'number' || !Number.isFinite(num) || num <= 0) return undefined
@@ -77,12 +78,29 @@ export async function GET(request: NextRequest) {
     const priority = searchParams.get('priority');
     const projectIdParam = Number.parseInt(searchParams.get('project_id') || '', 10);
     const clientId = searchParams.get('client_id');
-    const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 200);
-    const offset = parseInt(searchParams.get('offset') || '0');
+    const requestedLimit = parseInt(searchParams.get('limit') || '50');
+    const requestedOffset = parseInt(searchParams.get('offset') || '0');
+    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 50;
+    const offset = Number.isFinite(requestedOffset) ? Math.max(0, requestedOffset) : 0;
+
+    let projection = { tasks: [] as any[], clients: [] as any[], errors: [] as any[] };
+    try {
+      projection = await getLiveWorkTaskProjection(db, workspaceId);
+    } catch (error) {
+      logger.warn({ err: error, workspaceId }, 'GET /api/tasks edge projection unavailable');
+    }
+    const localTasks = projection.tasks.filter((task) => {
+      if (clientId && task.bridge_client_id !== clientId) return false;
+      if (status && task.status !== status) return false;
+      if (assigned_to && task.assigned_to !== assigned_to) return false;
+      if (priority && task.priority !== priority) return false;
+      if (Number.isFinite(projectIdParam) && Number(task.project_id) !== projectIdParam) return false;
+      return true;
+    });
     
     // Build dynamic query
     let query = `
-      SELECT t.*, p.name as project_name, p.ticket_prefix as project_prefix
+      SELECT DISTINCT t.*, p.name as project_name, p.ticket_prefix as project_prefix
       FROM tasks t
       LEFT JOIN projects p
         ON p.id = t.project_id AND p.workspace_id = t.workspace_id
@@ -123,46 +141,39 @@ export async function GET(request: NextRequest) {
       params.push(projectIdParam);
     }
     
-    query += ' ORDER BY t.created_at DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
-    
-    const stmt = db.prepare(query);
-    const tasks = stmt.all(...params) as Task[];
+    const baseCloudQuery = query;
+    const cloudTotal = (db.prepare(`SELECT COUNT(*) AS total FROM (${baseCloudQuery}) filtered_tasks`)
+      .get(...params) as { total: number }).total;
+    const cloudFetchLimit = offset + limit + localTasks.length;
+    query += ' ORDER BY t.updated_at DESC, t.id DESC LIMIT ?';
+    const tasks = db.prepare(query).all(...params, cloudFetchLimit) as Task[];
     
     // Parse JSON fields
-    const tasksWithParsedData = tasks.map(mapTaskRow);
-    
-    // Get total count for pagination
-    let countQuery = 'SELECT COUNT(*) as total FROM tasks t';
-    if (clientId) {
-      countQuery += ' INNER JOIN agents a ON a.name = t.assigned_to AND a.workspace_id = t.workspace_id';
-    }
-    countQuery += ' WHERE t.workspace_id = ?';
-    
-    const countParams: any[] = [workspaceId];
-    if (clientId) {
-      countQuery += ' AND a.node_id = ?';
-      countParams.push(clientId);
-    }
-    if (status) {
-      countQuery += ' AND t.status = ?';
-      countParams.push(status);
-    }
-    if (assigned_to) {
-      countQuery += ' AND t.assigned_to = ?';
-      countParams.push(assigned_to);
-    }
-    if (priority) {
-      countQuery += ' AND t.priority = ?';
-      countParams.push(priority);
-    }
-    if (Number.isFinite(projectIdParam)) {
-      countQuery += ' AND t.project_id = ?';
-      countParams.push(projectIdParam);
-    }
-    const countRow = db.prepare(countQuery).get(...countParams) as { total: number };
+    const cloudTasks = tasks.map(mapTaskRow);
+    const merged = mergeCloudAndProjectedTasks(cloudTasks as any[], localTasks);
+    const pageTasks = merged.slice(offset, offset + limit);
+    const remoteTaskIds = [...new Set(localTasks
+      .map((task) => Number((task.metadata as Record<string, unknown> | undefined)?.remote_task_id))
+      .filter((id) => Number.isInteger(id) && id > 0))];
+    const duplicateCount = remoteTaskIds.length > 0
+      ? (db.prepare(`
+          SELECT COUNT(*) AS total FROM (${baseCloudQuery}) filtered_tasks
+          WHERE id IN (${remoteTaskIds.map(() => '?').join(', ')})
+        `).get(...params, ...remoteTaskIds) as { total: number }).total
+      : 0;
 
-    return NextResponse.json({ tasks: tasksWithParsedData, total: countRow.total, page: Math.floor(offset / limit) + 1, limit });
+    return NextResponse.json({
+      tasks: pageTasks,
+      total: cloudTotal + localTasks.length - duplicateCount,
+      page: Math.floor(offset / limit) + 1,
+      limit,
+      authority: projection.clients.length > 0 ? 'local_runtime' : 'cloud',
+      local_live: projection.clients.length > 0,
+      projection: {
+        clients: projection.clients,
+        errors: projection.errors,
+      },
+    });
   } catch (error) {
     logger.error({ err: error }, 'GET /api/tasks error');
     return NextResponse.json({ error: 'Failed to fetch tasks' }, { status: 500 });

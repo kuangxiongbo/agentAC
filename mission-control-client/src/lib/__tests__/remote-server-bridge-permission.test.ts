@@ -28,7 +28,27 @@ const dbPrepare = vi.fn((sql: string) => {
       })),
     }
   }
-  return { get: vi.fn(() => null) }
+  if (sql.includes('FROM tasks t') && sql.includes('LEFT JOIN projects')) {
+    return {
+      all: vi.fn(() => [{
+        id: 7,
+        title: 'Local task',
+        description: 'Run locally',
+        status: 'in_progress',
+        priority: 'high',
+        assigned_to: 'Worker',
+        created_by: 'local',
+        created_at: 10,
+        updated_at: 20,
+        tags: '["edge"]',
+        metadata: '{"source":"local"}',
+      }]),
+    }
+  }
+  if (sql.includes('SELECT status, COUNT(*) AS count') && sql.includes('FROM tasks')) {
+    return { all: vi.fn(() => [{ status: 'in_progress', count: 1 }]) }
+  }
+  return { get: vi.fn(() => null), all: vi.fn(() => []) }
 })
 
 vi.mock('@/lib/db', () => ({
@@ -213,5 +233,29 @@ describe('remote-server-bridge permission steward auto decision', () => {
 
     expect(runStewardJudgeOnEdge).toHaveBeenCalled()
     expect(safeSendCalls.some((msg) => msg.type === 'permission_decision_sync')).toBe(false)
+  })
+
+  it('returns a parsed local task snapshot over the bridge protocol', async () => {
+    const mod = await import('@/lib/remote-server-bridge')
+    ;(mod as any).__testSetBridgeSocket?.(new MockWebSocket())
+    ;(mod as any).__testHandleBridgeMessage?.(JSON.stringify({
+      type: 'task_snapshot_request',
+      requestId: 'snapshot-1',
+      limit: 50,
+    }))
+
+    expect(safeSendCalls).toContainEqual(expect.objectContaining({
+      type: 'task_snapshot_response',
+      requestId: 'snapshot-1',
+      ok: true,
+      total: 1,
+      byStatus: { in_progress: 1 },
+      truncated: false,
+      tasks: [expect.objectContaining({
+        id: 7,
+        tags: ['edge'],
+        metadata: { source: 'local' },
+      })],
+    }))
   })
 })

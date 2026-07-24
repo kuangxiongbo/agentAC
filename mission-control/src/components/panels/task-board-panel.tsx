@@ -5,6 +5,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useAgentCenterStore } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
+import { TASK_PROJECTION_UPDATED_EVENT } from '@/lib/use-server-events'
 
 import { createClientLogger } from '@/lib/client-logger'
 
@@ -44,6 +45,11 @@ interface Task {
   github_branch?: string
   github_pr_number?: number
   github_pr_state?: string
+  source?: 'local_runtime' | 'cloud_control'
+  authority?: 'local_runtime' | 'cloud'
+  local_task_id?: number
+  bridge_client_id?: string
+  client_label?: string
 }
 
 interface Agent {
@@ -471,7 +477,9 @@ export function TaskBoardPanel() {
       const clientsData = await clientsResponse.json()
 
       const tasksList = tasksData.tasks || []
-      const taskIds = tasksList.map((task: Task) => task.id)
+      const taskIds = tasksList
+        .filter((task: Task) => task.source !== 'local_runtime')
+        .map((task: Task) => task.id)
 
       // Render primary board data first; hydrate Aegis approvals in background.
       storeSetTasks(tasksList)
@@ -507,6 +515,12 @@ export function TaskBoardPanel() {
 
   useEffect(() => {
     fetchData()
+  }, [fetchData])
+
+  useEffect(() => {
+    const refresh = () => fetchData()
+    window.addEventListener(TASK_PROJECTION_UPDATED_EVENT, refresh)
+    return () => window.removeEventListener(TASK_PROJECTION_UPDATED_EVENT, refresh)
   }, [fetchData])
 
   // Fetch GNAP status
@@ -569,6 +583,10 @@ export function TaskBoardPanel() {
 
   // Drag and drop handlers
   const handleDragStart = (e: React.DragEvent, task: Task) => {
+    if (task.source === 'local_runtime') {
+      e.preventDefault()
+      return
+    }
     setDraggedTask(task)
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/html', e.currentTarget.outerHTML)
@@ -599,6 +617,11 @@ export function TaskBoardPanel() {
     e.currentTarget.classList.remove('drag-over')
 
     if (!draggedTask || draggedTask.status === newStatus) {
+      setDraggedTask(null)
+      return
+    }
+
+    if (draggedTask.source === 'local_runtime') {
       setDraggedTask(null)
       return
     }
@@ -976,7 +999,7 @@ export function TaskBoardPanel() {
               {tasksByStatus[column.key]?.map(task => (
                 <div
                   key={task.id}
-                  draggable
+                  draggable={task.source !== 'local_runtime'}
                   role="button"
                   tabIndex={0}
                   aria-label={`${task.title}, ${task.priority} priority, ${task.status}`}
@@ -1010,6 +1033,11 @@ export function TaskBoardPanel() {
                           {task.title}
                         </h4>
                         <div className="flex items-center gap-1.5 shrink-0">
+                          {task.source === 'local_runtime' && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-mono">
+                              local_runtime
+                            </span>
+                          )}
                           {task.metadata?.recurrence?.enabled && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-400 font-mono" title={task.metadata.recurrence.natural_text || task.metadata.recurrence.cron_expr}>
                               {t('recurring')}
@@ -1247,8 +1275,14 @@ function TaskDetailModal({
   const mentionTargets = useMentionTargets()
   const [activeTab, setActiveTab] = useState<'details' | 'comments' | 'quality' | 'session'>('details')
   const [reviewer, setReviewer] = useState('aegis')
+  const isLocalRuntime = task.source === 'local_runtime'
 
   const fetchReviews = useCallback(async () => {
+    if (isLocalRuntime) {
+      setReviews([])
+      setReviewError(null)
+      return
+    }
     try {
       const response = await fetch(`/api/quality-review?taskId=${task.id}`)
       if (!response.ok) throw new Error('Failed to fetch reviews')
@@ -1257,9 +1291,14 @@ function TaskDetailModal({
     } catch (error) {
       setReviewError('Failed to load quality reviews')
     }
-  }, [task.id])
+  }, [isLocalRuntime, task.id])
 
   const fetchComments = useCallback(async () => {
+    if (isLocalRuntime) {
+      setComments([])
+      setCommentError(null)
+      return
+    }
     try {
       setLoadingComments(true)
       const response = await fetch(`/api/tasks/${task.id}/comments`)
@@ -1271,7 +1310,7 @@ function TaskDetailModal({
     } finally {
       setLoadingComments(false)
     }
-  }, [task.id])
+  }, [isLocalRuntime, task.id])
 
   useEffect(() => {
     fetchComments()
@@ -1474,16 +1513,20 @@ function TaskDetailModal({
           <div className="flex justify-between items-start mb-4">
             <h3 id="task-detail-title" className="text-xl font-bold text-foreground">{task.title}</h3>
             <div className="flex gap-2">
-              <Button variant="ghost" size="sm" onClick={() => onEdit(task)} className="text-primary hover:bg-primary/20">
-                {t('edit')}
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => setDeleteDialogOpen(true)}
-              >
-                {t('delete')}
-              </Button>
+              {!isLocalRuntime && (
+                <>
+                  <Button variant="ghost" size="sm" onClick={() => onEdit(task)} className="text-primary hover:bg-primary/20">
+                    {t('edit')}
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => setDeleteDialogOpen(true)}
+                  >
+                    {t('delete')}
+                  </Button>
+                </>
+              )}
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -1503,7 +1546,10 @@ function TaskDetailModal({
             <p className="text-foreground/80 mb-4">{t('noDescription')}</p>
           )}
           <div className="flex gap-2 mt-4" role="tablist" aria-label={t('taskDetailTabs')}>
-            {(['details', 'comments', 'quality'] as const).map(tab => (
+            {(isLocalRuntime
+              ? (['details'] as const)
+              : (['details', 'comments', 'quality'] as const)
+            ).map(tab => (
               <Button
                 key={tab}
                 role="tab"

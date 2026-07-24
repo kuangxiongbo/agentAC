@@ -220,6 +220,13 @@ const AGENT_INVENTORY_EVENT_TYPES = new Set([
   'agent.status_changed',
 ])
 
+const TASK_PROJECTION_EVENT_TYPES = new Set([
+  'task.created',
+  'task.updated',
+  'task.deleted',
+  'task.status_changed',
+])
+
 function pushLocalAgentInventory(ws: WebSocket | null): boolean {
   return safeSend(ws, {
     type: 'agent_status',
@@ -233,6 +240,51 @@ function pushLocalAgentInventory(ws: WebSocket | null): boolean {
 function parseBridgeJsonValue(value: unknown, fallback: unknown) {
   if (typeof value !== 'string' || !value.trim()) return fallback
   try { return JSON.parse(value) } catch { return fallback }
+}
+
+function getLocalTaskSnapshot(limitInput: unknown): {
+  tasks: Array<Record<string, unknown>>
+  total: number
+  byStatus: Record<string, number>
+  truncated: boolean
+} {
+  const limit = Math.max(1, Math.min(Number(limitInput) || 500, 1000))
+  const db = getDatabase()
+  const rows = db.prepare(`
+    SELECT t.id, t.title, substr(COALESCE(t.description, ''), 1, 16000) AS description,
+           t.status, t.priority, t.project_id, t.project_ticket_no,
+           p.name AS project_name, p.ticket_prefix AS project_prefix,
+           t.assigned_to, t.created_by, t.created_at, t.updated_at, t.due_date,
+           t.estimated_hours, t.actual_hours, t.outcome, t.error_message,
+           t.resolution, t.feedback_rating, t.feedback_notes, t.retry_count,
+           t.completed_at, t.tags, t.metadata
+    FROM tasks t
+    LEFT JOIN projects p ON p.id = t.project_id AND p.workspace_id = t.workspace_id
+    WHERE t.workspace_id = 1
+    ORDER BY t.updated_at DESC, t.id DESC
+    LIMIT ?
+  `).all(limit) as Array<Record<string, unknown>>
+  const stats = db.prepare(`
+    SELECT status, COUNT(*) AS count
+    FROM tasks WHERE workspace_id = 1
+    GROUP BY status
+  `).all() as Array<{ status: string; count: number }>
+  const byStatus: Record<string, number> = {}
+  let total = 0
+  for (const row of stats) {
+    byStatus[row.status] = row.count
+    total += row.count
+  }
+  return {
+    tasks: rows.map((task) => ({
+      ...task,
+      tags: parseBridgeJsonValue(task.tags, []),
+      metadata: parseBridgeJsonValue(task.metadata, {}),
+    })),
+    total,
+    byStatus,
+    truncated: total > rows.length,
+  }
 }
 
 function getLocalAgentDetail(localAgentId: number): Record<string, unknown> | null {
@@ -492,6 +544,10 @@ export function __testSetBridgeSocket(ws: WebSocket | null): void {
   state.connected = Boolean(ws)
 }
 
+export function __testHandleBridgeMessage(raw: string): void {
+  handleMessage(raw)
+}
+
 export function __testSyncPermissionRequestSnapshot(request: PermissionRequestView): void {
   syncPermissionRequestSnapshot(request)
 }
@@ -652,6 +708,28 @@ function handleAgentDetailRequest(message: any): void {
     agent,
     source: 'remote-bridge',
   })
+}
+
+function handleTaskSnapshotRequest(message: any): void {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  if (!requestId) return
+  try {
+    const snapshot = getLocalTaskSnapshot(message?.limit)
+    safeSend(state.ws, {
+      type: 'task_snapshot_response',
+      requestId,
+      ok: true,
+      ...snapshot,
+      source: 'remote-bridge',
+    })
+  } catch (err: any) {
+    safeSend(state.ws, {
+      type: 'task_snapshot_response',
+      requestId,
+      ok: false,
+      error: err?.message || 'Failed to read local task snapshot',
+    })
+  }
 }
 
 function safeSend(ws: WebSocket | null, data: object): boolean {
@@ -1508,6 +1586,10 @@ function handleMessage(raw: string): void {
       handleAgentDetailRequest(msg)
       break
 
+    case 'task_snapshot_request':
+      handleTaskSnapshotRequest(msg)
+      break
+
     case 'agents_by_session_request':
       handleAgentsBySessionRequest(msg)
       break
@@ -1689,6 +1771,7 @@ async function connect(): Promise<void> {
         'task_receive',
         'agent_status',
         'agent_detail',
+        'task_snapshot',
         'agents_by_session',
         'agent_session_update',
         'heartbeat',
@@ -1717,9 +1800,23 @@ async function connect(): Promise<void> {
     }
     eventBus.on('chat.message', chatHandler)
 
+    let taskProjectionTimer: NodeJS.Timeout | null = null
     const agentInventoryHandler = (event: { type?: string }) => {
-      if (!AGENT_INVENTORY_EVENT_TYPES.has(String(event?.type || ''))) return
-      pushLocalAgentInventory(ws)
+      const eventType = String(event?.type || '')
+      if (AGENT_INVENTORY_EVENT_TYPES.has(eventType)) {
+        pushLocalAgentInventory(ws)
+      }
+      if (!TASK_PROJECTION_EVENT_TYPES.has(eventType)) return
+      if (taskProjectionTimer) clearTimeout(taskProjectionTimer)
+      taskProjectionTimer = setTimeout(() => {
+        taskProjectionTimer = null
+        pushLocalAgentInventory(ws)
+        safeSend(ws, {
+          type: 'task_snapshot_changed',
+          clientId,
+          timestamp: Date.now(),
+        })
+      }, 250)
     }
     eventBus.on('server-event', agentInventoryHandler)
 
@@ -1729,6 +1826,10 @@ async function connect(): Promise<void> {
     // Store handler for cleanup
     ;(ws as any)._chatHandler = chatHandler
     ;(ws as any)._agentInventoryHandler = agentInventoryHandler
+    ;(ws as any)._clearTaskProjectionTimer = () => {
+      if (taskProjectionTimer) clearTimeout(taskProjectionTimer)
+      taskProjectionTimer = null
+    }
   }
 
   ws.onmessage = (event: MessageEvent) => {
@@ -1756,6 +1857,7 @@ async function connect(): Promise<void> {
     if (handler) eventBus.off('chat.message', handler)
     const agentInventoryHandler = (ws as any)._agentInventoryHandler
     if (agentInventoryHandler) eventBus.off('server-event', agentInventoryHandler)
+    ;(ws as any)._clearTaskProjectionTimer?.()
 
     safeLog('info', '[RemoteBridge] Disconnected from remote server', {
       code: event?.code,

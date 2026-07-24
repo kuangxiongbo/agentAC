@@ -212,6 +212,7 @@ type BridgePendingKind =
   | 'transcript'
   | 'continue'
   | 'agent_detail'
+  | 'task_snapshot'
   | 'agents_by_session'
   | 'agent_session_update'
   | 'steward_create'
@@ -454,6 +455,17 @@ function resolvePendingRequest(msg: any) {
   if (pending.kind === 'agent_detail') {
     pending.resolve({
       agent: msg?.agent && typeof msg.agent === 'object' ? msg.agent : null,
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
+    return true
+  }
+
+  if (pending.kind === 'task_snapshot') {
+    pending.resolve({
+      tasks: Array.isArray(msg?.tasks) ? msg.tasks : [],
+      total: typeof msg?.total === 'number' ? msg.total : 0,
+      byStatus: msg?.byStatus && typeof msg.byStatus === 'object' ? msg.byStatus : {},
+      truncated: Boolean(msg?.truncated),
       source: typeof msg?.source === 'string' ? msg.source : 'bridge',
     })
     return true
@@ -754,6 +766,17 @@ export function initBridgeServer(port: number = 5002) {
               }
               break
 
+            case 'task_snapshot_changed': {
+              touchConnection(connectionId)
+              const { clearWorkTaskProjectionCache } = await import('./work-task-projection')
+              clearWorkTaskProjectionCache()
+              eventBus.broadcast('task.projection_changed', {
+                client_id: clientId,
+                changed_at: Date.now(),
+              })
+              break
+            }
+
             case 'chat_message':
               touchConnection(connectionId)
               if (msg.message) {
@@ -792,6 +815,7 @@ export function initBridgeServer(port: number = 5002) {
             case 'session_transcript_response':
             case 'session_continue_response':
             case 'agent_detail_response':
+            case 'task_snapshot_response':
             case 'agents_by_session_response':
             case 'agent_session_update_response':
             case 'steward_create_response':
@@ -1032,6 +1056,65 @@ export function isBridgeClientOnline(clientId: string): boolean {
   return Array.from(bridgeServerClients.values()).some(
     (client) => client.clientId === clientId && isLiveEdgeConnection(client),
   )
+}
+
+export function getConnectedBridgeClients(requiredCapability?: string): Array<{
+  clientId: string
+  clientLabel: string
+  capabilities: string[]
+}> {
+  const latest = new Map<string, BridgeServerClientState>()
+  for (const client of bridgeServerClients.values()) {
+    if (client.kind !== 'edge' || !isLiveEdgeConnection(client)) continue
+    if (requiredCapability && !client.capabilities.includes(requiredCapability)) continue
+    const current = latest.get(client.clientId)
+    if (!current || client.lastSeenAt > current.lastSeenAt) latest.set(client.clientId, client)
+  }
+  return [...latest.values()].map((client) => ({
+    clientId: client.clientId,
+    clientLabel: client.clientLabel,
+    capabilities: [...client.capabilities],
+  }))
+}
+
+export async function requestBridgeClientTaskSnapshot(input: {
+  clientId: string
+  limit?: number
+  timeoutMs?: number
+}): Promise<{
+  tasks: Array<Record<string, unknown>>
+  total: number
+  byStatus: Record<string, number>
+  truncated: boolean
+  source: string
+}> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(1000, input.timeoutMs || 5000)
+
+  return new Promise((resolve, reject) => {
+    const timeout = makePendingTimeout(requestId, 'task_snapshot', input.clientId, timeoutMs, reject)
+    bridgePendingRequests.set(requestId, {
+      requestId,
+      clientId: input.clientId,
+      connectionId,
+      timeout,
+      kind: 'task_snapshot',
+      resolve: resolve as (value: unknown) => void,
+      reject,
+    })
+    try {
+      ws.send(JSON.stringify({
+        type: 'task_snapshot_request',
+        requestId,
+        limit: Math.max(1, Math.min(input.limit || 500, 1000)),
+      }))
+    } catch (error) {
+      clearTimeout(timeout)
+      bridgePendingRequests.delete(requestId)
+      reject(error instanceof Error ? error : new Error('Failed to send task snapshot request'))
+    }
+  })
 }
 
 export function getBridgeServerStatus(): BridgeServerStatusSnapshot {

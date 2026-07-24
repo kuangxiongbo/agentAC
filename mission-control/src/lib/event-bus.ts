@@ -20,6 +20,7 @@ export type EventType =
   | 'task.created'
   | 'task.updated'
   | 'task.deleted'
+  | 'task.projection_changed'
   | 'task.status_changed'
   | 'session.list.updated'
   | 'session.transcript.updated'

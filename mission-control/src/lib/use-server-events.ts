@@ -17,6 +17,8 @@ interface ServerEvent {
   timestamp: number
 }
 
+export const TASK_PROJECTION_UPDATED_EVENT = 'mc:task-projection-updated'
+
 /**
  * Hook that connects to the SSE endpoint (/api/events) and dispatches
  * real-time DB mutation events to the Zustand store.
@@ -133,6 +135,9 @@ export function useServerEvents() {
           if (event.data?.id) {
             deleteTask(event.data.id)
           }
+          break
+        case 'task.projection_changed':
+          window.dispatchEvent(new CustomEvent(TASK_PROJECTION_UPDATED_EVENT, { detail: event.data }))
           break
 
         // Agent events

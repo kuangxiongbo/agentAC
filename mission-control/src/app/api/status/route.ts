@@ -14,6 +14,7 @@ import { detectProviderSubscriptions, getPrimarySubscription } from '@/lib/provi
 import { APP_VERSION } from '@/lib/version'
 import { isHermesInstalled, scanHermesSessions } from '@/lib/hermes-sessions'
 import { registerMcAsDashboard } from '@/lib/gateway-runtime'
+import { countTasksByStatus, getLiveWorkTaskProjection, mergeCloudAndProjectedTasks } from '@/lib/work-task-projection'
 
 export async function GET(request: NextRequest) {
   // Docker/Kubernetes health probes must work without auth/cookies.
@@ -132,7 +133,7 @@ async function getMemorySnapshot() {
   }
 }
 
-function getDbStats(workspaceId: number) {
+async function getDbStats(workspaceId: number) {
   try {
     const db = getDatabase()
     const now = Math.floor(Date.now() / 1000)
@@ -140,15 +141,26 @@ function getDbStats(workspaceId: number) {
     const week = now - 7 * 86400
 
     // Task breakdown
-    const taskStats = db.prepare(`
-      SELECT status, COUNT(*) as count FROM tasks WHERE workspace_id = ? GROUP BY status
-    `).all(workspaceId) as Array<{ status: string; count: number }>
-    const tasksByStatus: Record<string, number> = {}
-    let totalTasks = 0
-    for (const row of taskStats) {
-      tasksByStatus[row.status] = row.count
-      totalTasks += row.count
+    const cloudTasks = (db.prepare(`
+      SELECT id, status, created_at, updated_at, metadata
+      FROM tasks WHERE workspace_id = ?
+    `).all(workspaceId) as Array<Record<string, unknown>>).map((task) => {
+      let metadata: Record<string, unknown> = {}
+      try { metadata = JSON.parse(String(task.metadata || '{}')) } catch {}
+      return { ...task, metadata }
+    })
+    let projectedTasks: Array<Record<string, unknown>> = cloudTasks
+    let taskProjectionClients: unknown[] = []
+    let taskProjectionErrors: unknown[] = []
+    try {
+      const projection = await getLiveWorkTaskProjection(db, workspaceId)
+      projectedTasks = mergeCloudAndProjectedTasks(cloudTasks, projection.tasks)
+      taskProjectionClients = projection.clients
+      taskProjectionErrors = projection.errors
+    } catch (error) {
+      logger.warn({ err: error, workspaceId }, 'Dashboard edge task projection unavailable')
     }
+    const { total: totalTasks, byStatus: tasksByStatus } = countTasksByStatus(projectedTasks)
 
     // Agent breakdown (exclude hidden; central mode only counts gateway/client sources)
     const agentSourceFilter = config.centralMode ? " AND source IN ('gateway', 'client')" : ''
@@ -246,7 +258,14 @@ function getDbStats(workspaceId: number) {
     }
 
     return {
-      tasks: { total: totalTasks, byStatus: tasksByStatus },
+      tasks: {
+        total: totalTasks,
+        byStatus: tasksByStatus,
+        authority: taskProjectionClients.length > 0 ? 'local_runtime' : 'cloud',
+        localLive: taskProjectionClients.length > 0,
+        clients: taskProjectionClients,
+        errors: taskProjectionErrors,
+      },
       agents: { total: totalAgents, byStatus: agentsByStatus, signalingOnline },
       audit: { day: auditDay, week: auditWeek, loginFailures },
       activities: { day: activityDay },
