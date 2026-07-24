@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDatabase } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
 import { logger } from '@/lib/logger';
+import { resolveAgentQueryIdentity } from '@/lib/agent-query-identity';
+import { isBridgeClientOnline, requestBridgeClientAgentMetrics } from '@/lib/bridge-server';
 
 const ALLOWED_SECTIONS = new Set(['identity', 'audit', 'mutations', 'cost']);
 
@@ -34,6 +36,39 @@ export async function GET(
     const resolvedParams = await params;
     const agentId = resolvedParams.id;
     const workspaceId = auth.user.workspace_id ?? 1;
+    const { searchParams } = new URL(request.url);
+    const identity = resolveAgentQueryIdentity(db, agentId, workspaceId);
+    if (identity?.source === 'bridge_index') {
+      const requesterAgentName = auth.user.agent_name?.trim() || auth.user.username;
+      const privileged = searchParams.get('privileged') === '1';
+      const isSelf = identity.aliases.includes(requesterAgentName);
+      if (!isSelf && !(auth.user.role === 'admin' && privileged)) {
+        return NextResponse.json(
+          { error: 'Forbidden: attribution is self-scope by default. Admin can use ?privileged=1 override.' },
+          { status: 403 },
+        );
+      }
+      const hours = parseHours(searchParams.get('hours'));
+      if (!hours) return NextResponse.json({ error: 'Invalid hours. Expected integer 1..720.' }, { status: 400 });
+      const sections = parseSections(searchParams.get('section'));
+      if ('error' in sections) return NextResponse.json({ error: sections.error }, { status: 400 });
+      if (!identity.clientId || identity.localAgentId == null || !isBridgeClientOnline(identity.clientId)) {
+        return NextResponse.json({ error: 'Local Runtime is offline', authority: 'local_runtime', local_live: false }, { status: 503 });
+      }
+      const remote = await requestBridgeClientAgentMetrics({
+        clientId: identity.clientId,
+        localAgentId: identity.localAgentId,
+        metric: 'attribution',
+        hours,
+        sections: [...sections.sections],
+      });
+      return NextResponse.json({
+        ...remote.metrics,
+        access_scope: isSelf ? 'self' : 'privileged',
+        authority: 'local_runtime',
+        local_live: true,
+      });
+    }
 
     // Resolve agent
     let agent: any;
@@ -47,7 +82,6 @@ export async function GET(
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
     }
 
-    const { searchParams } = new URL(request.url);
     const privileged = searchParams.get('privileged') === '1';
     const isSelfByHeader = auth.user.agent_name === agent.name;
     const isSelfByUsername = auth.user.username === agent.name;

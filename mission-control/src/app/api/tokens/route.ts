@@ -9,6 +9,7 @@ import { getDatabase } from '@/lib/db'
 import { calculateTokenCost } from '@/lib/token-pricing'
 import { getProviderSubscriptionFlags } from '@/lib/provider-subscriptions'
 import { buildTaskCostReport, type TaskCostMetadata } from '@/lib/task-costs'
+import { getConnectedBridgeClients, requestBridgeClientAgentMetrics } from '@/lib/bridge-server'
 
 const DATA_PATH = config.tokensPath
 
@@ -182,6 +183,38 @@ async function loadTokenData(workspaceId: number): Promise<TokenUsageRecord[]> {
     .sort((a, b) => b.timestamp - a.timestamp)
 }
 
+export async function loadCombinedTokenData(workspaceId: number): Promise<TokenUsageRecord[]> {
+  const cloudRecords = await loadTokenData(workspaceId)
+  const db = getDatabase()
+  const clients = getConnectedBridgeClients('agent_metrics')
+  const settled = await Promise.allSettled(clients.map(async (client) => ({
+    client,
+    result: await requestBridgeClientAgentMetrics({ clientId: client.clientId, metric: 'tokens' }),
+  })))
+  const edgeRecords: TokenUsageRecord[] = []
+  for (const item of settled) {
+    if (item.status !== 'fulfilled') continue
+    const records = (item.value.result.metrics as any)?.records
+    if (!Array.isArray(records)) continue
+    for (const record of records) {
+      if (!record || typeof record !== 'object') continue
+      const originalName = String(record.agentName || extractAgentName(String(record.sessionId || '')))
+      const mapped = db.prepare(`
+        SELECT remote_name FROM sync_agent_index
+        WHERE client_id = ? AND original_name = ? COLLATE NOCASE LIMIT 1
+      `).get(item.value.client.clientId, originalName) as any
+      const agentName = mapped?.remote_name || `${item.value.client.clientId}-${originalName}`
+      edgeRecords.push({
+        ...record,
+        id: `${item.value.client.clientId}:${String(record.id || edgeRecords.length)}`,
+        agentName,
+        sessionId: `${item.value.client.clientId}:${String(record.sessionId || '')}`,
+      } as TokenUsageRecord)
+    }
+  }
+  return dedupeTokenRecords([...cloudRecords, ...edgeRecords]).sort((a, b) => b.timestamp - a.timestamp)
+}
+
 /**
  * Derive token usage records from OpenClaw session stores.
  * Each session has totalTokens, inputTokens, outputTokens, model, etc.
@@ -312,7 +345,7 @@ export async function GET(request: NextRequest) {
     const format = searchParams.get('format') || 'json'
 
     const workspaceId = auth.user.workspace_id ?? 1
-    const tokenData = await loadTokenData(workspaceId)
+    const tokenData = await loadCombinedTokenData(workspaceId)
     const filteredData = filterByTimeframe(tokenData, timeframe)
 
     if (action === 'list') {
@@ -369,6 +402,26 @@ export async function GET(request: NextRequest) {
         timeframe,
         recordCount: filteredData.length,
       })
+    }
+
+    if (action === 'session-costs' || action === 'session_costs') {
+      const groups = filteredData.reduce((acc, record) => {
+        if (!acc[record.sessionId]) acc[record.sessionId] = []
+        acc[record.sessionId].push(record)
+        return acc
+      }, {} as Record<string, TokenUsageRecord[]>)
+      const sessions = Object.entries(groups).map(([sessionId, records]) => ({
+        sessionId,
+        model: records[0]?.model || 'unknown',
+        inputTokens: records.reduce((sum, record) => sum + record.inputTokens, 0),
+        outputTokens: records.reduce((sum, record) => sum + record.outputTokens, 0),
+        totalTokens: records.reduce((sum, record) => sum + record.totalTokens, 0),
+        totalCost: records.reduce((sum, record) => sum + record.cost, 0),
+        requestCount: records.length,
+        firstSeen: new Date(Math.min(...records.map((record) => record.timestamp))).toISOString(),
+        lastSeen: new Date(Math.max(...records.map((record) => record.timestamp))).toISOString(),
+      }))
+      return NextResponse.json({ sessions, timeframe })
     }
 
     if (action === 'agent-costs') {

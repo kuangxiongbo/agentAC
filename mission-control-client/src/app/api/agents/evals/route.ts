@@ -12,6 +12,54 @@ import {
   type EvalResult,
 } from '@/lib/agent-evals'
 
+const EVAL_TIMEFRAME_SECONDS: Record<string, number> = {
+  hour: 3600, day: 86400, week: 7 * 86400, month: 30 * 86400,
+}
+
+export function buildAgentEvalsOverview(
+  db: ReturnType<typeof getDatabase>,
+  workspaceId: number,
+  timeframe: string = 'day',
+) {
+  const since = Math.floor(Date.now() / 1000) - (EVAL_TIMEFRAME_SECONDS[timeframe] || EVAL_TIMEFRAME_SECONDS.day)
+  const rows = db.prepare(`
+    SELECT e.agent_name, e.eval_layer, e.score, e.passed, e.created_at
+    FROM eval_runs e
+    INNER JOIN (
+      SELECT agent_name, eval_layer, MAX(created_at) AS max_created
+      FROM eval_runs WHERE workspace_id = ? AND created_at >= ?
+      GROUP BY agent_name, eval_layer
+    ) latest ON latest.agent_name = e.agent_name
+      AND latest.eval_layer = e.eval_layer AND latest.max_created = e.created_at
+    WHERE e.workspace_id = ?
+    ORDER BY e.agent_name, e.eval_layer
+  `).all(workspaceId, since, workspaceId) as any[]
+  const grouped = new Map<string, any[]>()
+  for (const row of rows) grouped.set(row.agent_name, [...(grouped.get(row.agent_name) || []), row])
+  const agents = [...grouped.entries()].map(([name, entries], index) => {
+    const scores = entries.map((entry) => ({ layer: entry.eval_layer, score: Number(entry.score || 0), maxScore: 1 }))
+    const convergence = scores.length > 0
+      ? scores.reduce((sum, entry) => sum + entry.score, 0) / scores.length
+      : 0
+    return {
+      agentId: index + 1,
+      name,
+      scores,
+      convergence: Math.round(convergence * 100) / 100,
+      driftDetected: entries.some((entry) => entry.eval_layer === 'drift' && !entry.passed),
+      lastEvalAt: Math.max(...entries.map((entry) => Number(entry.created_at || 0))),
+    }
+  })
+  const overallConvergence = agents.length > 0
+    ? Math.round((agents.reduce((sum, agent) => sum + agent.convergence, 0) / agents.length) * 100) / 100
+    : 0
+  return {
+    agents,
+    overallConvergence,
+    driftAlerts: agents.filter((agent) => agent.driftDetected).map((agent) => agent.name),
+  }
+}
+
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
@@ -25,9 +73,9 @@ export async function GET(request: NextRequest) {
     const action = searchParams.get('action')
     const workspaceId = auth.user.workspace_id ?? 1
 
-    if (!agent) {
-      return NextResponse.json({ error: 'Missing required parameter: agent' }, { status: 400 })
-    }
+    if (!agent) return NextResponse.json(buildAgentEvalsOverview(
+      getDatabase(), workspaceId, searchParams.get('timeframe') || 'day',
+    ))
 
     // History mode
     if (action === 'history') {

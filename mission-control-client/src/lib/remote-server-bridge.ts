@@ -61,6 +61,10 @@ import { validateLocalCliElevationGrant } from './local-cli-elevation-audit'
 import { getAgentWorkspaceCandidates, readAgentWorkspaceFile } from './agent-workspace'
 import { getSyncableSessions } from './session-sync'
 import type { HumanWatchEvent } from '@/store'
+import { buildAgentDiagnostics } from '../app/api/agents/[id]/diagnostics/route'
+import { buildAgentAttribution } from '../app/api/agents/[id]/attribution/route'
+import { buildAgentEvalsOverview } from '../app/api/agents/evals/route'
+import { loadTokenData } from '../app/api/tokens/route'
 
 function safeLog(
   level: 'info' | 'warn' | 'error' | 'debug',
@@ -766,6 +770,51 @@ function handleAgentDetailRequest(message: any): void {
     agent,
     source: 'remote-bridge',
   })
+}
+
+async function handleAgentMetricsRequest(message: any): Promise<void> {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  const localAgentId = Number(message?.localAgentId)
+  const metric = message?.metric === 'attribution'
+    ? 'attribution'
+    : message?.metric === 'diagnostics'
+      ? 'diagnostics'
+      : message?.metric === 'evals'
+        ? 'evals'
+        : message?.metric === 'tokens' ? 'tokens' : ''
+  const hours = Number(message?.hours ?? 24)
+  if (!requestId) return
+  if ((!Number.isFinite(localAgentId) && metric !== 'evals' && metric !== 'tokens') || !metric || !Number.isInteger(hours) || hours < 1 || hours > 720) {
+    safeSend(state.ws, { type: 'agent_metrics_response', requestId, ok: false, error: 'Invalid agent metrics request' })
+    return
+  }
+  try {
+    const db = getDatabase()
+    const agent = metric === 'evals' || metric === 'tokens'
+      ? null
+      : db.prepare('SELECT * FROM agents WHERE id = ? AND hidden = 0 LIMIT 1').get(localAgentId) as any
+    if (metric !== 'evals' && metric !== 'tokens' && !agent) {
+      safeSend(state.ws, { type: 'agent_metrics_response', requestId, ok: false, error: 'Agent not found' })
+      return
+    }
+    const requestedSections: Set<string> | undefined = Array.isArray(message?.sections)
+      ? new Set<string>(message.sections.filter((value: unknown): value is string => typeof value === 'string'))
+      : undefined
+    const metrics = metric === 'tokens'
+      ? { records: await loadTokenData(1) }
+      : metric === 'evals'
+        ? buildAgentEvalsOverview(db, 1, typeof message?.timeframe === 'string' ? message.timeframe : 'day')
+      : metric === 'diagnostics'
+        ? buildAgentDiagnostics(db, agent, agent.workspace_id ?? 1, hours, requestedSections as any)
+        : buildAgentAttribution(db, agent, agent.workspace_id ?? 1, hours, requestedSections, 'privileged')
+    safeSend(state.ws, {
+      type: 'agent_metrics_response', requestId, ok: true, metric, metrics, source: 'local_runtime',
+    })
+  } catch (err: any) {
+    safeSend(state.ws, {
+      type: 'agent_metrics_response', requestId, ok: false, error: err?.message || 'Failed to build agent metrics',
+    })
+  }
 }
 
 function handleTaskSnapshotRequest(message: any): void {
@@ -1666,6 +1715,12 @@ function handleMessage(raw: string): void {
       handleAgentDetailRequest(msg)
       break
 
+    case 'agent_metrics_request':
+      handleAgentMetricsRequest(msg).catch((e) =>
+        safeLog('error', '[RemoteBridge] agent_metrics_request handler failed', { err: e }),
+      )
+      break
+
     case 'task_snapshot_request':
       handleTaskSnapshotRequest(msg)
       break
@@ -1857,6 +1912,7 @@ async function connect(): Promise<void> {
         'task_receive',
         'agent_status',
         'agent_detail',
+        'agent_metrics',
         'task_snapshot',
         'activity_snapshot',
         'agents_by_session',

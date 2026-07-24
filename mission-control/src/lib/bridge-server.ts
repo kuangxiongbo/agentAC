@@ -212,6 +212,7 @@ type BridgePendingKind =
   | 'transcript'
   | 'continue'
   | 'agent_detail'
+  | 'agent_metrics'
   | 'task_snapshot'
   | 'activity_snapshot'
   | 'agents_by_session'
@@ -456,6 +457,15 @@ function resolvePendingRequest(msg: any) {
   if (pending.kind === 'agent_detail') {
     pending.resolve({
       agent: msg?.agent && typeof msg.agent === 'object' ? msg.agent : null,
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
+    return true
+  }
+
+  if (pending.kind === 'agent_metrics') {
+    pending.resolve({
+      metric: typeof msg?.metric === 'string' ? msg.metric : '',
+      metrics: msg?.metrics && typeof msg.metrics === 'object' ? msg.metrics : null,
       source: typeof msg?.source === 'string' ? msg.source : 'bridge',
     })
     return true
@@ -838,6 +848,7 @@ export function initBridgeServer(port: number = 5002) {
             case 'session_transcript_response':
             case 'session_continue_response':
             case 'agent_detail_response':
+            case 'agent_metrics_response':
             case 'task_snapshot_response':
             case 'activity_snapshot_response':
             case 'agents_by_session_response':
@@ -1718,6 +1729,37 @@ export async function requestBridgeClientAgentDetail(input: {
       clearTimeout(timeout)
       bridgePendingRequests.delete(requestId)
       reject(error instanceof Error ? error : new Error('Failed to send agent detail request'))
+    }
+  })
+}
+
+export async function requestBridgeClientAgentMetrics(input: {
+  clientId: string
+  localAgentId?: number
+  metric: 'diagnostics' | 'attribution' | 'evals' | 'tokens'
+  hours?: number
+  sections?: string[]
+  timeframe?: string
+  timeoutMs?: number
+}): Promise<{ metric: string; metrics: Record<string, unknown> | null; source: string }> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(1000, input.timeoutMs || 12000)
+  return await new Promise((resolve, reject) => {
+    const timeout = makePendingTimeout(requestId, 'agent_metrics', input.clientId, timeoutMs, reject)
+    bridgePendingRequests.set(requestId, {
+      requestId, clientId: input.clientId, connectionId, timeout, kind: 'agent_metrics',
+      resolve: resolve as (value: unknown) => void, reject,
+    })
+    try {
+      ws.send(JSON.stringify({
+        type: 'agent_metrics_request', requestId, localAgentId: input.localAgentId,
+        metric: input.metric, hours: input.hours ?? 24, sections: input.sections, timeframe: input.timeframe,
+      }))
+    } catch (error) {
+      clearTimeout(timeout)
+      bridgePendingRequests.delete(requestId)
+      reject(error instanceof Error ? error : new Error('Failed to send agent metrics request'))
     }
   })
 }

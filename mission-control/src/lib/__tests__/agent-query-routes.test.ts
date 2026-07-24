@@ -5,7 +5,11 @@ import { runMigrations } from '@/lib/migrations'
 
 const requireRole = vi.fn()
 vi.mock('@/lib/auth', () => ({ requireRole }))
-vi.mock('@/lib/rate-limit', () => ({ agentHeartbeatLimiter: vi.fn(() => null) }))
+vi.mock('@/lib/rate-limit', () => ({
+  agentHeartbeatLimiter: vi.fn(() => null),
+  readLimiter: vi.fn(() => null),
+  mutationLimiter: vi.fn(() => null),
+}))
 
 describe('bridge agent query routes', () => {
   let db: Database.Database
@@ -160,5 +164,93 @@ describe('bridge agent query routes', () => {
       new NextRequest(`http://localhost/api/agents/${syncIndexId}/memory`), params,
     )).json()
     expect(memoryBody).toMatchObject({ working_memory: 'workspace memory', source: 'local_workspace' })
+  })
+
+  it('proxies diagnostics and attribution for a bridge-index Work agent', async () => {
+    const requestBridgeClientAgentMetrics = vi.fn(async (input: any) => ({
+      metric: input.metric,
+      source: 'local_runtime',
+      metrics: input.metric === 'diagnostics'
+        ? { agent: { id: 10, name: '宣传视频制作' }, summary: { tasks_total: 3 } }
+        : { agent_name: '宣传视频制作', audit: { total_activities: 2 } },
+    }))
+    vi.doMock('@/lib/bridge-server', () => ({
+      isBridgeClientOnline: () => true,
+      requestBridgeClientAgentDetail: vi.fn(),
+      requestBridgeClientAgentMetrics,
+    }))
+
+    const diagnostics = await import('@/app/api/agents/[id]/diagnostics/route')
+    const diagnosticsResponse = await diagnostics.GET(
+      new NextRequest(`http://localhost/api/agents/${syncIndexId}/diagnostics?privileged=1&hours=48&section=summary`),
+      { params: Promise.resolve({ id: String(syncIndexId) }) },
+    )
+    expect(diagnosticsResponse.status).toBe(200)
+    expect(await diagnosticsResponse.json()).toMatchObject({
+      summary: { tasks_total: 3 }, authority: 'local_runtime', local_live: true,
+    })
+    expect(requestBridgeClientAgentMetrics).toHaveBeenCalledWith(expect.objectContaining({
+      clientId: 'edge-a', localAgentId: 10, metric: 'diagnostics', hours: 48, sections: ['summary'],
+    }))
+
+    const attribution = await import('@/app/api/agents/[id]/attribution/route')
+    const attributionResponse = await attribution.GET(
+      new NextRequest(`http://localhost/api/agents/${syncIndexId}/attribution?privileged=1&hours=24&section=audit`),
+      { params: Promise.resolve({ id: String(syncIndexId) }) },
+    )
+    expect(attributionResponse.status).toBe(200)
+    expect(await attributionResponse.json()).toMatchObject({
+      audit: { total_activities: 2 }, access_scope: 'privileged', authority: 'local_runtime', local_live: true,
+    })
+  })
+
+  it('merges cloud and Edge eval overviews when agent is omitted', async () => {
+    db.prepare(`INSERT INTO eval_runs (agent_name, eval_layer, score, passed, detail, workspace_id, created_at)
+      VALUES ('值守云端', 'output', 0.8, 1, 'ok', 1, unixepoch())`).run()
+    vi.doMock('@/lib/bridge-server', () => ({
+      getConnectedBridgeClients: () => [{ clientId: 'edge-a', clientLabel: 'Edge A', capabilities: ['agent_metrics'] }],
+      requestBridgeClientAgentMetrics: vi.fn(async () => ({
+        metric: 'evals', source: 'local_runtime', metrics: {
+          agents: [{ name: '宣传视频制作', scores: [{ layer: 'output', score: 0.6, maxScore: 1 }], convergence: 0.6, driftDetected: false, lastEvalAt: 100 }],
+        },
+      })),
+    }))
+    const route = await import('@/app/api/agents/evals/route')
+    const response = await route.GET(new NextRequest('http://localhost/api/agents/evals?timeframe=day'))
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body).toMatchObject({ authority: 'combined', overallConvergence: 0.7 })
+    expect(body.agents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: '值守云端', convergence: 0.8 }),
+      expect.objectContaining({ name: 'edge-a-宣传视频制作', source: 'local_runtime', bridge_client_id: 'edge-a' }),
+    ]))
+  })
+
+  it('merges Edge token records into stats and by-agent costs', async () => {
+    vi.doMock('@/lib/bridge-server', () => ({
+      getConnectedBridgeClients: () => [{ clientId: 'edge-a', clientLabel: 'Edge A', capabilities: ['agent_metrics'] }],
+      requestBridgeClientAgentMetrics: vi.fn(async () => ({
+        metric: 'tokens', source: 'local_runtime', metrics: { records: [{
+          id: 'edge-token-1', model: 'gpt-5', sessionId: '宣传视频制作:codex-cli',
+          agentName: '宣传视频制作', timestamp: Date.now(), inputTokens: 20,
+          outputTokens: 10, totalTokens: 30, cost: 0.03, operation: 'chat', workspaceId: 1,
+        }] },
+      })),
+    }))
+    vi.doMock('@/lib/sessions', () => ({ getAllGatewaySessions: () => [] }))
+
+    const tokensRoute = await import('@/app/api/tokens/route')
+    const statsResponse = await tokensRoute.GET(new NextRequest('http://localhost/api/tokens?action=stats&timeframe=day'))
+    expect(statsResponse.status).toBe(200)
+    const stats = await statsResponse.json()
+    expect(stats.agents['edge-a-宣传视频制作']).toMatchObject({ totalTokens: 30, totalCost: 0.03 })
+
+    const byAgentRoute = await import('@/app/api/tokens/by-agent/route')
+    const byAgentResponse = await byAgentRoute.GET(new NextRequest('http://localhost/api/tokens/by-agent?days=1'))
+    expect(byAgentResponse.status).toBe(200)
+    const byAgent = await byAgentResponse.json()
+    expect(byAgent.agents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agent: 'edge-a-宣传视频制作', total_tokens: 30, total_cost: 0.03 }),
+    ]))
   })
 })

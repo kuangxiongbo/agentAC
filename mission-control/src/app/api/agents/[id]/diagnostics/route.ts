@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDatabase } from '@/lib/db';
 import { requireRole } from '@/lib/auth';
 import { logger } from '@/lib/logger';
+import { resolveAgentQueryIdentity } from '@/lib/agent-query-identity';
+import { isBridgeClientOnline, requestBridgeClientAgentMetrics } from '@/lib/bridge-server';
 
 const ALLOWED_SECTIONS = ['summary', 'tasks', 'errors', 'activity', 'trends', 'tokens'] as const;
 type DiagnosticsSection = (typeof ALLOWED_SECTIONS)[number];
@@ -71,6 +73,34 @@ export async function GET(
     const resolvedParams = await params;
     const agentId = resolvedParams.id;
     const workspaceId = auth.user.workspace_id ?? 1;
+    const { searchParams } = new URL(request.url);
+    const identity = resolveAgentQueryIdentity(db, agentId, workspaceId);
+    if (identity?.source === 'bridge_index') {
+      const requesterAgentName = auth.user.agent_name?.trim() || auth.user.username;
+      const privileged = searchParams.get('privileged') === '1';
+      const isSelfRequest = identity.aliases.includes(requesterAgentName);
+      if (!isSelfRequest && !(privileged && auth.user.role === 'admin')) {
+        return NextResponse.json(
+          { error: 'Diagnostics are self-scoped. Use privileged=1 with admin role for cross-agent access.' },
+          { status: 403 },
+        );
+      }
+      const parsedHours = parseHoursParam(searchParams.get('hours'));
+      if (parsedHours.error) return NextResponse.json({ error: parsedHours.error }, { status: 400 });
+      const parsedSections = parseSectionsParam(searchParams.get('section'));
+      if (parsedSections.error) return NextResponse.json({ error: parsedSections.error }, { status: 400 });
+      if (!identity.clientId || identity.localAgentId == null || !isBridgeClientOnline(identity.clientId)) {
+        return NextResponse.json({ error: 'Local Runtime is offline', authority: 'local_runtime', local_live: false }, { status: 503 });
+      }
+      const remote = await requestBridgeClientAgentMetrics({
+        clientId: identity.clientId,
+        localAgentId: identity.localAgentId,
+        metric: 'diagnostics',
+        hours: parsedHours.value,
+        sections: [...(parsedSections.value as Set<DiagnosticsSection>)],
+      });
+      return NextResponse.json({ ...remote.metrics, authority: 'local_runtime', local_live: true });
+    }
 
     // Resolve agent by ID or name
     let agent: any;
@@ -84,7 +114,6 @@ export async function GET(
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
     }
 
-    const { searchParams } = new URL(request.url);
     const requesterAgentName = auth.user.agent_name?.trim() || '';
     const privileged = searchParams.get('privileged') === '1';
     const isSelfRequest = (requesterAgentName || auth.user.username) === agent.name;

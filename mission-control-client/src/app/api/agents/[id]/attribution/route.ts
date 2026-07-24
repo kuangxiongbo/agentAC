@@ -5,6 +5,28 @@ import { logger } from '@/lib/logger';
 
 const ALLOWED_SECTIONS = new Set(['identity', 'audit', 'mutations', 'cost']);
 
+export function buildAgentAttribution(
+  db: ReturnType<typeof getDatabase>,
+  agent: any,
+  workspaceId: number,
+  hours: number,
+  sections: Set<string> = new Set(ALLOWED_SECTIONS),
+  accessScope: 'self' | 'privileged' = 'privileged',
+) {
+  const now = Math.floor(Date.now() / 1000);
+  const since = now - hours * 3600;
+  const result: Record<string, any> = {
+    agent_name: agent.name,
+    timeframe: { hours, since, until: now },
+    access_scope: accessScope,
+  };
+  if (sections.has('identity')) result.identity = buildIdentity(db, agent, workspaceId);
+  if (sections.has('audit')) result.audit = buildAuditTrail(db, agent.name, workspaceId, since);
+  if (sections.has('mutations')) result.mutations = buildMutations(db, agent.name, workspaceId, since);
+  if (sections.has('cost')) result.cost = buildCostAttribution(db, agent.name, workspaceId, since);
+  return result;
+}
+
 /**
  * GET /api/agents/[id]/attribution - Agent-Level Identity & Attribution
  *
@@ -71,32 +93,14 @@ export async function GET(
       return NextResponse.json({ error: sections.error }, { status: 400 });
     }
 
-    const now = Math.floor(Date.now() / 1000);
-    const since = now - hours * 3600;
-
-    const result: Record<string, any> = {
-      agent_name: agent.name,
-      timeframe: { hours, since, until: now },
-      access_scope: isSelf ? 'self' : 'privileged',
-    };
-
-    if (sections.sections.has('identity')) {
-      result.identity = buildIdentity(db, agent, workspaceId);
-    }
-
-    if (sections.sections.has('audit')) {
-      result.audit = buildAuditTrail(db, agent.name, workspaceId, since);
-    }
-
-    if (sections.sections.has('mutations')) {
-      result.mutations = buildMutations(db, agent.name, workspaceId, since);
-    }
-
-    if (sections.sections.has('cost')) {
-      result.cost = buildCostAttribution(db, agent.name, workspaceId, since);
-    }
-
-    return NextResponse.json(result);
+    return NextResponse.json(buildAgentAttribution(
+      db,
+      agent,
+      workspaceId,
+      hours,
+      sections.sections,
+      isSelf ? 'self' : 'privileged',
+    ));
   } catch (error) {
     logger.error({ err: error }, 'GET /api/agents/[id]/attribution error');
     return NextResponse.json({ error: 'Failed to fetch attribution data' }, { status: 500 });

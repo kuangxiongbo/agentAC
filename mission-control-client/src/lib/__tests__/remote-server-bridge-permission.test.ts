@@ -4,6 +4,10 @@ const upsertPermissionRequestSnapshot = vi.fn()
 const getPermissionRequest = vi.fn()
 const isDangerousPermissionRequest = vi.fn()
 const runStewardJudgeOnEdge = vi.fn()
+const buildAgentDiagnostics = vi.fn(() => ({ summary: { tasks_total: 3 } }))
+const buildAgentAttribution = vi.fn(() => ({ audit: { total_activities: 2 } }))
+const buildAgentEvalsOverview = vi.fn(() => ({ agents: [{ name: 'Worker', convergence: 0.9 }] }))
+const loadTokenData = vi.fn(async () => [{ id: 'local-1', agentName: 'Worker', totalTokens: 30 }])
 
 const safeSendCalls: any[] = []
 class MockWebSocket {
@@ -70,6 +74,11 @@ vi.mock('@/lib/db', () => ({
   getDatabase: vi.fn(() => ({ prepare: dbPrepare })),
   db_helpers: {},
 }))
+
+vi.mock('@/app/api/agents/[id]/diagnostics/route', () => ({ buildAgentDiagnostics }))
+vi.mock('@/app/api/agents/[id]/attribution/route', () => ({ buildAgentAttribution }))
+vi.mock('@/app/api/agents/evals/route', () => ({ buildAgentEvalsOverview }))
+vi.mock('@/app/api/tokens/route', () => ({ loadTokenData }))
 
 vi.mock('@/lib/event-bus', () => ({
   eventBus: { broadcast: vi.fn(), on: vi.fn(), off: vi.fn() },
@@ -309,6 +318,70 @@ describe('remote-server-bridge permission steward auto decision', () => {
         expect.objectContaining({ id: 9, type: 'task_updated', data: { status: 'in_progress' } }),
         expect.objectContaining({ type: 'session_activity', actor: 'Worker' }),
       ]),
+    }))
+  })
+
+  it('returns local agent diagnostics over the metrics bridge protocol', async () => {
+    const mod = await import('@/lib/remote-server-bridge')
+    ;(mod as any).__testSetBridgeSocket?.(new MockWebSocket())
+    ;(mod as any).__testHandleBridgeMessage?.(JSON.stringify({
+      type: 'agent_metrics_request',
+      requestId: 'metrics-1',
+      localAgentId: 45,
+      metric: 'diagnostics',
+      hours: 48,
+      sections: ['summary'],
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(buildAgentDiagnostics).toHaveBeenCalledWith(
+      expect.anything(), expect.objectContaining({ id: 45 }), 1, 48, new Set(['summary']),
+    )
+    expect(safeSendCalls).toContainEqual(expect.objectContaining({
+      type: 'agent_metrics_response', requestId: 'metrics-1', ok: true,
+      metric: 'diagnostics', metrics: { summary: { tasks_total: 3 } }, source: 'local_runtime',
+    }))
+  })
+
+  it('rejects an invalid agent metrics time window', async () => {
+    const mod = await import('@/lib/remote-server-bridge')
+    ;(mod as any).__testSetBridgeSocket?.(new MockWebSocket())
+    ;(mod as any).__testHandleBridgeMessage?.(JSON.stringify({
+      type: 'agent_metrics_request', requestId: 'metrics-invalid', localAgentId: 45,
+      metric: 'attribution', hours: 721,
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(buildAgentAttribution).not.toHaveBeenCalled()
+    expect(safeSendCalls).toContainEqual(expect.objectContaining({
+      type: 'agent_metrics_response', requestId: 'metrics-invalid', ok: false,
+    }))
+  })
+
+  it('returns a device eval overview without requiring a local agent id', async () => {
+    const mod = await import('@/lib/remote-server-bridge')
+    ;(mod as any).__testSetBridgeSocket?.(new MockWebSocket())
+    ;(mod as any).__testHandleBridgeMessage?.(JSON.stringify({
+      type: 'agent_metrics_request', requestId: 'evals-1', metric: 'evals', timeframe: 'week',
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(buildAgentEvalsOverview).toHaveBeenCalledWith(expect.anything(), 1, 'week')
+    expect(safeSendCalls).toContainEqual(expect.objectContaining({
+      type: 'agent_metrics_response', requestId: 'evals-1', ok: true, metric: 'evals',
+      metrics: { agents: [{ name: 'Worker', convergence: 0.9 }] }, source: 'local_runtime',
+    }))
+  })
+
+  it('returns normalized device token records over metrics bridge', async () => {
+    const mod = await import('@/lib/remote-server-bridge')
+    ;(mod as any).__testSetBridgeSocket?.(new MockWebSocket())
+    ;(mod as any).__testHandleBridgeMessage?.(JSON.stringify({
+      type: 'agent_metrics_request', requestId: 'tokens-1', metric: 'tokens',
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(loadTokenData).toHaveBeenCalledWith(1)
+    expect(safeSendCalls).toContainEqual(expect.objectContaining({
+      type: 'agent_metrics_response', requestId: 'tokens-1', ok: true, metric: 'tokens',
+      metrics: { records: [{ id: 'local-1', agentName: 'Worker', totalTokens: 30 }] },
     }))
   })
 })

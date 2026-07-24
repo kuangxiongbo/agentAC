@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "center_version": "2.1.77",
+  "center_version": "2.1.78",
   "tray_version": "3.0.10",
-  "published_at": "2026-07-24T07:19:26Z",
+  "published_at": "2026-07-24T09:12:41Z",
   "platforms": {
     "darwin-aarch64": {
       "url": "/edge-tray/e-agent-edge-3.0.10-darwin-aarch64.dmg",

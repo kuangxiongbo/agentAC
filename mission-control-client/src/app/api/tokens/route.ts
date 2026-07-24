@@ -173,7 +173,7 @@ async function loadTokenDataFromFile(workspaceId: number, providerSubscriptions:
  * Load token data from all sources: DB, file, and gateway session stores.
  * All sources are merged and deduplicated so session-derived data is always included.
  */
-async function loadTokenData(workspaceId: number): Promise<TokenUsageRecord[]> {
+export async function loadTokenData(workspaceId: number): Promise<TokenUsageRecord[]> {
   const providerSubscriptions = getProviderSubscriptionFlags()
   const dbRecords = loadTokenDataFromDb(workspaceId, providerSubscriptions)
   const fileRecords = await loadTokenDataFromFile(workspaceId, providerSubscriptions)
@@ -369,6 +369,26 @@ export async function GET(request: NextRequest) {
         timeframe,
         recordCount: filteredData.length,
       })
+    }
+
+    if (action === 'session-costs' || action === 'session_costs') {
+      const groups = filteredData.reduce((acc, record) => {
+        if (!acc[record.sessionId]) acc[record.sessionId] = []
+        acc[record.sessionId].push(record)
+        return acc
+      }, {} as Record<string, TokenUsageRecord[]>)
+      const sessions = Object.entries(groups).map(([sessionId, records]) => ({
+        sessionId,
+        model: records[0]?.model || 'unknown',
+        inputTokens: records.reduce((sum, record) => sum + record.inputTokens, 0),
+        outputTokens: records.reduce((sum, record) => sum + record.outputTokens, 0),
+        totalTokens: records.reduce((sum, record) => sum + record.totalTokens, 0),
+        totalCost: records.reduce((sum, record) => sum + record.cost, 0),
+        requestCount: records.length,
+        firstSeen: new Date(Math.min(...records.map((record) => record.timestamp))).toISOString(),
+        lastSeen: new Date(Math.max(...records.map((record) => record.timestamp))).toISOString(),
+      }))
+      return NextResponse.json({ sessions, timeframe })
     }
 
     if (action === 'agent-costs') {

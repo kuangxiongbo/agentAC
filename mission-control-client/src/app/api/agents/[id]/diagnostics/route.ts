@@ -6,6 +6,28 @@ import { logger } from '@/lib/logger';
 const ALLOWED_SECTIONS = ['summary', 'tasks', 'errors', 'activity', 'trends', 'tokens'] as const;
 type DiagnosticsSection = (typeof ALLOWED_SECTIONS)[number];
 
+export function buildAgentDiagnostics(
+  db: ReturnType<typeof getDatabase>,
+  agent: any,
+  workspaceId: number,
+  hours: number,
+  sections: Set<DiagnosticsSection> = new Set(ALLOWED_SECTIONS),
+) {
+  const now = Math.floor(Date.now() / 1000);
+  const since = now - hours * 3600;
+  const result: Record<string, any> = {
+    agent: { id: agent.id, name: agent.name, role: agent.role, status: agent.status },
+    timeframe: { hours, since, until: now },
+  };
+  if (sections.has('summary')) result.summary = buildSummary(db, agent.name, workspaceId, since);
+  if (sections.has('tasks')) result.tasks = buildTaskMetrics(db, agent.name, workspaceId, since);
+  if (sections.has('errors')) result.errors = buildErrorAnalysis(db, agent.name, workspaceId, since);
+  if (sections.has('activity')) result.activity = buildActivityBreakdown(db, agent.name, workspaceId, since);
+  if (sections.has('trends')) result.trends = buildTrends(db, agent.name, workspaceId, hours);
+  if (sections.has('tokens')) result.tokens = buildTokenMetrics(db, agent.name, workspaceId, since);
+  return result;
+}
+
 function parseHoursParam(raw: string | null): { value?: number; error?: string } {
   if (raw === null) return { value: 24 };
   const parsed = Number(raw);
@@ -107,42 +129,13 @@ export async function GET(
       return NextResponse.json({ error: parsedSections.error }, { status: 400 });
     }
 
-    const hours = parsedHours.value as number;
-    const sections = parsedSections.value as Set<DiagnosticsSection>;
-
-    const now = Math.floor(Date.now() / 1000);
-    const since = now - hours * 3600;
-
-    const result: Record<string, any> = {
-      agent: { id: agent.id, name: agent.name, role: agent.role, status: agent.status },
-      timeframe: { hours, since, until: now },
-    };
-
-    if (sections.has('summary')) {
-      result.summary = buildSummary(db, agent.name, workspaceId, since);
-    }
-
-    if (sections.has('tasks')) {
-      result.tasks = buildTaskMetrics(db, agent.name, workspaceId, since);
-    }
-
-    if (sections.has('errors')) {
-      result.errors = buildErrorAnalysis(db, agent.name, workspaceId, since);
-    }
-
-    if (sections.has('activity')) {
-      result.activity = buildActivityBreakdown(db, agent.name, workspaceId, since);
-    }
-
-    if (sections.has('trends')) {
-      result.trends = buildTrends(db, agent.name, workspaceId, hours);
-    }
-
-    if (sections.has('tokens')) {
-      result.tokens = buildTokenMetrics(db, agent.name, workspaceId, since);
-    }
-
-    return NextResponse.json(result);
+    return NextResponse.json(buildAgentDiagnostics(
+      db,
+      agent,
+      workspaceId,
+      parsedHours.value as number,
+      parsedSections.value as Set<DiagnosticsSection>,
+    ));
   } catch (error) {
     logger.error({ err: error }, 'GET /api/agents/[id]/diagnostics error');
     return NextResponse.json({ error: 'Failed to fetch diagnostics' }, { status: 500 });
