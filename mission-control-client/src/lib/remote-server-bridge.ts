@@ -59,6 +59,7 @@ import {
 import { logSecurityEvent } from './security-events'
 import { validateLocalCliElevationGrant } from './local-cli-elevation-audit'
 import { getAgentWorkspaceCandidates, readAgentWorkspaceFile } from './agent-workspace'
+import { getSyncableSessions } from './session-sync'
 import type { HumanWatchEvent } from '@/store'
 
 function safeLog(
@@ -227,6 +228,12 @@ const TASK_PROJECTION_EVENT_TYPES = new Set([
   'task.status_changed',
 ])
 
+const ACTIVITY_PROJECTION_EVENT_TYPES = new Set([
+  'activity.created',
+  'session.list.updated',
+  'session.transcript.updated',
+])
+
 function pushLocalAgentInventory(ws: WebSocket | null): boolean {
   return safeSend(ws, {
     type: 'agent_status',
@@ -285,6 +292,57 @@ function getLocalTaskSnapshot(limitInput: unknown): {
     byStatus,
     truncated: total > rows.length,
   }
+}
+
+async function getLocalActivitySnapshot(limitInput: unknown): Promise<{
+  activities: Array<Record<string, unknown>>
+  total: number
+  truncated: boolean
+}> {
+  const limit = Math.max(1, Math.min(Number(limitInput) || 500, 1000))
+  const db = getDatabase()
+  const rows = db.prepare(`
+    SELECT id, type, entity_type, entity_id, actor,
+           substr(description, 1, 4000) AS description, data, created_at
+    FROM activities
+    WHERE workspace_id = 1
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(limit) as Array<Record<string, unknown>>
+  const count = db.prepare(`
+    SELECT COUNT(*) AS total FROM activities WHERE workspace_id = 1
+  `).get() as { total?: number } | undefined
+  const sessions = (await getSyncableSessions())
+    .filter((session) => Number(session.last_activity) > 0)
+    .map((session) => ({
+      id: `session:${session.session_kind}:${session.session_id}:${session.last_activity}`,
+      type: 'session_activity',
+      entity_type: 'session',
+      entity_id: 0,
+      actor: session.agent || session.runtime_group,
+      description: `${session.session_kind} session ${session.active ? 'active' : 'inactive'}`,
+      data: {
+        session_id: session.session_id,
+        session_key: session.session_key || session.session_id,
+        session_kind: session.session_kind,
+        runtime_group: session.runtime_group,
+        active: session.active,
+        model: session.model || null,
+        working_dir: session.working_dir || null,
+        last_user_prompt: session.last_user_prompt || null,
+      },
+      created_at: Math.floor(Number(session.last_activity) / 1000),
+    }))
+  const localRows: Array<Record<string, unknown>> = rows.map((row) => ({
+    ...row,
+    data: parseBridgeJsonValue(row.data, null),
+  }))
+  const sessionRows: Array<Record<string, unknown>> = sessions
+  const activities: Array<Record<string, unknown>> = [...localRows, ...sessionRows]
+    .sort((left, right) => Number(right.created_at || 0) - Number(left.created_at || 0))
+    .slice(0, limit)
+  const total = Number(count?.total || 0) + sessions.length
+  return { activities, total, truncated: total > activities.length }
 }
 
 function getLocalAgentDetail(localAgentId: number): Record<string, unknown> | null {
@@ -728,6 +786,28 @@ function handleTaskSnapshotRequest(message: any): void {
       requestId,
       ok: false,
       error: err?.message || 'Failed to read local task snapshot',
+    })
+  }
+}
+
+async function handleActivitySnapshotRequest(message: any): Promise<void> {
+  const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
+  if (!requestId) return
+  try {
+    const snapshot = await getLocalActivitySnapshot(message?.limit)
+    safeSend(state.ws, {
+      type: 'activity_snapshot_response',
+      requestId,
+      ok: true,
+      ...snapshot,
+      source: 'remote-bridge',
+    })
+  } catch (err: any) {
+    safeSend(state.ws, {
+      type: 'activity_snapshot_response',
+      requestId,
+      ok: false,
+      error: err?.message || 'Failed to read local activity snapshot',
     })
   }
 }
@@ -1590,6 +1670,12 @@ function handleMessage(raw: string): void {
       handleTaskSnapshotRequest(msg)
       break
 
+    case 'activity_snapshot_request':
+      handleActivitySnapshotRequest(msg).catch((e) =>
+        safeLog('error', '[RemoteBridge] activity_snapshot_request handler failed', { err: e }),
+      )
+      break
+
     case 'agents_by_session_request':
       handleAgentsBySessionRequest(msg)
       break
@@ -1772,6 +1858,7 @@ async function connect(): Promise<void> {
         'agent_status',
         'agent_detail',
         'task_snapshot',
+        'activity_snapshot',
         'agents_by_session',
         'agent_session_update',
         'heartbeat',
@@ -1801,22 +1888,35 @@ async function connect(): Promise<void> {
     eventBus.on('chat.message', chatHandler)
 
     let taskProjectionTimer: NodeJS.Timeout | null = null
+    let activityProjectionTimer: NodeJS.Timeout | null = null
     const agentInventoryHandler = (event: { type?: string }) => {
       const eventType = String(event?.type || '')
       if (AGENT_INVENTORY_EVENT_TYPES.has(eventType)) {
         pushLocalAgentInventory(ws)
       }
-      if (!TASK_PROJECTION_EVENT_TYPES.has(eventType)) return
-      if (taskProjectionTimer) clearTimeout(taskProjectionTimer)
-      taskProjectionTimer = setTimeout(() => {
-        taskProjectionTimer = null
-        pushLocalAgentInventory(ws)
-        safeSend(ws, {
-          type: 'task_snapshot_changed',
-          clientId,
-          timestamp: Date.now(),
-        })
-      }, 250)
+      if (TASK_PROJECTION_EVENT_TYPES.has(eventType)) {
+        if (taskProjectionTimer) clearTimeout(taskProjectionTimer)
+        taskProjectionTimer = setTimeout(() => {
+          taskProjectionTimer = null
+          pushLocalAgentInventory(ws)
+          safeSend(ws, {
+            type: 'task_snapshot_changed',
+            clientId,
+            timestamp: Date.now(),
+          })
+        }, 250)
+      }
+      if (ACTIVITY_PROJECTION_EVENT_TYPES.has(eventType)) {
+        if (activityProjectionTimer) return
+        activityProjectionTimer = setTimeout(() => {
+          activityProjectionTimer = null
+          safeSend(ws, {
+            type: 'activity_snapshot_changed',
+            clientId,
+            timestamp: Date.now(),
+          })
+        }, 1000)
+      }
     }
     eventBus.on('server-event', agentInventoryHandler)
 
@@ -1829,6 +1929,8 @@ async function connect(): Promise<void> {
     ;(ws as any)._clearTaskProjectionTimer = () => {
       if (taskProjectionTimer) clearTimeout(taskProjectionTimer)
       taskProjectionTimer = null
+      if (activityProjectionTimer) clearTimeout(activityProjectionTimer)
+      activityProjectionTimer = null
     }
   }
 

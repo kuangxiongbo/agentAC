@@ -29,6 +29,7 @@ export type EventType =
   | 'notification.created'
   | 'notification.read'
   | 'activity.created'
+  | 'activity.projection_changed'
   | 'agent.updated'
   | 'agent.created'
   | 'agent.deleted'

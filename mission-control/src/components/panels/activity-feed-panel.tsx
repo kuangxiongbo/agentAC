@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { useAgentCenterStore } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
+import { ACTIVITY_PROJECTION_UPDATED_EVENT } from '@/lib/use-server-events'
 
 interface Activity {
   id: number
@@ -16,6 +17,8 @@ interface Activity {
   description: string
   data?: any
   created_at: number
+  source?: 'cloud' | 'local_runtime'
+  client_label?: string
   entity?: {
     type: string
     id?: number
@@ -110,6 +113,11 @@ function ActivityRow({ activity }: { activity: Activity }) {
             <div className="flex-1">
               <p className="text-foreground text-sm">
                 <span className="font-medium text-primary">{activity.actor}</span>{' '}
+                {activity.source === 'local_runtime' && (
+                  <span className="mr-1 rounded bg-cyan-500/10 px-1.5 py-0.5 text-[10px] text-cyan-400">
+                    local_runtime{activity.client_label ? ` · ${activity.client_label}` : ''}
+                  </span>
+                )}
                 <span className={activityColors[activity.type] || 'text-muted-foreground'}>
                   {activity.description}
                 </span>
@@ -278,6 +286,12 @@ export function ActivityFeedPanel() {
 
   useEffect(() => {
     fetchActivities()
+  }, [fetchActivities])
+
+  useEffect(() => {
+    const refresh = () => fetchActivities()
+    window.addEventListener(ACTIVITY_PROJECTION_UPDATED_EVENT, refresh)
+    return () => window.removeEventListener(ACTIVITY_PROJECTION_UPDATED_EVENT, refresh)
   }, [fetchActivities])
 
   const pollActivities = useCallback(() => {

@@ -18,6 +18,7 @@ interface ServerEvent {
 }
 
 export const TASK_PROJECTION_UPDATED_EVENT = 'mc:task-projection-updated'
+export const ACTIVITY_PROJECTION_UPDATED_EVENT = 'mc:activity-projection-updated'
 
 /**
  * Hook that connects to the SSE endpoint (/api/events) and dispatches
@@ -198,6 +199,11 @@ export function useServerEvents() {
               created_at: event.data.created_at || Math.floor(Date.now() / 1000),
             })
           }
+          window.dispatchEvent(new CustomEvent(ACTIVITY_PROJECTION_UPDATED_EVENT, { detail: event.data }))
+          break
+
+        case 'activity.projection_changed':
+          window.dispatchEvent(new CustomEvent(ACTIVITY_PROJECTION_UPDATED_EVENT, { detail: event.data }))
           break
 
         case 'permission.requested':

@@ -48,6 +48,21 @@ const dbPrepare = vi.fn((sql: string) => {
   if (sql.includes('SELECT status, COUNT(*) AS count') && sql.includes('FROM tasks')) {
     return { all: vi.fn(() => [{ status: 'in_progress', count: 1 }]) }
   }
+  if (sql.includes('FROM activities') && sql.includes('COUNT(*)')) {
+    return { get: vi.fn(() => ({ total: 1 })) }
+  }
+  if (sql.includes('FROM activities')) {
+    return { all: vi.fn(() => [{
+      id: 9,
+      type: 'task_updated',
+      entity_type: 'task',
+      entity_id: 7,
+      actor: 'Worker',
+      description: 'Local task moved to in progress',
+      data: '{"status":"in_progress"}',
+      created_at: 20,
+    }]) }
+  }
   return { get: vi.fn(() => null), all: vi.fn(() => []) }
 })
 
@@ -85,6 +100,21 @@ vi.mock('@/lib/session-transcript', () => ({
 
 vi.mock('@/lib/session-realtime', () => ({
   notifySessionTranscriptUpdated: vi.fn(),
+}))
+
+vi.mock('@/lib/session-sync', () => ({
+  getSyncableSessions: vi.fn(async () => [{
+    session_id: 'session-a',
+    session_key: 'worker-a',
+    session_kind: 'codex-cli',
+    runtime_group: 'codex',
+    agent: 'Worker',
+    model: 'gpt-5',
+    active: true,
+    last_activity: 21_000,
+    working_dir: '/tmp/project',
+    last_user_prompt: null,
+  }]),
 }))
 
 vi.mock('@/lib/agents-by-session', () => ({
@@ -256,6 +286,29 @@ describe('remote-server-bridge permission steward auto decision', () => {
         tags: ['edge'],
         metadata: { source: 'local' },
       })],
+    }))
+  })
+
+  it('returns local activity and session milestones over the bridge protocol', async () => {
+    const mod = await import('@/lib/remote-server-bridge')
+    ;(mod as any).__testSetBridgeSocket?.(new MockWebSocket())
+    ;(mod as any).__testHandleBridgeMessage?.(JSON.stringify({
+      type: 'activity_snapshot_request',
+      requestId: 'activity-snapshot-1',
+      limit: 50,
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(safeSendCalls).toContainEqual(expect.objectContaining({
+      type: 'activity_snapshot_response',
+      requestId: 'activity-snapshot-1',
+      ok: true,
+      total: 2,
+      truncated: false,
+      activities: expect.arrayContaining([
+        expect.objectContaining({ id: 9, type: 'task_updated', data: { status: 'in_progress' } }),
+        expect.objectContaining({ type: 'session_activity', actor: 'Worker' }),
+      ]),
     }))
   })
 })

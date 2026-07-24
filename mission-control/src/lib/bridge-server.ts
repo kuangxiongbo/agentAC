@@ -213,6 +213,7 @@ type BridgePendingKind =
   | 'continue'
   | 'agent_detail'
   | 'task_snapshot'
+  | 'activity_snapshot'
   | 'agents_by_session'
   | 'agent_session_update'
   | 'steward_create'
@@ -465,6 +466,16 @@ function resolvePendingRequest(msg: any) {
       tasks: Array.isArray(msg?.tasks) ? msg.tasks : [],
       total: typeof msg?.total === 'number' ? msg.total : 0,
       byStatus: msg?.byStatus && typeof msg.byStatus === 'object' ? msg.byStatus : {},
+      truncated: Boolean(msg?.truncated),
+      source: typeof msg?.source === 'string' ? msg.source : 'bridge',
+    })
+    return true
+  }
+
+  if (pending.kind === 'activity_snapshot') {
+    pending.resolve({
+      activities: Array.isArray(msg?.activities) ? msg.activities : [],
+      total: typeof msg?.total === 'number' ? msg.total : 0,
       truncated: Boolean(msg?.truncated),
       source: typeof msg?.source === 'string' ? msg.source : 'bridge',
     })
@@ -777,6 +788,18 @@ export function initBridgeServer(port: number = 5002) {
               break
             }
 
+            case 'activity_snapshot_changed': {
+              touchConnection(connectionId)
+              const { clearWorkActivityProjectionCache } = await import('./work-activity-projection')
+              clearWorkActivityProjectionCache()
+              eventBus.broadcast('activity.projection_changed', {
+                workspace_id: resolveBridgeClientWorkspaceId(getDatabase(), clientId),
+                client_id: clientId,
+                changed_at: Date.now(),
+              })
+              break
+            }
+
             case 'chat_message':
               touchConnection(connectionId)
               if (msg.message) {
@@ -816,6 +839,7 @@ export function initBridgeServer(port: number = 5002) {
             case 'session_continue_response':
             case 'agent_detail_response':
             case 'task_snapshot_response':
+            case 'activity_snapshot_response':
             case 'agents_by_session_response':
             case 'agent_session_update_response':
             case 'steward_create_response':
@@ -1113,6 +1137,45 @@ export async function requestBridgeClientTaskSnapshot(input: {
       clearTimeout(timeout)
       bridgePendingRequests.delete(requestId)
       reject(error instanceof Error ? error : new Error('Failed to send task snapshot request'))
+    }
+  })
+}
+
+export async function requestBridgeClientActivitySnapshot(input: {
+  clientId: string
+  limit?: number
+  timeoutMs?: number
+}): Promise<{
+  activities: Array<Record<string, unknown>>
+  total: number
+  truncated: boolean
+  source: string
+}> {
+  const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
+  const requestId = randomUUID()
+  const timeoutMs = Math.max(1000, input.timeoutMs || 5000)
+
+  return new Promise((resolve, reject) => {
+    const timeout = makePendingTimeout(requestId, 'activity_snapshot', input.clientId, timeoutMs, reject)
+    bridgePendingRequests.set(requestId, {
+      requestId,
+      clientId: input.clientId,
+      connectionId,
+      timeout,
+      kind: 'activity_snapshot',
+      resolve: resolve as (value: unknown) => void,
+      reject,
+    })
+    try {
+      ws.send(JSON.stringify({
+        type: 'activity_snapshot_request',
+        requestId,
+        limit: Math.max(1, Math.min(input.limit || 500, 1000)),
+      }))
+    } catch (error) {
+      clearTimeout(timeout)
+      bridgePendingRequests.delete(requestId)
+      reject(error instanceof Error ? error : new Error('Failed to send activity snapshot request'))
     }
   })
 }

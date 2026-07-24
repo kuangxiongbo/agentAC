@@ -1,239 +1,220 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getDatabase, Activity } from '@/lib/db';
-import { requireRole } from '@/lib/auth';
-import { logger } from '@/lib/logger';
+import { NextRequest, NextResponse } from 'next/server'
+import { getDatabase, type Activity } from '@/lib/db'
+import { requireRole } from '@/lib/auth'
+import { logger } from '@/lib/logger'
+import { getLiveWorkActivityProjection, type ProjectedWorkActivity } from '@/lib/work-activity-projection'
 
-/**
- * GET /api/activities - Get activity stream or stats
- * Query params: type, actor, entity_type, limit, offset, since, hours (for stats)
- */
+type ActivityRow = Activity & Record<string, unknown>
+
+function parseLimit(value: string | null): number {
+  const parsed = Number.parseInt(value || '50', 10)
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(parsed, 500)) : 50
+}
+
+function parseOffset(value: string | null): number {
+  const parsed = Number.parseInt(value || '0', 10)
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0
+}
+
+function parseTypes(value: string | null): string[] {
+  return value?.split(',').map((type) => type.trim()).filter(Boolean) || []
+}
+
+function parseData(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value !== 'string' || !value.trim()) return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function enhanceCloudActivities(db: ReturnType<typeof getDatabase>, activities: ActivityRow[], workspaceId: number) {
+  const taskDetail = db.prepare('SELECT id, title, status FROM tasks WHERE id = ? AND workspace_id = ?')
+  const agentDetail = db.prepare('SELECT id, name, role, status FROM agents WHERE id = ? AND workspace_id = ?')
+  const commentDetail = db.prepare(`
+    SELECT c.id, c.content, c.task_id, t.title AS task_title
+    FROM comments c
+    LEFT JOIN tasks t ON c.task_id = t.id
+    WHERE c.id = ? AND c.workspace_id = ? AND t.workspace_id = ?
+  `)
+  return activities.map((activity) => {
+    let entity: Record<string, unknown> | null = null
+    try {
+      if (activity.entity_type === 'task') {
+        const task = taskDetail.get(activity.entity_id, workspaceId) as Record<string, unknown> | undefined
+        if (task) entity = { type: 'task', ...task }
+      } else if (activity.entity_type === 'agent') {
+        const agent = agentDetail.get(activity.entity_id, workspaceId) as Record<string, unknown> | undefined
+        if (agent) entity = { type: 'agent', ...agent }
+      } else if (activity.entity_type === 'comment') {
+        const comment = commentDetail.get(activity.entity_id, workspaceId, workspaceId) as Record<string, unknown> | undefined
+        if (comment) entity = {
+          type: 'comment',
+          ...comment,
+          content_preview: String(comment.content || '').substring(0, 100),
+        }
+      }
+    } catch (error) {
+      logger.warn({ err: error, activityId: activity.id }, 'Failed to fetch entity details for activity')
+    }
+    return { ...activity, source: 'cloud', authority: 'cloud', data: parseData(activity.data), entity }
+  })
+}
+
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
-
   try {
-    const { searchParams, pathname } = new URL(request.url);
-    const workspaceId = auth.user.workspace_id ?? 1;
-    
-    // Route to stats endpoint if requested
-    if (pathname.endsWith('/stats') || searchParams.has('stats')) {
-      return handleStatsRequest(request, workspaceId);
+    const url = new URL(request.url)
+    const workspaceId = auth.user.workspace_id ?? 1
+    if (url.pathname.endsWith('/stats') || url.searchParams.has('stats')) {
+      return handleStatsRequest(url, workspaceId)
     }
-    
-    // Default activities endpoint
-    return handleActivitiesRequest(request, workspaceId);
+    return handleActivitiesRequest(url, workspaceId)
   } catch (error) {
-    logger.error({ err: error }, 'GET /api/activities error');
-    return NextResponse.json({ error: 'Failed to process request' }, { status: 500 });
+    logger.error({ err: error }, 'GET /api/activities error')
+    return NextResponse.json({ error: 'Failed to process request' }, { status: 500 })
   }
 }
 
-/**
- * Handle regular activities request
- */
-async function handleActivitiesRequest(request: NextRequest, workspaceId: number) {
+async function handleActivitiesRequest(url: URL, workspaceId: number) {
   try {
-    const db = getDatabase();
-    const { searchParams } = new URL(request.url);
-    
-    // Parse query parameters
-    const type = searchParams.get('type');
-    const actor = searchParams.get('actor');
-    const entity_type = searchParams.get('entity_type');
-    const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 500);
-    const offset = parseInt(searchParams.get('offset') || '0');
-    const since = searchParams.get('since'); // Unix timestamp for real-time updates
-    
-    // Build dynamic query
-    let query = 'SELECT * FROM activities WHERE workspace_id = ?';
-    const params: any[] = [workspaceId];
-    
-    if (type) {
-      const types = type.split(',').map(t => t.trim()).filter(Boolean);
-      if (types.length === 1) {
-        query += ' AND type = ?';
-        params.push(types[0]);
-      } else if (types.length > 1) {
-        query += ` AND type IN (${types.map(() => '?').join(',')})`;
-        params.push(...types);
-      }
+    const db = getDatabase()
+    const types = parseTypes(url.searchParams.get('type'))
+    const actor = url.searchParams.get('actor')
+    const entityType = url.searchParams.get('entity_type')
+    const clientId = url.searchParams.get('client_id')
+    const sinceValue = Number.parseInt(url.searchParams.get('since') || '', 10)
+    const since = Number.isFinite(sinceValue) ? sinceValue : null
+    const limit = parseLimit(url.searchParams.get('limit'))
+    const offset = parseOffset(url.searchParams.get('offset'))
+
+    let projection = { activities: [] as ProjectedWorkActivity[], clients: [] as any[], errors: [] as any[] }
+    try {
+      projection = await getLiveWorkActivityProjection(db, workspaceId)
+    } catch (error) {
+      logger.warn({ err: error, workspaceId }, 'GET /api/activities edge projection unavailable')
     }
-    
+    const localActivities = projection.activities.filter((activity) => {
+      if (clientId && activity.bridge_client_id !== clientId) return false
+      if (types.length && !types.includes(activity.type)) return false
+      if (actor && activity.actor !== actor) return false
+      if (entityType && activity.entity_type !== entityType) return false
+      if (since != null && activity.created_at <= since) return false
+      return true
+    })
+
+    const where = ['workspace_id = ?']
+    const params: unknown[] = [workspaceId]
+    if (types.length === 1) {
+      where.push('type = ?')
+      params.push(types[0])
+    } else if (types.length > 1) {
+      where.push(`type IN (${types.map(() => '?').join(',')})`)
+      params.push(...types)
+    }
     if (actor) {
-      query += ' AND actor = ?';
-      params.push(actor);
+      where.push('actor = ?')
+      params.push(actor)
     }
-    
-    if (entity_type) {
-      query += ' AND entity_type = ?';
-      params.push(entity_type);
+    if (entityType) {
+      where.push('entity_type = ?')
+      params.push(entityType)
     }
-    
-    if (since) {
-      query += ' AND created_at > ?';
-      params.push(parseInt(since));
+    if (since != null) {
+      where.push('created_at > ?')
+      params.push(since)
     }
-    
-    query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-    params.push(limit, offset);
-    
-    const stmt = db.prepare(query);
-    const activities = stmt.all(...params) as Activity[];
-    
-    // Prepare entity detail statements once (avoids N+1)
-    const taskDetailStmt = db.prepare('SELECT id, title, status FROM tasks WHERE id = ? AND workspace_id = ?');
-    const agentDetailStmt = db.prepare('SELECT id, name, role, status FROM agents WHERE id = ? AND workspace_id = ?');
-    const commentDetailStmt = db.prepare(`
-      SELECT c.id, c.content, c.task_id, t.title as task_title
-      FROM comments c
-      LEFT JOIN tasks t ON c.task_id = t.id
-      WHERE c.id = ? AND c.workspace_id = ? AND t.workspace_id = ?
-    `);
 
-    // Parse JSON data field and enhance with related entity data
-    const enhancedActivities = activities.map(activity => {
-      let entityDetails = null;
+    let cloudActivities: ActivityRow[] = []
+    let cloudTotal = 0
+    if (!clientId) {
+      cloudActivities = db.prepare(`
+        SELECT * FROM activities
+        WHERE ${where.join(' AND ')}
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+      `).all(...params, offset + limit) as ActivityRow[]
+      cloudTotal = Number((db.prepare(`
+        SELECT COUNT(*) AS total FROM activities WHERE ${where.join(' AND ')}
+      `).get(...params) as { total?: number } | undefined)?.total || 0)
+    }
 
-      try {
-        switch (activity.entity_type) {
-          case 'task': {
-            const task = taskDetailStmt.get(activity.entity_id, workspaceId) as any;
-            if (task) {
-              entityDetails = { type: 'task', ...task };
-            }
-            break;
-          }
-          case 'agent': {
-            const agent = agentDetailStmt.get(activity.entity_id, workspaceId) as any;
-            if (agent) {
-              entityDetails = { type: 'agent', ...agent };
-            }
-            break;
-          }
-          case 'comment': {
-            const comment = commentDetailStmt.get(activity.entity_id, workspaceId, workspaceId) as any;
-            if (comment) {
-              entityDetails = {
-                type: 'comment',
-                ...comment,
-                content_preview: comment.content?.substring(0, 100) || ''
-              };
-            }
-            break;
-          }
-        }
-      } catch (error) {
-        logger.warn({ err: error, activityId: activity.id }, 'Failed to fetch entity details for activity');
-      }
+    const merged = [
+      ...localActivities,
+      ...enhanceCloudActivities(db, cloudActivities, workspaceId),
+    ].sort((left, right) => Number(right.created_at) - Number(left.created_at) || Number(left.id) - Number(right.id))
+    const activities = merged.slice(offset, offset + limit)
+    const hasLocalFilters = types.length > 0 || Boolean(actor) || Boolean(entityType) || since != null
+    const localTotal = hasLocalFilters
+      ? localActivities.length
+      : projection.clients
+          .filter((client) => !clientId || client.client_id === clientId)
+          .reduce((sum, client) => sum + Number(client.total || 0), 0)
+    const total = cloudTotal + localTotal
 
-      return {
-        ...activity,
-        data: activity.data ? JSON.parse(activity.data) : null,
-        entity: entityDetails
-      };
-    });
-    
-    // Get total count for pagination
-    let countQuery = 'SELECT COUNT(*) as total FROM activities WHERE workspace_id = ?';
-    const countParams: any[] = [workspaceId];
-    
-    if (type) {
-      const types = type.split(',').map(t => t.trim()).filter(Boolean);
-      if (types.length === 1) {
-        countQuery += ' AND type = ?';
-        countParams.push(types[0]);
-      } else if (types.length > 1) {
-        countQuery += ` AND type IN (${types.map(() => '?').join(',')})`;
-        countParams.push(...types);
-      }
-    }
-    
-    if (actor) {
-      countQuery += ' AND actor = ?';
-      countParams.push(actor);
-    }
-    
-    if (entity_type) {
-      countQuery += ' AND entity_type = ?';
-      countParams.push(entity_type);
-    }
-    
-    if (since) {
-      countQuery += ' AND created_at > ?';
-      countParams.push(parseInt(since));
-    }
-    
-    const countResult = db.prepare(countQuery).get(...countParams) as { total: number };
-    
-    return NextResponse.json({ 
-      activities: enhancedActivities,
-      total: countResult.total,
-      hasMore: offset + activities.length < countResult.total
-    });
+    return NextResponse.json({
+      activities,
+      total,
+      hasMore: offset + activities.length < total,
+      authority: projection.clients.length ? 'local_runtime' : 'cloud',
+      local_live: projection.clients.length > 0,
+      projection_clients: projection.clients,
+      projection_errors: projection.errors,
+      projection_truncated: projection.clients.some((client) => client.truncated),
+    })
   } catch (error) {
-    logger.error({ err: error }, 'GET /api/activities (activities) error');
-    return NextResponse.json({ error: 'Failed to fetch activities' }, { status: 500 });
+    logger.error({ err: error }, 'GET /api/activities (activities) error')
+    return NextResponse.json({ error: 'Failed to fetch activities' }, { status: 500 })
   }
 }
 
-/**
- * Handle stats request
- */
-async function handleStatsRequest(request: NextRequest, workspaceId: number) {
+async function handleStatsRequest(url: URL, workspaceId: number) {
   try {
-    const db = getDatabase();
-    const { searchParams } = new URL(request.url);
-    
-    // Parse timeframe parameter (defaults to 24 hours)
-    const hours = parseInt(searchParams.get('hours') || '24');
-    const since = Math.floor(Date.now() / 1000) - (hours * 3600);
-    
-    // Get activity counts by type
-    const activityStats = db.prepare(`
-      SELECT 
-        type,
-        COUNT(*) as count
-      FROM activities 
+    const db = getDatabase()
+    const parsedHours = Number.parseInt(url.searchParams.get('hours') || '24', 10)
+    const hours = Number.isFinite(parsedHours) ? Math.max(1, Math.min(parsedHours, 24 * 365)) : 24
+    const since = Math.floor(Date.now() / 1000) - hours * 3600
+    let projection = { activities: [] as ProjectedWorkActivity[], clients: [] as any[], errors: [] as any[] }
+    try {
+      projection = await getLiveWorkActivityProjection(db, workspaceId)
+    } catch (error) {
+      logger.warn({ err: error, workspaceId }, 'GET /api/activities stats edge projection unavailable')
+    }
+    const local = projection.activities.filter((activity) => activity.created_at > since)
+    const cloud = db.prepare(`
+      SELECT type, actor, created_at FROM activities
       WHERE created_at > ? AND workspace_id = ?
-      GROUP BY type
-      ORDER BY count DESC
-    `).all(since, workspaceId) as { type: string; count: number }[];
-    
-    // Get most active actors
-    const activeActors = db.prepare(`
-      SELECT 
-        actor,
-        COUNT(*) as activity_count
-      FROM activities 
-      WHERE created_at > ? AND workspace_id = ?
-      GROUP BY actor
-      ORDER BY activity_count DESC
-      LIMIT 10
-    `).all(since, workspaceId) as { actor: string; activity_count: number }[];
-    
-    // Get activity timeline (hourly buckets)
-    const timeline = db.prepare(`
-      SELECT 
-        (created_at / 3600) * 3600 as hour_bucket,
-        COUNT(*) as count
-      FROM activities 
-      WHERE created_at > ? AND workspace_id = ?
-      GROUP BY hour_bucket
-      ORDER BY hour_bucket ASC
-    `).all(since, workspaceId) as { hour_bucket: number; count: number }[];
-    
+    `).all(since, workspaceId) as Array<{ type: string; actor: string; created_at: number }>
+    const combined = [...cloud, ...local]
+    const byType = new Map<string, number>()
+    const byActor = new Map<string, number>()
+    const byHour = new Map<number, number>()
+    for (const activity of combined) {
+      byType.set(activity.type, (byType.get(activity.type) || 0) + 1)
+      byActor.set(activity.actor, (byActor.get(activity.actor) || 0) + 1)
+      const bucket = Math.floor(Number(activity.created_at) / 3600) * 3600
+      byHour.set(bucket, (byHour.get(bucket) || 0) + 1)
+    }
     return NextResponse.json({
       timeframe: `${hours} hours`,
-      activityByType: activityStats,
-      topActors: activeActors,
-      timeline: timeline.map(item => ({
-        timestamp: item.hour_bucket,
-        count: item.count,
-        hour: new Date(item.hour_bucket * 1000).toISOString()
-      }))
-    });
+      activityByType: [...byType].map(([type, count]) => ({ type, count })).sort((a, b) => b.count - a.count),
+      topActors: [...byActor].map(([actor, activity_count]) => ({ actor, activity_count }))
+        .sort((a, b) => b.activity_count - a.activity_count).slice(0, 10),
+      timeline: [...byHour].sort(([left], [right]) => left - right).map(([timestamp, count]) => ({
+        timestamp,
+        count,
+        hour: new Date(timestamp * 1000).toISOString(),
+      })),
+      authority: projection.clients.length ? 'local_runtime' : 'cloud',
+      local_live: projection.clients.length > 0,
+      projection_truncated: projection.clients.some((client) => client.truncated),
+    })
   } catch (error) {
-    logger.error({ err: error }, 'GET /api/activities (stats) error');
-    return NextResponse.json({ error: 'Failed to fetch activity stats' }, { status: 500 });
+    logger.error({ err: error }, 'GET /api/activities (stats) error')
+    return NextResponse.json({ error: 'Failed to fetch activity stats' }, { status: 500 })
   }
 }
