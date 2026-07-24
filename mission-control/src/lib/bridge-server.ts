@@ -982,6 +982,15 @@ function normalizeBridgeAgentList(agents: any[]): BridgeAgentIndexInput[] {
         typeof agent.session_key === 'string' && agent.session_key.trim()
           ? agent.session_key.trim()
           : null,
+      task_stats: agent.task_stats && typeof agent.task_stats === 'object'
+        ? {
+            total: Math.max(0, Number(agent.task_stats.total) || 0),
+            assigned: Math.max(0, Number(agent.task_stats.assigned) || 0),
+            in_progress: Math.max(0, Number(agent.task_stats.in_progress) || 0),
+            quality_review: Math.max(0, Number(agent.task_stats.quality_review) || 0),
+            done: Math.max(0, Number(agent.task_stats.done) || 0),
+          }
+        : null,
     }))
     .filter((agent) => agent.name && Number.isFinite(agent.id))
 }

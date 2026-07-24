@@ -1041,7 +1041,7 @@ export function TasksTab({ agent }: { agent: Agent }) {
   useEffect(() => {
     const fetchTasks = async () => {
       try {
-        const response = await fetch(`/api/tasks?assigned_to=${agent.name}`)
+        const response = await fetch(`/api/agents/${encodeURIComponent(String(agent.id))}/tasks`)
         if (response.ok) {
           const data = await response.json()
           setTasks(data.tasks || [])
@@ -1054,7 +1054,7 @@ export function TasksTab({ agent }: { agent: Agent }) {
     }
 
     fetchTasks()
-  }, [agent.name])
+  }, [agent.id])
 
   if (loading) {
     return (
@@ -1113,6 +1113,11 @@ export function TasksTab({ agent }: { agent: Agent }) {
                   }`}>
                     {task.priority}
                   </span>
+                  {task.source && (
+                    <span className="bg-surface-2 px-2 py-1 text-xs text-muted-foreground">
+                      {task.source}
+                    </span>
+                  )}
                 </div>
               </div>
               
@@ -1134,24 +1139,34 @@ export function ActivityTab({ agent }: { agent: Agent }) {
   const t = useTranslations('agentDetail')
   const [activities, setActivities] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    const fetchActivities = async () => {
+    let active = true
+    const fetchActivities = async (initial = false) => {
       try {
-        const response = await fetch(`/api/activities?actor=${agent.name}&limit=50`)
-        if (response.ok) {
-          const data = await response.json()
-          setActivities(data.activities || [])
-        }
+        if (initial) setLoading(true)
+        const response = await fetch(`/api/agents/${encodeURIComponent(String(agent.id))}/activity?limit=50`)
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || 'Failed to load activity')
+        if (!active) return
+        setActivities(data.activities || [])
+        setError(null)
       } catch (error) {
         log.error('Failed to fetch activities:', error)
+        if (active) setError(error instanceof Error ? error.message : 'Failed to load activity')
       } finally {
-        setLoading(false)
+        if (active) setLoading(false)
       }
     }
 
-    fetchActivities()
-  }, [agent.name])
+    fetchActivities(true)
+    const timer = window.setInterval(() => fetchActivities(), 10_000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [agent.id])
 
   if (loading) {
     return (
@@ -1177,8 +1192,12 @@ export function ActivityTab({ agent }: { agent: Agent }) {
   return (
     <div className="p-6 space-y-4">
       <h4 className="text-lg font-medium text-foreground">{t('recentActivity')}</h4>
-      
-      {activities.length === 0 ? (
+
+      {error ? (
+        <div className="border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+          {error}
+        </div>
+      ) : activities.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-8 text-muted-foreground/50">
           <div className="w-10 h-10 rounded-full bg-surface-2 flex items-center justify-center mb-2">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
@@ -1196,7 +1215,9 @@ export function ActivityTab({ agent }: { agent: Agent }) {
                 <div className="flex-1">
                   <p className="text-foreground">{activity.description}</p>
                   <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
+                    <span className="rounded bg-surface-2 px-1.5 py-0.5">{activity.source || 'activity'}</span>
                     <span>{activity.type}</span>
+                    {activity.status && <span className="text-foreground/70">{activity.status}</span>}
                     <span>•</span>
                     <span>{new Date(activity.created_at * 1000).toLocaleString()}</span>
                   </div>

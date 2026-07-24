@@ -4,6 +4,7 @@ import { requireRole } from '@/lib/auth';
 import { agentHeartbeatLimiter } from '@/lib/rate-limit';
 import { logger } from '@/lib/logger';
 import { resolveTaskImplementationTarget } from '@/lib/task-routing';
+import { resolveAgentQueryIdentity, sqlPlaceholders } from '@/lib/agent-query-identity';
 
 /**
  * GET /api/agents/[id]/heartbeat - Agent heartbeat check
@@ -28,15 +29,7 @@ export async function GET(
     const agentId = resolvedParams.id;
     const workspaceId = auth.user.workspace_id ?? 1;
     
-    // Get agent by ID or name
-    let agent: any;
-    if (isNaN(Number(agentId))) {
-      // Lookup by name
-      agent = db.prepare('SELECT * FROM agents WHERE name = ? AND workspace_id = ?').get(agentId, workspaceId);
-    } else {
-      // Lookup by ID
-      agent = db.prepare('SELECT * FROM agents WHERE id = ? AND workspace_id = ?').get(Number(agentId), workspaceId);
-    }
+    const agent = resolveAgentQueryIdentity(db, agentId, workspaceId)
     
     if (!agent) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
@@ -51,13 +44,16 @@ export async function GET(
       SELECT c.*, t.title as task_title 
       FROM comments c
       JOIN tasks t ON c.task_id = t.id
-      WHERE c.mentions LIKE ?
+      WHERE EXISTS (
+        SELECT 1 FROM json_each(COALESCE(c.mentions, '[]')) mention
+        WHERE mention.value IN (${sqlPlaceholders(agent.aliases)})
+      )
       AND c.workspace_id = ?
       AND t.workspace_id = ?
       AND c.created_at > ?
       ORDER BY c.created_at DESC
       LIMIT 10
-    `).all(`%"${agent.name}"%`, workspaceId, workspaceId, fourHoursAgo);
+    `).all(...agent.aliases, workspaceId, workspaceId, fourHoursAgo);
     
     if (mentions.length > 0) {
       workItems.push({
@@ -75,13 +71,26 @@ export async function GET(
     
     // 2. Check for assigned tasks
     const assignedTasks = db.prepare(`
-      SELECT * FROM tasks 
-      WHERE assigned_to = ?
-      AND workspace_id = ?
-      AND status IN ('assigned', 'in_progress')
-      ORDER BY priority DESC, created_at ASC
+      SELECT DISTINCT t.* FROM tasks t
+      LEFT JOIN supervision_goal_tasks sgt ON sgt.task_id = t.id
+      LEFT JOIN supervision_goals g ON g.id = sgt.goal_id AND g.workspace_id = t.workspace_id
+      WHERE t.workspace_id = ?
+      AND (
+        t.assigned_to IN (${sqlPlaceholders(agent.aliases)})
+        ${agent.clientId && agent.localAgentId != null
+          ? `OR (g.client_id = ? AND sgt.assigned_agent_id = ?)`
+          : ''}
+      )
+      AND t.status IN ('assigned', 'in_progress')
+      ORDER BY t.priority DESC, t.created_at ASC
       LIMIT 10
-    `).all(agent.name, workspaceId) as any[];
+    `).all(
+      workspaceId,
+      ...agent.aliases,
+      ...(agent.clientId && agent.localAgentId != null
+        ? [agent.clientId, String(agent.localAgentId)]
+        : []),
+    ) as any[];
 
     if (assignedTasks.length > 0) {
       workItems.push({
@@ -99,7 +108,8 @@ export async function GET(
     }
     
     // 3. Check for unread notifications
-    const notifications = db_helpers.getUnreadNotifications(agent.name, workspaceId);
+    const notifications = agent.aliases.flatMap((alias) => db_helpers.getUnreadNotifications(alias, workspaceId))
+      .filter((notification, index, all) => all.findIndex((item) => item.id === notification.id) === index);
     
     if (notifications.length > 0) {
       workItems.push({

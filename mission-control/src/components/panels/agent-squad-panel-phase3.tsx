@@ -1060,15 +1060,21 @@ function AgentDetailModalPhase3({
   }
 
   const isOpenClaw = (agentState.framework || 'openclaw') === 'openclaw'
+  const agentSource = String((agentState as any).source || '')
+  const isRemoteWork = centralMode
+    && (agentSource === 'bridge_index' || agentSource === 'client')
+    && !isHumanWatchAgent(agentState)
 
   const tabs = [
     { id: 'overview', label: t('overviewTab') },
     ...(isOpenClaw ? [
       { id: 'files', label: t('filesTab') },
-      { id: 'tools', label: t('toolsTab') },
-      { id: 'models', label: t('modelsTab') },
-      { id: 'channels', label: t('channelsTab') },
-      { id: 'cron', label: t('cronTab') },
+      ...(!isRemoteWork ? [
+        { id: 'tools', label: t('toolsTab') },
+        { id: 'models', label: t('modelsTab') },
+        { id: 'channels', label: t('channelsTab') },
+        { id: 'cron', label: t('cronTab') },
+      ] : []),
       { id: 'soul', label: t('soulTab') },
       { id: 'memory', label: t('memoryTab') },
     ] : []),
@@ -1289,6 +1295,7 @@ function AgentDetailModalPhase3({
                 setAgentState((prev) => ({ ...prev, session_key: sessionKey }))
                 setFormData((prev) => ({ ...prev, session_key: sessionKey }))
               }}
+              readOnly={isRemoteWork}
             />
           )}
           
@@ -1298,6 +1305,7 @@ function AgentDetailModalPhase3({
               soulContent={formData.soul_content}
               templates={soulTemplates}
               onSave={handleSoulSave}
+              readOnly={isRemoteWork}
             />
           )}
           
@@ -1306,6 +1314,7 @@ function AgentDetailModalPhase3({
               agent={agentState}
               workingMemory={formData.working_memory}
               onSave={handleMemorySave}
+              readOnly={isRemoteWork}
             />
           )}
           
@@ -1319,11 +1328,12 @@ function AgentDetailModalPhase3({
               workspaceFiles={workspaceFiles}
               onSaveWorkspaceFile={handleWorkspaceFileSave}
               onSave={onUpdate}
+              readOnly={isRemoteWork}
             />
           )}
 
           {activeTab === 'files' && (
-            <FilesTab agent={agentState} />
+            <FilesTab agent={agentState} readOnly={isRemoteWork} />
           )}
 
           {activeTab === 'tools' && (

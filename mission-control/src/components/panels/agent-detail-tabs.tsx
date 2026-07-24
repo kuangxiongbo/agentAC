@@ -157,6 +157,7 @@ export function OverviewTab({
   loadingHeartbeat,
   onPerformHeartbeat,
   onAgentSessionBound,
+  readOnly = false,
 }: {
   agent: Agent
   editing: boolean
@@ -172,6 +173,7 @@ export function OverviewTab({
   loadingHeartbeat: boolean
   onPerformHeartbeat: () => Promise<void>
   onAgentSessionBound?: (sessionKey: string) => void
+  readOnly?: boolean
 }) {
   const t = useTranslations('agentDetail')
   const [messageFrom, setMessageFrom] = useState('system')
@@ -262,7 +264,7 @@ export function OverviewTab({
         <div className="space-y-4">
           {/* Status + Actions row */}
           <div className="flex items-center gap-2">
-            {(['idle', 'busy', 'offline'] as const).map(status => (
+            {!readOnly && (['idle', 'busy', 'offline'] as const).map(status => (
               <button
                 key={status}
                 onClick={() => onStatusUpdate(agent.name, status)}
@@ -470,9 +472,9 @@ export function OverviewTab({
                 </Button>
                 <Button onClick={onCancel} variant="secondary" size="sm" disabled={saveBusy}>{t('cancel')}</Button>
               </>
-            ) : (
+            ) : !readOnly ? (
               <Button onClick={onEdit} variant="secondary" size="sm">{t('edit')}</Button>
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -517,11 +519,13 @@ export function SoulTab({
   agent,
   soulContent,
   templates,
+  readOnly = false,
   onSave
 }: {
   agent: Agent
   soulContent: string
   templates: SoulTemplate[]
+  readOnly?: boolean
   onSave: (content: string, templateName?: string) => Promise<void>
 }) {
   const t = useTranslations('agentDetail')
@@ -558,7 +562,7 @@ export function SoulTab({
       <div className="flex justify-between items-center">
         <h4 className="text-lg font-medium text-foreground">{t('soulConfiguration')}</h4>
         <div className="flex gap-2">
-          {!editing && (
+          {!editing && !readOnly && (
             <Button
               onClick={() => setEditing(true)}
               size="sm"
@@ -650,11 +654,13 @@ export function SoulTab({
 export function MemoryTab({
   agent,
   workingMemory,
-  onSave
+  onSave,
+  readOnly = false,
 }: {
   agent: Agent
   workingMemory: string
   onSave: (content: string, append?: boolean) => Promise<void>
+  readOnly?: boolean
 }) {
   const t = useTranslations('agentDetail')
   const [editing, setEditing] = useState(false)
@@ -695,7 +701,7 @@ export function MemoryTab({
           </p>
         </div>
         <div className="flex gap-2">
-          {!editing && (
+          {!editing && !readOnly && (
             <>
               <Button
                 onClick={() => {
@@ -807,7 +813,7 @@ export function TasksTab({ agent }: { agent: Agent }) {
   useEffect(() => {
     const fetchTasks = async () => {
       try {
-        const response = await fetch(`/api/tasks?assigned_to=${agent.name}`)
+        const response = await fetch(`/api/agents/${encodeURIComponent(String(agent.id))}/tasks`)
         if (response.ok) {
           const data = await response.json()
           setTasks(data.tasks || [])
@@ -820,7 +826,7 @@ export function TasksTab({ agent }: { agent: Agent }) {
     }
 
     fetchTasks()
-  }, [agent.name])
+  }, [agent.id])
 
   if (loading) {
     return (
@@ -879,6 +885,11 @@ export function TasksTab({ agent }: { agent: Agent }) {
                   }`}>
                     {task.priority}
                   </span>
+                  {task.source && (
+                    <span className="bg-surface-2 px-2 py-1 text-xs text-muted-foreground">
+                      {task.source}
+                    </span>
+                  )}
                 </div>
               </div>
               
@@ -900,24 +911,34 @@ export function ActivityTab({ agent }: { agent: Agent }) {
   const t = useTranslations('agentDetail')
   const [activities, setActivities] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    const fetchActivities = async () => {
+    let active = true
+    const fetchActivities = async (initial = false) => {
       try {
-        const response = await fetch(`/api/activities?actor=${agent.name}&limit=50`)
-        if (response.ok) {
-          const data = await response.json()
-          setActivities(data.activities || [])
-        }
+        if (initial) setLoading(true)
+        const response = await fetch(`/api/agents/${encodeURIComponent(String(agent.id))}/activity?limit=50`)
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || 'Failed to load activity')
+        if (!active) return
+        setActivities(data.activities || [])
+        setError(null)
       } catch (error) {
         log.error('Failed to fetch activities:', error)
+        if (active) setError(error instanceof Error ? error.message : 'Failed to load activity')
       } finally {
-        setLoading(false)
+        if (active) setLoading(false)
       }
     }
 
-    fetchActivities()
-  }, [agent.name])
+    fetchActivities(true)
+    const timer = window.setInterval(() => fetchActivities(), 10_000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [agent.id])
 
   if (loading) {
     return (
@@ -943,8 +964,12 @@ export function ActivityTab({ agent }: { agent: Agent }) {
   return (
     <div className="p-6 space-y-4">
       <h4 className="text-lg font-medium text-foreground">{t('recentActivity')}</h4>
-      
-      {activities.length === 0 ? (
+
+      {error ? (
+        <div className="border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+          {error}
+        </div>
+      ) : activities.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-8 text-muted-foreground/50">
           <div className="w-10 h-10 rounded-full bg-surface-2 flex items-center justify-center mb-2">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
@@ -962,7 +987,9 @@ export function ActivityTab({ agent }: { agent: Agent }) {
                 <div className="flex-1">
                   <p className="text-foreground">{activity.description}</p>
                   <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
+                    <span className="rounded bg-surface-2 px-1.5 py-0.5">{activity.source || 'activity'}</span>
                     <span>{activity.type}</span>
+                    {activity.status && <span className="text-foreground/70">{activity.status}</span>}
                     <span>•</span>
                     <span>{new Date(activity.created_at * 1000).toLocaleString()}</span>
                   </div>
@@ -1749,12 +1776,14 @@ export function ConfigTab({
   agent,
   workspaceFiles,
   onSaveWorkspaceFile,
-  onSave
+  onSave,
+  readOnly = false,
 }: {
   agent: Agent & { config?: any }
   workspaceFiles?: { identityMd: string; agentMd: string }
   onSaveWorkspaceFile?: (file: 'identity.md' | 'agent.md', content: string) => Promise<void>
   onSave: () => void
+  readOnly?: boolean
 }) {
   const t = useTranslations('agentDetail')
   const [config, setConfig] = useState<any>(agent.config || {})
@@ -1958,14 +1987,16 @@ export function ConfigTab({
       <div className="flex justify-between items-center">
         <h4 className="text-lg font-medium text-foreground">{t('openclawConfig')}</h4>
         <div className="flex gap-2">
-          <Button
-            onClick={() => setShowJson(!showJson)}
-            variant="secondary"
-            size="xs"
-          >
-            {showJson ? t('structured') : t('editJson')}
-          </Button>
-          {!editing && (
+          {!readOnly && (
+            <Button
+              onClick={() => setShowJson(!showJson)}
+              variant="secondary"
+              size="xs"
+            >
+              {showJson ? t('structured') : t('editJson')}
+            </Button>
+          )}
+          {!editing && !readOnly && (
             <Button
               onClick={() => setEditing(true)}
               size="sm"
@@ -2164,7 +2195,7 @@ export function ConfigTab({
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <label className="text-xs text-muted-foreground font-medium">identity.md</label>
-                {editing && onSaveWorkspaceFile && (
+                {editing && !readOnly && onSaveWorkspaceFile && (
                   <Button
                     onClick={() => saveWorkspaceFile('identity.md')}
                     disabled={savingIdentityMd}
@@ -2192,7 +2223,7 @@ export function ConfigTab({
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <label className="text-xs text-muted-foreground font-medium">agent.md</label>
-                {editing && onSaveWorkspaceFile && (
+                {editing && !readOnly && onSaveWorkspaceFile && (
                   <Button onClick={() => saveWorkspaceFile('agent.md')} disabled={savingAgentMd} size="xs">
                     {savingAgentMd ? t('saving') : t('saveAgentMd')}
                   </Button>
@@ -2533,7 +2564,7 @@ interface FileEntry {
   content: string
 }
 
-export function FilesTab({ agent }: { agent: Agent }) {
+export function FilesTab({ agent, readOnly = false }: { agent: Agent; readOnly?: boolean }) {
   const t = useTranslations('agentDetail')
   const [files, setFiles] = useState<FileEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -2669,7 +2700,7 @@ export function FilesTab({ agent }: { agent: Agent }) {
                     <span className="ml-2 px-1.5 py-0.5 text-2xs bg-amber-500/20 text-amber-400 rounded">{t('missing')}</span>
                   )}
                 </div>
-                <div className="flex gap-2">
+                {!readOnly && <div className="flex gap-2">
                   <Button
                     onClick={() => setDraft(baseContent)}
                     size="xs"
@@ -2685,11 +2716,12 @@ export function FilesTab({ agent }: { agent: Agent }) {
                   >
                     {saving ? t('saving') : t('save')}
                   </Button>
-                </div>
+                </div>}
               </div>
               <textarea
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
+                readOnly={readOnly}
                 rows={20}
                 className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-primary/50 resize-y"
                 placeholder={activeEntry.exists ? '' : t('fileNotExistYet')}

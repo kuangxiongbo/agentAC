@@ -88,7 +88,16 @@ export async function GET(request: NextRequest) {
     }));
     
     // Get task counts for all listed agents in one query (avoids N+1 queries)
-    const agentNames = agentsWithParsedData.map(agent => agent.name).filter(Boolean)
+    const aliasesByAgent = new Map(agentsWithParsedData.map((agent) => {
+      const parsedConfig = parseAgentConfigRecord(agent.config)
+      const aliases = [...new Set([
+        agent.name,
+        typeof parsedConfig.original_name === 'string' ? parsedConfig.original_name : '',
+        agent.session_key || '',
+      ].map((value) => String(value || '').trim()).filter(Boolean))]
+      return [agent.name, aliases] as const
+    }))
+    const agentNames = [...new Set([...aliasesByAgent.values()].flat())]
     const taskStatsByAgent = new Map<string, { total: number; assigned: number; in_progress: number; quality_review: number; done: number }>()
 
     if (agentNames.length > 0) {
@@ -125,13 +134,22 @@ export async function GET(request: NextRequest) {
     }
 
     const agentsWithStats = agentsWithParsedData.map(agent => {
-      const taskStats = taskStatsByAgent.get(agent.name) || {
+      const taskStats = (aliasesByAgent.get(agent.name) || []).reduce((total, alias) => {
+        const stats = taskStatsByAgent.get(alias)
+        if (!stats) return total
+        total.total += stats.total
+        total.assigned += stats.assigned
+        total.in_progress += stats.in_progress
+        total.quality_review += stats.quality_review
+        total.done += stats.done
+        return total
+      }, {
         total: 0,
         assigned: 0,
         in_progress: 0,
         quality_review: 0,
         done: 0,
-      }
+      })
 
       return {
         ...agent,

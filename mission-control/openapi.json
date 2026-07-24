@@ -932,6 +932,96 @@
         }
       }
     },
+    "/api/agents/{id}/activity": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Get unified activity for an agent",
+        "description": "Returns recent task, supervision, reliable mailbox, session, inventory sync, and legacy activity records. Bridge agents are resolved by their sync index identity and workspace ownership.",
+        "operationId": "getAgentActivity",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unified agent activity stream"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/agents/{id}/tasks": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Get tasks assigned to an agent identity",
+        "description": "Resolves local, mirrored, and Bridge agent aliases plus supervision assignments before returning tasks.",
+        "operationId": "getAgentTasks",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent task list"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
     "/api/agents/{id}/attribution": {
       "get": {
         "tags": [

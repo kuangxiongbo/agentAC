@@ -31,7 +31,9 @@ const endpoints: Endpoint[] = [
   // ── Agents ────────────────────────────────────────
   { path: '/api/agents', methods: ['GET', 'POST'], description: 'Agent CRUD — list, register', tag: 'Agents', auth: 'viewer/operator' },
   { path: '/api/agents/:id', methods: ['GET', 'PATCH', 'DELETE'], description: 'Agent detail — read, update, delete', tag: 'Agents', auth: 'viewer/operator/admin' },
-  { path: '/api/agents/:id/heartbeat', methods: ['POST'], description: 'Agent heartbeat ping', tag: 'Agents', auth: 'operator' },
+  { path: '/api/agents/:id/heartbeat', methods: ['GET', 'POST'], description: 'Agent work check and heartbeat ping', tag: 'Agents', auth: 'viewer/operator' },
+  { path: '/api/agents/:id/activity', methods: ['GET'], description: 'Unified agent activity stream', tag: 'Agents', auth: 'viewer' },
+  { path: '/api/agents/:id/tasks', methods: ['GET'], description: 'Tasks resolved across agent identities', tag: 'Agents', auth: 'viewer' },
   { path: '/api/agents/:id/wake', methods: ['POST'], description: 'Wake idle agent', tag: 'Agents', auth: 'operator' },
   { path: '/api/agents/:id/soul', methods: ['GET', 'PUT'], description: 'Agent soul file — read, write', tag: 'Agents', auth: 'viewer/operator' },
   { path: '/api/agents/:id/memory', methods: ['GET'], description: 'Agent memory files', tag: 'Agents', auth: 'viewer' },

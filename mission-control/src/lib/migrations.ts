@@ -2149,6 +2149,15 @@ const migrations: Migration[] = [
       db.exec(`UPDATE workspaces SET isolation = 'shared' WHERE isolation NOT IN ('shared', 'strict')`)
     },
   },
+  {
+    id: '073_sync_agent_task_stats_snapshot',
+    up(db: Database.Database) {
+      const columns = db.prepare(`PRAGMA table_info(sync_agent_index)`).all() as Array<{ name: string }>
+      if (!columns.some((column) => column.name === 'task_stats_json')) {
+        db.exec(`ALTER TABLE sync_agent_index ADD COLUMN task_stats_json TEXT`)
+      }
+    },
+  },
 ]
 
 export function runMigrations(db: Database.Database) {

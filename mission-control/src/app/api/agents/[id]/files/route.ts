@@ -7,9 +7,11 @@ import { dirname, isAbsolute, resolve } from 'node:path'
 import { resolveWithin } from '@/lib/paths'
 import { getAgentWorkspaceCandidates, readAgentWorkspaceFile } from '@/lib/agent-workspace'
 import { getAgentDisplayName } from '@/lib/agent-card-helpers'
-import { getBridgeAgentIndexById, mergeBridgeIndexIntoConfig } from '@/lib/sync-agent-index'
+import { mergeBridgeIndexIntoConfig } from '@/lib/sync-agent-index'
 import { logger } from '@/lib/logger'
 import { atomicReplaceFileSync } from '@/lib/atomic-file'
+import { resolveAgentQueryIdentity } from '@/lib/agent-query-identity'
+import { isBridgeClientOnline, requestBridgeClientAgentDetail } from '@/lib/bridge-server'
 
 const ALLOWED_FILES = new Set([
   'agent.md',
@@ -61,8 +63,8 @@ export async function GET(
 
     const numericId = Number(id)
     if (Number.isFinite(numericId)) {
-      const indexRow = getBridgeAgentIndexById(numericId)
-      if (indexRow) {
+      const identity = resolveAgentQueryIdentity(db, id, workspaceId)
+      if (identity?.source === 'bridge_index') {
         const emptyFiles = ['agent.md', 'identity.md', 'soul.md', 'WORKING.md', 'MEMORY.md', 'TOOLS.md', 'AGENTS.md', 'MISSION.md', 'USER.md'].reduce(
           (acc, file) => {
             acc[file] = { exists: false, content: '' }
@@ -70,6 +72,25 @@ export async function GET(
           },
           {} as Record<string, { exists: boolean; content: string }>,
         )
+        const indexRow = identity.record as any
+        let files = emptyFiles
+        let workspace: string | null = null
+        let localLive = false
+        if (identity.clientId && identity.localAgentId != null && isBridgeClientOnline(identity.clientId)) {
+          try {
+            const remote = await requestBridgeClientAgentDetail({
+              clientId: identity.clientId,
+              localAgentId: identity.localAgentId,
+            })
+            if (remote.agent?.workspace_files && typeof remote.agent.workspace_files === 'object') {
+              files = { ...emptyFiles, ...(remote.agent.workspace_files as typeof emptyFiles) }
+              workspace = typeof remote.agent.workspace_source === 'string' ? remote.agent.workspace_source : null
+              localLive = true
+            }
+          } catch (error) {
+            logger.warn({ err: error, clientId: identity.clientId }, 'Local agent workspace files unavailable')
+          }
+        }
         const config = mergeBridgeIndexIntoConfig({}, indexRow)
         return NextResponse.json({
           agent: {
@@ -82,9 +103,10 @@ export async function GET(
               node_id: indexRow.client_id,
             }),
           },
-          workspace: null,
+          workspace,
           bridge_agent: true,
-          files: emptyFiles,
+          local_live: localLive,
+          files,
         })
       }
     }

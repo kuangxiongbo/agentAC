@@ -30,6 +30,10 @@ Thumbs.db
 workspace/
 backups/
 memory/
+!mission-control/src/app/api/agents/\[id\]/memory/
+!mission-control/src/app/api/agents/\[id\]/memory/route.ts
+!mission-control-client/src/app/api/agents/\[id\]/memory/
+!mission-control-client/src/app/api/agents/\[id\]/memory/route.ts
 mission-control-backup/
 
 # Other

@@ -24,11 +24,21 @@ describe('sync-agent-index bridge hybrid', () => {
       await import('@/lib/sync-agent-index')
 
     replaceBridgeAgentIndex('client-a', 'Mac', [
-      { id: 1, name: 'Alpha', role: 'coder', status: 'idle' },
+      {
+        id: 1,
+        name: 'Alpha',
+        role: 'coder',
+        status: 'idle',
+        task_stats: { total: 3, assigned: 0, in_progress: 1, quality_review: 0, done: 2 },
+      },
       { id: 2, name: 'Beta', role: 'agent', status: 'busy' },
     ])
 
     expect(listBridgeAgentIndex('client-a')).toHaveLength(2)
+    const firstSnapshot = mergeDbAgentsWithBridgeIndex(
+      [], listBridgeAgentIndex('client-a'), () => true,
+    ).find((agent) => agent.config?.original_name === 'Alpha')
+    expect(firstSnapshot?.taskStats).toMatchObject({ total: 3, in_progress: 1, done: 2, completed: 2 })
 
     replaceBridgeAgentIndex('client-a', 'Mac', [
       { id: 2, name: 'Beta', role: 'agent', status: 'idle' },

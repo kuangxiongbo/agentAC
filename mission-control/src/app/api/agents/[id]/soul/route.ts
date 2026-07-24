@@ -8,6 +8,8 @@ import { getAgentWorkspaceCandidates, readAgentWorkspaceFile } from '@/lib/agent
 import { requireRole } from '@/lib/auth';
 import { logger } from '@/lib/logger';
 import { atomicReplaceFileSync } from '@/lib/atomic-file';
+import { resolveAgentQueryIdentity } from '@/lib/agent-query-identity';
+import { isBridgeClientOnline, requestBridgeClientAgentDetail } from '@/lib/bridge-server';
 
 function resolveAgentWorkspacePath(workspace: string): string {
   if (isAbsolute(workspace)) return resolve(workspace)
@@ -30,6 +32,26 @@ export async function GET(
     const resolvedParams = await params;
     const agentId = resolvedParams.id;
     const workspaceId = auth.user.workspace_id ?? 1;
+
+    const identity = resolveAgentQueryIdentity(db, agentId, workspaceId)
+    if (identity?.source === 'bridge_index') {
+      if (!identity.clientId || identity.localAgentId == null || !isBridgeClientOnline(identity.clientId)) {
+        return NextResponse.json({ error: 'Local Work agent is offline', local_live: false }, { status: 503 })
+      }
+      const remote = await requestBridgeClientAgentDetail({
+        clientId: identity.clientId,
+        localAgentId: identity.localAgentId,
+      })
+      const files = remote.agent?.workspace_files as Record<string, { content?: string }> | undefined
+      const content = String(files?.['soul.md']?.content || remote.agent?.soul_content || '')
+      return NextResponse.json({
+        agent: { id: identity.id, name: identity.name, role: identity.role },
+        soul_content: content,
+        source: files?.['soul.md']?.content ? 'local_workspace' : 'local_database',
+        local_live: true,
+        updated_at: Number(remote.agent?.updated_at || 0),
+      })
+    }
     
     // Get agent by ID or name
     let agent: any;

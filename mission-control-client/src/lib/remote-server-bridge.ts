@@ -58,6 +58,7 @@ import {
 } from './permission-requests'
 import { logSecurityEvent } from './security-events'
 import { validateLocalCliElevationGrant } from './local-cli-elevation-audit'
+import { getAgentWorkspaceCandidates, readAgentWorkspaceFile } from './agent-workspace'
 import type { HumanWatchEvent } from '@/store'
 
 function safeLog(
@@ -176,10 +177,11 @@ function getLocalAgentList(): Array<{
   framework?: string
   parent_id?: number
   session_key?: string | null
+  task_stats?: { total: number; assigned: number; in_progress: number; quality_review: number; done: number }
 }> {
   try {
     const db = getDatabase()
-    return db.prepare(
+    const agents = db.prepare(
       `SELECT id, name, role, status, framework, parent_id, session_key FROM agents WHERE hidden = 0 ORDER BY name`
     ).all() as Array<{
       id: number
@@ -190,6 +192,21 @@ function getLocalAgentList(): Array<{
       parent_id?: number
       session_key?: string | null
     }>
+    const assigned = db.prepare(`
+      SELECT assigned_to, status, COUNT(*) AS count
+      FROM tasks WHERE workspace_id = 1 AND assigned_to IS NOT NULL
+      GROUP BY assigned_to, status
+    `).all() as Array<{ assigned_to: string; status: string; count: number }>
+    return agents.map((agent) => {
+      const aliases = new Set([agent.name, agent.session_key].filter(Boolean))
+      const stats = { total: 0, assigned: 0, in_progress: 0, quality_review: 0, done: 0 }
+      for (const row of assigned) {
+        if (!aliases.has(row.assigned_to)) continue
+        stats.total += row.count
+        if (row.status in stats) stats[row.status as keyof typeof stats] += row.count
+      }
+      return { ...agent, task_stats: stats }
+    })
   } catch {
     return []
   }
@@ -213,6 +230,11 @@ function pushLocalAgentInventory(ws: WebSocket | null): boolean {
   })
 }
 
+function parseBridgeJsonValue(value: unknown, fallback: unknown) {
+  if (typeof value !== 'string' || !value.trim()) return fallback
+  try { return JSON.parse(value) } catch { return fallback }
+}
+
 function getLocalAgentDetail(localAgentId: number): Record<string, unknown> | null {
   try {
     const db = getDatabase()
@@ -231,7 +253,65 @@ function getLocalAgentDetail(localAgentId: number): Record<string, unknown> | nu
         config = {}
       }
     }
-    return { ...row, config }
+    const aliases = [...new Set([
+      String(row.name || '').trim(),
+      String(row.session_key || '').trim(),
+    ].filter(Boolean))]
+    const placeholders = aliases.map(() => '?').join(', ')
+    const recentTasks = aliases.length > 0
+      ? db.prepare(`
+          SELECT id, title, substr(COALESCE(description, ''), 1, 4000) AS description,
+                 status, priority, assigned_to, created_at, updated_at, due_date,
+                 tags, metadata, outcome, resolution, error_message
+          FROM tasks
+          WHERE workspace_id = 1 AND assigned_to IN (${placeholders})
+          ORDER BY updated_at DESC LIMIT 50
+        `).all(...aliases).map((task: any) => ({
+          ...task,
+          tags: parseBridgeJsonValue(task.tags, []),
+          metadata: parseBridgeJsonValue(task.metadata, {}),
+        }))
+      : []
+    const recentActivities = aliases.length > 0
+      ? db.prepare(`
+          SELECT id, type, entity_type, entity_id, actor,
+                 substr(description, 1, 4000) AS description, created_at
+          FROM activities
+          WHERE workspace_id = 1 AND actor IN (${placeholders})
+          ORDER BY created_at DESC LIMIT 50
+        `).all(...aliases).map((activity: any) => ({
+          ...activity,
+        }))
+      : []
+    const workspaceConfig = {
+      ...config,
+      ...(row.workspace_path ? { workspace: row.workspace_path } : {}),
+    }
+    const candidates = getAgentWorkspaceCandidates(workspaceConfig, String(row.name || ''))
+    const workspaceFiles = [
+      ['agent.md', ['agent.md', 'AGENT.md', 'MISSION.md', 'USER.md']],
+      ['identity.md', ['identity.md', 'IDENTITY.md']],
+      ['soul.md', ['soul.md', 'SOUL.md']],
+      ['WORKING.md', ['WORKING.md', 'working.md']],
+      ['MEMORY.md', ['MEMORY.md', 'memory.md']],
+      ['TOOLS.md', ['TOOLS.md', 'tools.md']],
+      ['AGENTS.md', ['AGENTS.md', 'agents.md']],
+    ].reduce((files, [key, names]) => {
+      const match = readAgentWorkspaceFile(candidates, names as string[])
+      files[key as string] = {
+        exists: match.exists,
+        content: match.content.slice(0, 256 * 1024),
+      }
+      return files
+    }, {} as Record<string, { exists: boolean; content: string }>)
+    return {
+      ...row,
+      config,
+      recent_tasks: recentTasks,
+      recent_activities: recentActivities,
+      workspace_files: workspaceFiles,
+      workspace_source: candidates[0] || null,
+    }
   } catch {
     return null
   }

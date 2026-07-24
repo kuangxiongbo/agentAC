@@ -10,6 +10,7 @@ export interface BridgeAgentIndexInput {
   framework?: string | null
   parent_id?: number | null
   session_key?: string | null
+  task_stats?: { total: number; assigned: number; in_progress: number; quality_review: number; done: number } | null
 }
 
 export interface SyncAgentIndexRow {
@@ -24,6 +25,7 @@ export interface SyncAgentIndexRow {
   framework: string | null
   parent_local_id: number | null
   session_key: string | null
+  task_stats_json: string | null
   updated_at: number
 }
 
@@ -43,8 +45,8 @@ export function replaceBridgeAgentIndex(
   const insert = db.prepare(`
     INSERT INTO sync_agent_index (
       client_id, client_name, local_agent_id, original_name, remote_name,
-      role, status, framework, parent_local_id, session_key, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      role, status, framework, parent_local_id, session_key, task_stats_json, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(client_id, local_agent_id) DO UPDATE SET
       client_name = excluded.client_name,
       original_name = excluded.original_name,
@@ -54,6 +56,7 @@ export function replaceBridgeAgentIndex(
       framework = COALESCE(excluded.framework, sync_agent_index.framework),
       parent_local_id = COALESCE(excluded.parent_local_id, sync_agent_index.parent_local_id),
       session_key = COALESCE(excluded.session_key, sync_agent_index.session_key),
+      task_stats_json = COALESCE(excluded.task_stats_json, sync_agent_index.task_stats_json),
       updated_at = excluded.updated_at
   `)
 
@@ -79,6 +82,7 @@ export function replaceBridgeAgentIndex(
         agent.framework || null,
         agent.parent_id ?? null,
         agent.session_key?.trim() || null,
+        agent.task_stats ? JSON.stringify(agent.task_stats) : null,
         now,
       )
       upserted++
@@ -358,6 +362,13 @@ export function bridgeIndexRowToAgentListItem(row: SyncAgentIndexRow, bridgeOnli
     source: 'bridge_index',
     node_id: row.client_id,
   })
+  let taskStats = { total: 0, assigned: 0, in_progress: 0, quality_review: 0, done: 0, completed: 0 }
+  try {
+    const parsed = row.task_stats_json ? JSON.parse(row.task_stats_json) : null
+    if (parsed && typeof parsed === 'object') {
+      taskStats = { ...taskStats, ...parsed, completed: Number(parsed.done || 0) }
+    }
+  } catch {}
   return {
     id: row.id,
     name: row.remote_name,
@@ -380,5 +391,6 @@ export function bridgeIndexRowToAgentListItem(row: SyncAgentIndexRow, bridgeOnli
     bridge_online: bridgeOnline,
     remote: true,
     detail_cached: false,
+    taskStats,
   }
 }
