@@ -40,6 +40,16 @@ interface SessionInfo {
   active: boolean
 }
 
+function getAgentActivityActor(agent: { name: string; config?: unknown } | undefined): string {
+  if (!agent) return ''
+  const config = agent.config
+  if (config && typeof config === 'object' && !Array.isArray(config)) {
+    const originalName = (config as Record<string, unknown>).original_name
+    if (typeof originalName === 'string' && originalName.trim()) return originalName.trim()
+  }
+  return agent.name
+}
+
 const activityIcons: Record<string, string> = {
   task_created: '+',
   task_updated: '~',
@@ -238,6 +248,8 @@ export function ActivityFeedPanel() {
 
   const limit = filter.limit
   const isAgentView = selectedAgent !== ''
+  const selectedAgentData = agents.find((agent) => agent.name === selectedAgent)
+  const selectedAgentActor = getAgentActivityActor(selectedAgentData)
 
   // ── Fetch activities ──────────────────────────
   const fetchActivities = useCallback(
@@ -247,7 +259,7 @@ export function ActivityFeedPanel() {
         setError(null)
 
         const params = new URLSearchParams()
-        if (selectedAgent) params.append('actor', selectedAgent)
+        if (selectedAgentActor) params.append('actor', selectedAgentActor)
         if (filter.type) params.append('type', filter.type)
         params.append('limit', limit.toString())
         if (isAgentView) params.append('offset', (page * limit).toString())
@@ -276,7 +288,7 @@ export function ActivityFeedPanel() {
         setLoading(false)
       }
     },
-    [selectedAgent, filter.type, limit, page, isAgentView],
+    [selectedAgentActor, filter.type, limit, page, isAgentView],
   )
 
   const lastRefreshRef = useRef(lastRefresh)
@@ -318,8 +330,7 @@ export function ActivityFeedPanel() {
 
   // ── Derived data ──────────────────────────────
   const activityTypes = Array.from(new Set(activities.map((a) => a.type))).sort()
-  const agentSessions = sessions.filter((s) => selectedAgent && s.key.includes(selectedAgent))
-  const selectedAgentData = agents.find((a) => a.name === selectedAgent)
+  const agentSessions = sessions.filter((session) => selectedAgentActor && session.key.includes(selectedAgentActor))
   const totalPages = Math.ceil(total / limit)
   const groupedByDay = isAgentView ? groupByDay(activities) : {}
 
