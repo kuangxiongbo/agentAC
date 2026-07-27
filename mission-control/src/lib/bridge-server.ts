@@ -755,6 +755,15 @@ export function initBridgeServer(port: number = 5002) {
               clientLabel = typeof msg.clientLabel === 'string' && msg.clientLabel.trim()
                 ? msg.clientLabel.trim()
                 : clientId
+              for (const [existingConnectionId, existingClient] of bridgeServerClients.entries()) {
+                if (existingConnectionId === connectionId || existingClient.kind !== 'edge' || existingClient.clientId !== clientId) continue
+                const existingSocket = bridgeServerSockets.get(existingConnectionId)
+                bridgeServerSockets.delete(existingConnectionId)
+                bridgeServerClients.delete(existingConnectionId)
+                clearPendingRequestsForConnection(existingConnectionId, 'Superseded by a newer Bridge connection')
+                try { existingSocket?.close(4001, 'Superseded by newer connection') } catch {}
+                logger.info({ clientId, existingConnectionId, connectionId }, '[BridgeServer] Superseded stale client connection')
+              }
               updateConnection(connectionId, {
                 clientId,
                 clientLabel,

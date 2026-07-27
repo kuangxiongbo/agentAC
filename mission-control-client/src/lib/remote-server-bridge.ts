@@ -2060,17 +2060,18 @@ async function connect(): Promise<void> {
 
   ws.onclose = (event: CloseEvent) => {
     clearTimeout(connectTimeout)
-    const durationMs = state.connectedAt ? Date.now() - state.connectedAt : 0
-    state.connected = false
-    state.ws = null
-    state.connectedAt = null
-    stopHeartbeat()
-
     const handler = (ws as any)._chatHandler
     if (handler) eventBus.off('chat.message', handler)
     const agentInventoryHandler = (ws as any)._agentInventoryHandler
     if (agentInventoryHandler) eventBus.off('server-event', agentInventoryHandler)
     ;(ws as any)._clearTaskProjectionTimer?.()
+
+    if (state.ws !== ws) return
+    const durationMs = state.connectedAt ? Date.now() - state.connectedAt : 0
+    state.connected = false
+    state.ws = null
+    state.connectedAt = null
+    stopHeartbeat()
 
     safeLog('info', '[RemoteBridge] Disconnected from remote server', {
       code: event?.code,
