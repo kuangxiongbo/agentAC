@@ -76,6 +76,7 @@ export type LocalMessageHandler = (message: {
   clientId: string
   type: string
   payload: Record<string, unknown>
+  database?: Database.Database
 }) => Promise<LocalMessageHandlerResult> | LocalMessageHandlerResult
 
 const handlers = new Map<string, LocalMessageHandler>()
@@ -116,6 +117,97 @@ function jsonObject(raw: string | null): Record<string, unknown> {
   } catch {
     return {}
   }
+}
+
+const WORK_TASK_STATUSES = new Set(['inbox', 'assigned', 'in_progress', 'review', 'quality_review', 'done'])
+const WORK_TASK_PRIORITIES = new Set(['low', 'medium', 'high', 'urgent', 'critical'])
+const WORK_TASK_MUTABLE_FIELDS = new Set([
+  'title', 'description', 'status', 'priority', 'assigned_to', 'due_date',
+  'estimated_hours', 'actual_hours', 'tags',
+])
+
+function handleWorkTaskMutationMessage(message: {
+  id: string
+  clientId: string
+  type: string
+  payload: Record<string, unknown>
+  database?: Database.Database
+}): LocalMessageHandlerResult {
+  const db = dbOr(message.database)
+  if (message.clientId !== getClientId(db)) {
+    return { ok: false, errorCode: 'CLIENT_MISMATCH', errorMessage: 'Message client does not match this Runtime', retryable: false }
+  }
+  const localTaskId = Number(message.payload.local_task_id)
+  const workspaceId = Number(message.payload.workspace_id)
+  const operation = String(message.payload.operation || '')
+  if (!Number.isInteger(localTaskId) || localTaskId <= 0 || !Number.isInteger(workspaceId) || workspaceId <= 0) {
+    return { ok: false, errorCode: 'INVALID_TASK_REF', errorMessage: 'local_task_id and workspace_id are required', retryable: false }
+  }
+  if (operation !== 'update' && operation !== 'delete') {
+    return { ok: false, errorCode: 'INVALID_OPERATION', errorMessage: 'operation must be update or delete', retryable: false }
+  }
+  const task = db.prepare(`SELECT * FROM tasks WHERE id = ? AND workspace_id = ?`).get(localTaskId, workspaceId) as Record<string, unknown> | undefined
+  if (!task) return { ok: false, errorCode: 'TASK_NOT_FOUND', errorMessage: 'Local task not found', retryable: false }
+  const expectedUpdatedAt = Number(message.payload.expected_updated_at)
+  if (!Number.isInteger(expectedUpdatedAt) || expectedUpdatedAt <= 0) {
+    return { ok: false, errorCode: 'EXPECTED_VERSION_REQUIRED', errorMessage: 'expected_updated_at is required', retryable: false }
+  }
+  if (Number(task.updated_at) !== expectedUpdatedAt) {
+    return {
+      ok: false, errorCode: 'TASK_VERSION_CONFLICT', errorMessage: 'Local task changed after the cloud snapshot', retryable: false,
+      result: { local_task_id: localTaskId, expected_updated_at: expectedUpdatedAt, actual_updated_at: Number(task.updated_at) },
+    }
+  }
+
+  const now = nowSeconds()
+  if (operation === 'delete') {
+    db.transaction(() => {
+      db.prepare(`DELETE FROM tasks WHERE id = ? AND workspace_id = ? AND updated_at = ?`).run(localTaskId, workspaceId, expectedUpdatedAt)
+      db.prepare(`INSERT INTO activities (type, entity_type, entity_id, actor, description, data, created_at, workspace_id)
+        VALUES ('task_deleted', 'task', ?, ?, ?, ?, ?, ?)`)
+        .run(localTaskId, String(message.payload.actor || 'cloud-control'), `Deleted task: ${String(task.title || '')}`, JSON.stringify({ source: 'cloud_control', message_id: message.id }), now, workspaceId)
+    })()
+    return { ok: true, result: { operation, local_task_id: localTaskId, deleted: true, applied_at: now } }
+  }
+
+  const changes = message.payload.changes
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
+    return { ok: false, errorCode: 'INVALID_CHANGES', errorMessage: 'changes must be an object', retryable: false }
+  }
+  const entries = Object.entries(changes as Record<string, unknown>)
+  if (entries.length === 0 || entries.some(([field]) => !WORK_TASK_MUTABLE_FIELDS.has(field))) {
+    return { ok: false, errorCode: 'INVALID_CHANGES', errorMessage: 'changes contain no fields or unsupported fields', retryable: false }
+  }
+  if ('title' in changes && (typeof changes.title !== 'string' || !changes.title.trim())) {
+    return { ok: false, errorCode: 'INVALID_TITLE', errorMessage: 'title must be a non-empty string', retryable: false }
+  }
+  if ('status' in changes && !WORK_TASK_STATUSES.has(String(changes.status))) {
+    return { ok: false, errorCode: 'INVALID_STATUS', errorMessage: 'Unsupported task status', retryable: false }
+  }
+  if ('priority' in changes && !WORK_TASK_PRIORITIES.has(String(changes.priority))) {
+    return { ok: false, errorCode: 'INVALID_PRIORITY', errorMessage: 'Unsupported task priority', retryable: false }
+  }
+  if ('tags' in changes && (!Array.isArray(changes.tags) || changes.tags.some((tag) => typeof tag !== 'string'))) {
+    return { ok: false, errorCode: 'INVALID_TAGS', errorMessage: 'tags must be an array of strings', retryable: false }
+  }
+  const fields: string[] = []
+  const values: unknown[] = []
+  for (const [field, value] of entries) {
+    fields.push(`${field} = ?`)
+    values.push(field === 'tags' ? JSON.stringify(value) : value ?? null)
+  }
+  fields.push('updated_at = ?')
+  values.push(now)
+  const changed = db.transaction(() => {
+    const result = db.prepare(`UPDATE tasks SET ${fields.join(', ')} WHERE id = ? AND workspace_id = ? AND updated_at = ?`)
+      .run(...values, localTaskId, workspaceId, expectedUpdatedAt)
+    if (result.changes !== 1) throw new Error('Task version changed while applying mutation')
+    db.prepare(`INSERT INTO activities (type, entity_type, entity_id, actor, description, data, created_at, workspace_id)
+      VALUES ('task_updated', 'task', ?, ?, ?, ?, ?, ?)`)
+      .run(localTaskId, String(message.payload.actor || 'cloud-control'), `Updated task: ${String(task.title || '')}`, JSON.stringify({ source: 'cloud_control', message_id: message.id, fields: entries.map(([field]) => field) }), now, workspaceId)
+    return result.changes
+  })()
+  return { ok: true, result: { operation, local_task_id: localTaskId, changed, updated_at: now, applied_at: now } }
 }
 
 function textFromTranscriptMessage(message: { role: string; parts: Array<{ type: string; text?: string }> }): string {
@@ -478,6 +570,7 @@ export async function pullMailboxMessages(database?: Database.Database): Promise
       human_watch_assist_v2: true,
       permission_decision_relay: true,
       serial_session_continue: true,
+      work_task_writeback: true,
     },
   })
   if (!res.ok) return { pulled: 0, error: res.error }
@@ -515,6 +608,7 @@ export async function processInbox(database?: Database.Database): Promise<{ exec
       || (row.type === 'human_watch.assist.requested' ? handleHumanWatchAssistMessage : null)
       || (row.type === 'session.continue.requested' ? handleSessionContinueMessage : null)
       || (row.type === 'permission.decision.requested' ? handlePermissionDecisionMessage : null)
+      || (row.type === 'work.task.mutation.requested' ? handleWorkTaskMutationMessage : null)
     try {
       const completedExecution = getCompletedExecution(db, row.idempotency_key)
       if (completedExecution) {
@@ -551,8 +645,9 @@ export async function processInbox(database?: Database.Database): Promise<{ exec
             id: row.message_id,
             clientId: row.client_id,
             type: row.type,
-            payload: jsonObject(row.payload_json),
-          })
+          payload: jsonObject(row.payload_json),
+          database: db,
+        })
         }
       } catch (err) {
         result = {

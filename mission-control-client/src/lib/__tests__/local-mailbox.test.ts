@@ -185,4 +185,48 @@ describe('local-mailbox', () => {
       idempotency_key: 'decision-pr-1-approve',
     })
   })
+
+  it('applies a versioned local task mutation and records an ack', async () => {
+    const created = db.prepare(`INSERT INTO tasks (title, status, priority, created_by, created_at, updated_at, workspace_id)
+      VALUES ('Before', 'assigned', 'medium', 'test', 100, 100, 1)`).run()
+    db.prepare(`INSERT INTO local_message_inbox (
+      message_id, client_id, type, status, idempotency_key, payload_json, received_at
+    ) VALUES ('msg-task-update', 'edge-test', 'work.task.mutation.requested', 'pending', 'idem-task-update', ?, 1)`)
+      .run(JSON.stringify({ operation: 'update', local_task_id: Number(created.lastInsertRowid), workspace_id: 1, expected_updated_at: 100, changes: { title: 'After', status: 'in_progress', tags: ['cloud'] }, actor: 'operator' }))
+
+    expect(await processInbox(db)).toEqual({ executed: 1, failed: 0 })
+    expect(db.prepare(`SELECT title, status, tags FROM tasks WHERE id = ?`).get(created.lastInsertRowid)).toEqual({
+      title: 'After', status: 'in_progress', tags: '["cloud"]',
+    })
+    expect(db.prepare(`SELECT action FROM local_message_outbox WHERE message_id = 'msg-task-update'`).get()).toEqual({ action: 'ack' })
+    expect(db.prepare(`SELECT type, actor FROM activities WHERE entity_id = ? ORDER BY id DESC LIMIT 1`).get(created.lastInsertRowid)).toEqual({ type: 'task_updated', actor: 'operator' })
+  })
+
+  it('rejects stale task mutations without changing local data', async () => {
+    const created = db.prepare(`INSERT INTO tasks (title, status, priority, created_by, created_at, updated_at, workspace_id)
+      VALUES ('Current', 'assigned', 'medium', 'test', 100, 200, 1)`).run()
+    db.prepare(`INSERT INTO local_message_inbox (
+      message_id, client_id, type, status, idempotency_key, payload_json, received_at
+    ) VALUES ('msg-task-stale', 'edge-test', 'work.task.mutation.requested', 'pending', 'idem-task-stale', ?, 1)`)
+      .run(JSON.stringify({ operation: 'update', local_task_id: Number(created.lastInsertRowid), workspace_id: 1, expected_updated_at: 100, changes: { title: 'Stale' } }))
+
+    expect(await processInbox(db)).toEqual({ executed: 0, failed: 1 })
+    expect(db.prepare(`SELECT title FROM tasks WHERE id = ?`).get(created.lastInsertRowid)).toEqual({ title: 'Current' })
+    const outbox = db.prepare(`SELECT action, payload_json FROM local_message_outbox WHERE message_id = 'msg-task-stale'`).get() as { action: string; payload_json: string }
+    expect(outbox.action).toBe('fail')
+    expect(JSON.parse(outbox.payload_json)).toMatchObject({ error_code: 'TASK_VERSION_CONFLICT', retryable: false })
+  })
+
+  it('deletes a matching local task only after version validation', async () => {
+    const created = db.prepare(`INSERT INTO tasks (title, status, priority, created_by, created_at, updated_at, workspace_id)
+      VALUES ('Delete me', 'assigned', 'medium', 'test', 100, 100, 1)`).run()
+    db.prepare(`INSERT INTO local_message_inbox (
+      message_id, client_id, type, status, idempotency_key, payload_json, received_at
+    ) VALUES ('msg-task-delete', 'edge-test', 'work.task.mutation.requested', 'pending', 'idem-task-delete', ?, 1)`)
+      .run(JSON.stringify({ operation: 'delete', local_task_id: Number(created.lastInsertRowid), workspace_id: 1, expected_updated_at: 100, actor: 'operator' }))
+
+    expect(await processInbox(db)).toEqual({ executed: 1, failed: 0 })
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM tasks WHERE id = ?`).get(created.lastInsertRowid)).toEqual({ count: 0 })
+    expect(db.prepare(`SELECT type FROM activities WHERE entity_id = ? ORDER BY id DESC LIMIT 1`).get(created.lastInsertRowid)).toEqual({ type: 'task_deleted' })
+  })
 })

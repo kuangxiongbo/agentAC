@@ -17,6 +17,7 @@ const endpoints: Endpoint[] = [
   { path: '/api/tasks/:id', methods: ['GET', 'PATCH', 'DELETE'], description: 'Task detail — read, update, delete', tag: 'Tasks', auth: 'viewer/operator/admin' },
   { path: '/api/tasks/:id/comments', methods: ['GET', 'POST'], description: 'Task comments — list, add', tag: 'Tasks', auth: 'viewer/operator' },
   { path: '/api/tasks/:id/broadcast', methods: ['POST'], description: 'Broadcast task update via SSE', tag: 'Tasks', auth: 'operator' },
+  { path: '/api/tasks/local-mutations', methods: ['POST'], description: 'Queue a reliable mutation for an Edge-owned task', tag: 'Tasks', auth: 'operator' },
   { path: '/api/tasks/queue', methods: ['GET'], description: 'Task queue — next assignable tasks', tag: 'Tasks', auth: 'viewer' },
   { path: '/api/tasks/outcomes', methods: ['GET'], description: 'Task outcome analytics', tag: 'Tasks', auth: 'viewer' },
   { path: '/api/tasks/regression', methods: ['GET'], description: 'Task regression detection', tag: 'Tasks', auth: 'viewer' },

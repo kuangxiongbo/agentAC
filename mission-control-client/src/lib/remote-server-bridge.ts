@@ -1981,6 +1981,7 @@ async function connect(): Promise<void> {
         'steward_delete',
         'steward_judge',
         'reliable_mailbox',
+        'work_task_writeback',
         'human_watch_assist_v2',
         'permission_decision_relay',
         'serial_session_continue',

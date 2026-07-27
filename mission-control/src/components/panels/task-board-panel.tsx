@@ -84,6 +84,25 @@ interface Project {
   status: 'active' | 'archived'
 }
 
+async function queueLocalTaskMutation(task: Task, operation: 'update' | 'delete', changes?: Record<string, unknown>) {
+  if (!task.bridge_client_id || !task.local_task_id || !task.updated_at) throw new Error('Local task writeback identity is incomplete')
+  const response = await fetch('/api/tasks/local-mutations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: task.bridge_client_id,
+      local_task_id: task.local_task_id,
+      expected_updated_at: task.updated_at,
+      operation,
+      changes,
+      idempotency_key: crypto.randomUUID(),
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error || 'Failed to queue local task writeback')
+  return data as { message_id: string; status: string }
+}
+
 interface MentionOption {
   handle: string
   recipient: string
@@ -583,10 +602,6 @@ export function TaskBoardPanel() {
 
   // Drag and drop handlers
   const handleDragStart = (e: React.DragEvent, task: Task) => {
-    if (task.source === 'local_runtime') {
-      e.preventDefault()
-      return
-    }
     setDraggedTask(task)
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/html', e.currentTarget.outerHTML)
@@ -621,11 +636,6 @@ export function TaskBoardPanel() {
       return
     }
 
-    if (draggedTask.source === 'local_runtime') {
-      setDraggedTask(null)
-      return
-    }
-
     const previousStatus = draggedTask.status
 
     try {
@@ -647,14 +657,13 @@ export function TaskBoardPanel() {
         updated_at: Math.floor(Date.now() / 1000)
       })
 
-      // Update on server
-      const response = await fetch('/api/tasks', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tasks: [{ id: draggedTask.id, status: newStatus }]
-        })
-      })
+      const response = draggedTask.source === 'local_runtime'
+        ? await queueLocalTaskMutation(draggedTask, 'update', { status: newStatus }).then(() => ({ ok: true, json: async () => ({}) }))
+        : await fetch('/api/tasks', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tasks: [{ id: draggedTask.id, status: newStatus }] })
+          })
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}))
@@ -999,7 +1008,7 @@ export function TaskBoardPanel() {
               {tasksByStatus[column.key]?.map(task => (
                 <div
                   key={task.id}
-                  draggable={task.source !== 'local_runtime'}
+                  draggable
                   role="button"
                   tabIndex={0}
                   aria-label={`${task.title}, ${task.priority} priority, ${task.status}`}
@@ -1492,7 +1501,9 @@ function TaskDetailModal({
                     className="bg-rose-500/20 text-rose-200 border border-rose-500/30 hover:bg-rose-500/30"
                     onClick={async () => {
                       try {
-                        const res = await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' })
+                        const res = isLocalRuntime
+                          ? await queueLocalTaskMutation(task, 'delete').then(() => ({ ok: true, json: async () => ({}) }))
+                          : await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' })
                         if (!res.ok) {
                           const errorData = await res.json().catch(() => ({ error: 'Failed to delete task' }))
                           throw new Error(errorData.error || 'Failed to delete task')
@@ -1513,20 +1524,12 @@ function TaskDetailModal({
           <div className="flex justify-between items-start mb-4">
             <h3 id="task-detail-title" className="text-xl font-bold text-foreground">{task.title}</h3>
             <div className="flex gap-2">
-              {!isLocalRuntime && (
-                <>
-                  <Button variant="ghost" size="sm" onClick={() => onEdit(task)} className="text-primary hover:bg-primary/20">
-                    {t('edit')}
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => setDeleteDialogOpen(true)}
-                  >
-                    {t('delete')}
-                  </Button>
-                </>
-              )}
+              <Button variant="ghost" size="sm" onClick={() => onEdit(task)} className="text-primary hover:bg-primary/20">
+                {t('edit')}
+              </Button>
+              <Button variant="destructive" size="sm" onClick={() => setDeleteDialogOpen(true)}>
+                {t('delete')}
+              </Button>
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -2366,17 +2369,25 @@ function EditTaskModal({
         delete updatedMeta.target_session
       }
 
-      const response = await fetch(`/api/tasks/${task.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...formData,
-          project_id: formData.project_id ? Number(formData.project_id) : undefined,
-          tags: formData.tags ? formData.tags.split(',').map(t => t.trim()) : [],
-          assigned_to: formData.assigned_to || undefined,
-          metadata: updatedMeta,
-        })
-      })
+      const response = task.source === 'local_runtime'
+        ? await queueLocalTaskMutation(task, 'update', {
+            title: formData.title,
+            description: formData.description,
+            priority: formData.priority,
+            status: formData.status,
+            tags: formData.tags ? formData.tags.split(',').map(t => t.trim()) : [],
+          }).then(() => ({ ok: true, json: async () => ({}) }))
+        : await fetch(`/api/tasks/${task.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ...formData,
+              project_id: formData.project_id ? Number(formData.project_id) : undefined,
+              tags: formData.tags ? formData.tags.split(',').map(t => t.trim()) : [],
+              assigned_to: formData.assigned_to || undefined,
+              metadata: updatedMeta,
+            })
+          })
 
       if (!response.ok) {
         const errorData = await response.json()
@@ -2453,12 +2464,13 @@ function EditTaskModal({
                   <option value="low">{t('priority_low')}</option>
                   <option value="medium">{t('priority_medium')}</option>
                   <option value="high">{t('priority_high')}</option>
+                  <option value="urgent">urgent</option>
                   <option value="critical">{t('priority_critical')}</option>
                 </select>
               </div>
             </div>
 
-            <div>
+            {task.source !== 'local_runtime' && <div>
               <label htmlFor="edit-project" className="block text-sm text-muted-foreground mb-1">{t('fieldProject')}</label>
               <select
                 id="edit-project"
@@ -2472,9 +2484,9 @@ function EditTaskModal({
                   </option>
                 ))}
               </select>
-            </div>
+            </div>}
 
-            <div>
+            {task.source !== 'local_runtime' && <div>
               <label htmlFor="edit-assignee" className="block text-sm text-muted-foreground mb-1">{t('fieldAssignTo')}</label>
               <select
                 id="edit-assignee"
@@ -2489,9 +2501,9 @@ function EditTaskModal({
                   </option>
                 ))}
               </select>
-            </div>
+            </div>}
 
-            {formData.assigned_to && agentSessions.length > 0 && (
+            {task.source !== 'local_runtime' && formData.assigned_to && agentSessions.length > 0 && (
               <div>
                 <label htmlFor="edit-target-session" className="block text-sm text-muted-foreground mb-1">Target Session</label>
                 <select
