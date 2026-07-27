@@ -129,8 +129,8 @@ export interface Task {
   github_branch?: string
   github_pr_number?: number
   github_pr_state?: string
-  source?: 'local_runtime' | 'cloud_control'
-  authority?: 'local_runtime' | 'cloud'
+  source?: 'local_runtime' | 'local_snapshot' | 'cloud_control'
+  authority?: 'local_runtime' | 'local_snapshot' | 'cloud'
   local_task_id?: number
   bridge_client_id?: string
   client_label?: string

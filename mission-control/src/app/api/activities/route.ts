@@ -160,8 +160,9 @@ async function handleActivitiesRequest(url: URL, workspaceId: number) {
       activities,
       total,
       hasMore: offset + activities.length < total,
-      authority: projection.clients.length ? 'local_runtime' : 'cloud',
-      local_live: projection.clients.length > 0,
+      authority: projection.clients.some((client) => client.live !== false && !client.stale) ? 'local_runtime' : projection.clients.length ? 'local_snapshot' : 'cloud',
+      local_live: projection.clients.some((client) => client.live !== false && !client.stale),
+      local_stale: projection.clients.some((client) => client.stale),
       projection_clients: projection.clients,
       projection_errors: projection.errors,
       projection_truncated: projection.clients.some((client) => client.truncated),
@@ -209,8 +210,9 @@ async function handleStatsRequest(url: URL, workspaceId: number) {
         count,
         hour: new Date(timestamp * 1000).toISOString(),
       })),
-      authority: projection.clients.length ? 'local_runtime' : 'cloud',
-      local_live: projection.clients.length > 0,
+      authority: projection.clients.some((client) => client.live !== false && !client.stale) ? 'local_runtime' : projection.clients.length ? 'local_snapshot' : 'cloud',
+      local_live: projection.clients.some((client) => client.live !== false && !client.stale),
+      local_stale: projection.clients.some((client) => client.stale),
       projection_truncated: projection.clients.some((client) => client.truncated),
     })
   } catch (error) {

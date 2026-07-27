@@ -45,8 +45,10 @@ interface Task {
   github_branch?: string
   github_pr_number?: number
   github_pr_state?: string
-  source?: 'local_runtime' | 'cloud_control'
-  authority?: 'local_runtime' | 'cloud'
+  source?: 'local_runtime' | 'local_snapshot' | 'cloud_control'
+  authority?: 'local_runtime' | 'local_snapshot' | 'cloud'
+  stale?: boolean
+  snapshot_at?: number
   local_task_id?: number
   bridge_client_id?: string
   client_label?: string
@@ -602,6 +604,10 @@ export function TaskBoardPanel() {
 
   // Drag and drop handlers
   const handleDragStart = (e: React.DragEvent, task: Task) => {
+    if (task.source === 'local_snapshot') {
+      e.preventDefault()
+      return
+    }
     setDraggedTask(task)
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/html', e.currentTarget.outerHTML)
@@ -1008,7 +1014,7 @@ export function TaskBoardPanel() {
               {tasksByStatus[column.key]?.map(task => (
                 <div
                   key={task.id}
-                  draggable
+                  draggable={task.source !== 'local_snapshot'}
                   role="button"
                   tabIndex={0}
                   aria-label={`${task.title}, ${task.priority} priority, ${task.status}`}
@@ -1042,9 +1048,9 @@ export function TaskBoardPanel() {
                           {task.title}
                         </h4>
                         <div className="flex items-center gap-1.5 shrink-0">
-                          {task.source === 'local_runtime' && (
+                          {(task.source === 'local_runtime' || task.source === 'local_snapshot') && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-mono">
-                              local_runtime
+                              {task.source}
                             </span>
                           )}
                           {task.metadata?.recurrence?.enabled && (
@@ -1284,7 +1290,8 @@ function TaskDetailModal({
   const mentionTargets = useMentionTargets()
   const [activeTab, setActiveTab] = useState<'details' | 'comments' | 'quality' | 'session'>('details')
   const [reviewer, setReviewer] = useState('aegis')
-  const isLocalRuntime = task.source === 'local_runtime'
+  const isLocalRuntime = task.source === 'local_runtime' || task.source === 'local_snapshot'
+  const isLocalSnapshot = task.source === 'local_snapshot'
 
   const fetchReviews = useCallback(async () => {
     if (isLocalRuntime) {
@@ -1524,12 +1531,12 @@ function TaskDetailModal({
           <div className="flex justify-between items-start mb-4">
             <h3 id="task-detail-title" className="text-xl font-bold text-foreground">{task.title}</h3>
             <div className="flex gap-2">
-              <Button variant="ghost" size="sm" onClick={() => onEdit(task)} className="text-primary hover:bg-primary/20">
+              {!isLocalSnapshot && <Button variant="ghost" size="sm" onClick={() => onEdit(task)} className="text-primary hover:bg-primary/20">
                 {t('edit')}
-              </Button>
-              <Button variant="destructive" size="sm" onClick={() => setDeleteDialogOpen(true)}>
+              </Button>}
+              {!isLocalSnapshot && <Button variant="destructive" size="sm" onClick={() => setDeleteDialogOpen(true)}>
                 {t('delete')}
-              </Button>
+              </Button>}
               <Button
                 variant="ghost"
                 size="icon-sm"

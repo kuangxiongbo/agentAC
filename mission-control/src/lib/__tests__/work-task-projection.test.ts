@@ -19,6 +19,7 @@ function localTask(overrides: Partial<ProjectedWorkTask> = {}): ProjectedWorkTas
     status: 'done',
     source: 'local_runtime',
     authority: 'local_runtime',
+    stale: false,
     local_task_id: 7,
     bridge_client_id: 'edge-a',
     client_id: 'edge-a',

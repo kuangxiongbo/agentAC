@@ -167,8 +167,9 @@ export async function GET(request: NextRequest) {
       total: cloudTotal + localTasks.length - duplicateCount,
       page: Math.floor(offset / limit) + 1,
       limit,
-      authority: projection.clients.length > 0 ? 'local_runtime' : 'cloud',
-      local_live: projection.clients.length > 0,
+      authority: projection.clients.some((client) => client.live !== false && !client.stale) ? 'local_runtime' : projection.clients.length > 0 ? 'local_snapshot' : 'cloud',
+      local_live: projection.clients.some((client) => client.live !== false && !client.stale),
+      local_stale: projection.clients.some((client) => client.stale),
       projection: {
         clients: projection.clients,
         errors: projection.errors,

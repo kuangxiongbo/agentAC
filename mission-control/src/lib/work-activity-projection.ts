@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { getConnectedBridgeClients, requestBridgeClientActivitySnapshot } from './bridge-server'
+import { listWorkProjectionSnapshots, saveWorkProjectionSnapshot } from './work-projection-snapshots'
 
 export interface ProjectedWorkActivity extends Record<string, unknown> {
   id: number
@@ -9,8 +10,10 @@ export interface ProjectedWorkActivity extends Record<string, unknown> {
   actor: string
   description: string
   created_at: number
-  source: 'local_runtime'
-  authority: 'local_runtime'
+  source: 'local_runtime' | 'local_snapshot'
+  authority: 'local_runtime' | 'local_snapshot'
+  stale: boolean
+  snapshot_at?: number
   local_activity_id: string
   bridge_client_id: string
   client_id: string
@@ -25,6 +28,9 @@ export interface WorkActivityProjection {
     client_label: string
     total: number
     truncated: boolean
+    live: boolean
+    stale: boolean
+    snapshot_at?: number
   }>
   errors: Array<{ client_id: string; error: string }>
 }
@@ -65,6 +71,7 @@ function mapActivity(
   clientId: string,
   clientLabel: string,
   activity: Record<string, unknown>,
+  snapshotAt?: number,
 ): ProjectedWorkActivity | null {
   const localActivityId = String(activity.id ?? '').trim()
   const createdAt = Number(activity.created_at)
@@ -79,15 +86,18 @@ function mapActivity(
     actor: typeof activity.actor === 'string' && activity.actor.trim() ? activity.actor : clientLabel,
     description: typeof activity.description === 'string' ? activity.description : '',
     created_at: Math.floor(createdAt),
-    source: 'local_runtime',
-    authority: 'local_runtime',
+    source: snapshotAt ? 'local_snapshot' : 'local_runtime',
+    authority: snapshotAt ? 'local_snapshot' : 'local_runtime',
+    stale: Boolean(snapshotAt),
+    ...(snapshotAt ? { snapshot_at: snapshotAt } : {}),
     local_activity_id: localActivityId,
     bridge_client_id: clientId,
     client_id: clientId,
     client_label: clientLabel,
-    data: data ? { ...data, local_activity_id: localActivityId, bridge_client_id: clientId } : {
+    data: data ? { ...data, local_activity_id: localActivityId, bridge_client_id: clientId, ...(snapshotAt ? { snapshot_at: snapshotAt, stale: true } : {}) } : {
       local_activity_id: localActivityId,
       bridge_client_id: clientId,
+      ...(snapshotAt ? { snapshot_at: snapshotAt, stale: true } : {}),
     },
   }
 }
@@ -105,6 +115,7 @@ async function loadProjection(db: Database.Database, workspaceId: number): Promi
   const activities: ProjectedWorkActivity[] = []
   const clients: WorkActivityProjection['clients'] = []
   const errors: WorkActivityProjection['errors'] = []
+  const liveClientIds = new Set<string>()
   settled.forEach((result, index) => {
     const client = connected[index]
     if (result.status === 'rejected') {
@@ -115,6 +126,18 @@ async function loadProjection(db: Database.Database, workspaceId: number): Promi
       return
     }
     const { snapshot } = result.value
+    liveClientIds.add(client.clientId)
+    try {
+      saveWorkProjectionSnapshot(db, {
+        workspaceId,
+        clientId: client.clientId,
+        clientLabel: client.clientLabel,
+        kind: 'activities',
+        payload: snapshot as unknown as Record<string, unknown>,
+      })
+    } catch (error) {
+      errors.push({ client_id: client.clientId, error: `Snapshot persistence failed: ${error instanceof Error ? error.message : String(error)}` })
+    }
     for (const activity of snapshot.activities) {
       const mapped = mapActivity(client.clientId, client.clientLabel, activity)
       if (mapped) activities.push(mapped)
@@ -124,8 +147,31 @@ async function loadProjection(db: Database.Database, workspaceId: number): Promi
       client_label: client.clientLabel,
       total: snapshot.total,
       truncated: snapshot.truncated,
+      live: true,
+      stale: false,
     })
   })
+  const stored = listWorkProjectionSnapshots<{
+    activities?: Array<Record<string, unknown>>
+    total?: number
+    truncated?: boolean
+  }>(db, workspaceId, 'activities', liveClientIds)
+    .filter((snapshot) => allowed.has(snapshot.clientId))
+  for (const snapshot of stored) {
+    for (const activity of Array.isArray(snapshot.payload.activities) ? snapshot.payload.activities : []) {
+      const mapped = mapActivity(snapshot.clientId, snapshot.clientLabel, activity, snapshot.capturedAt)
+      if (mapped) activities.push(mapped)
+    }
+    clients.push({
+      client_id: snapshot.clientId,
+      client_label: snapshot.clientLabel,
+      total: Number(snapshot.payload.total || 0),
+      truncated: snapshot.payload.truncated === true,
+      live: false,
+      stale: true,
+      snapshot_at: snapshot.capturedAt,
+    })
+  }
   activities.sort((left, right) => right.created_at - left.created_at || left.id - right.id)
   return { activities, clients, errors }
 }

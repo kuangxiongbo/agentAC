@@ -2158,6 +2158,25 @@ const migrations: Migration[] = [
       }
     },
   },
+  {
+    id: '074_work_projection_snapshots',
+    up(db: Database.Database) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS work_projection_snapshots (
+          workspace_id INTEGER NOT NULL,
+          client_id TEXT NOT NULL,
+          client_label TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN ('tasks', 'activities')),
+          payload_json TEXT NOT NULL,
+          captured_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          PRIMARY KEY (workspace_id, client_id, kind)
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_work_projection_snapshots_age
+        ON work_projection_snapshots(workspace_id, kind, captured_at DESC)`)
+    },
+  },
 ]
 
 export function runMigrations(db: Database.Database) {

@@ -1,11 +1,14 @@
 import type Database from 'better-sqlite3'
 import { getConnectedBridgeClients, requestBridgeClientTaskSnapshot } from './bridge-server'
+import { listWorkProjectionSnapshots, saveWorkProjectionSnapshot } from './work-projection-snapshots'
 
 export interface ProjectedWorkTask extends Record<string, unknown> {
   id: number
   status: string
-  source: 'local_runtime'
-  authority: 'local_runtime'
+  source: 'local_runtime' | 'local_snapshot'
+  authority: 'local_runtime' | 'local_snapshot'
+  stale: boolean
+  snapshot_at?: number
   local_task_id: number
   bridge_client_id: string
   client_id: string
@@ -22,6 +25,9 @@ export interface WorkTaskProjection {
     total: number
     by_status: Record<string, number>
     truncated: boolean
+    live: boolean
+    stale: boolean
+    snapshot_at?: number
   }>
   errors: Array<{ client_id: string; error: string }>
 }
@@ -70,7 +76,7 @@ export function projectedWorkTaskId(clientId: string, localTaskId: number): numb
   return -(value || 1)
 }
 
-function mapTask(clientId: string, clientLabel: string, task: Record<string, unknown>): ProjectedWorkTask | null {
+function mapTask(clientId: string, clientLabel: string, task: Record<string, unknown>, snapshotAt?: number): ProjectedWorkTask | null {
   const localTaskId = Number(task.id)
   if (!Number.isInteger(localTaskId) || localTaskId <= 0) return null
   const projectPrefix = typeof task.project_prefix === 'string' ? task.project_prefix.trim() : ''
@@ -82,14 +88,17 @@ function mapTask(clientId: string, clientLabel: string, task: Record<string, unk
     bridge_client_id: clientId,
     client_id: clientId,
     client_label: clientLabel,
-    source: 'local_runtime',
-    authority: 'local_runtime',
+    source: snapshotAt ? 'local_snapshot' : 'local_runtime',
+    authority: snapshotAt ? 'local_snapshot' : 'local_runtime',
+    stale: Boolean(snapshotAt),
+    ...(snapshotAt ? { snapshot_at: snapshotAt } : {}),
     status: typeof task.status === 'string' ? task.status : 'inbox',
     tags: parseArray(task.tags),
     metadata: {
       ...parseObject(task.metadata),
       local_task_id: localTaskId,
       bridge_client_id: clientId,
+      ...(snapshotAt ? { snapshot_at: snapshotAt, stale: true } : {}),
     },
     ...(projectPrefix && Number.isFinite(ticketNo) && ticketNo > 0
       ? { ticket_ref: `${projectPrefix}-${String(ticketNo).padStart(3, '0')}` }
@@ -110,6 +119,7 @@ async function loadProjection(db: Database.Database, workspaceId: number): Promi
   const tasks: ProjectedWorkTask[] = []
   const clients: WorkTaskProjection['clients'] = []
   const errors: WorkTaskProjection['errors'] = []
+  const liveClientIds = new Set<string>()
   settled.forEach((result, index) => {
     const client = connected[index]
     if (result.status === 'rejected') {
@@ -120,6 +130,18 @@ async function loadProjection(db: Database.Database, workspaceId: number): Promi
       return
     }
     const { snapshot } = result.value
+    liveClientIds.add(client.clientId)
+    try {
+      saveWorkProjectionSnapshot(db, {
+        workspaceId,
+        clientId: client.clientId,
+        clientLabel: client.clientLabel,
+        kind: 'tasks',
+        payload: snapshot as unknown as Record<string, unknown>,
+      })
+    } catch (error) {
+      errors.push({ client_id: client.clientId, error: `Snapshot persistence failed: ${error instanceof Error ? error.message : String(error)}` })
+    }
     for (const task of snapshot.tasks) {
       const mapped = mapTask(client.clientId, client.clientLabel, task)
       if (mapped) tasks.push(mapped)
@@ -130,8 +152,33 @@ async function loadProjection(db: Database.Database, workspaceId: number): Promi
       total: snapshot.total,
       by_status: snapshot.byStatus,
       truncated: snapshot.truncated,
+      live: true,
+      stale: false,
     })
   })
+  const stored = listWorkProjectionSnapshots<{
+    tasks?: Array<Record<string, unknown>>
+    total?: number
+    byStatus?: Record<string, number>
+    truncated?: boolean
+  }>(db, workspaceId, 'tasks', liveClientIds)
+    .filter((snapshot) => allowed.has(snapshot.clientId))
+  for (const snapshot of stored) {
+    for (const task of Array.isArray(snapshot.payload.tasks) ? snapshot.payload.tasks : []) {
+      const mapped = mapTask(snapshot.clientId, snapshot.clientLabel, task, snapshot.capturedAt)
+      if (mapped) tasks.push(mapped)
+    }
+    clients.push({
+      client_id: snapshot.clientId,
+      client_label: snapshot.clientLabel,
+      total: Number(snapshot.payload.total || 0),
+      by_status: snapshot.payload.byStatus || {},
+      truncated: snapshot.payload.truncated === true,
+      live: false,
+      stale: true,
+      snapshot_at: snapshot.capturedAt,
+    })
+  }
   return { tasks, clients, errors }
 }
 

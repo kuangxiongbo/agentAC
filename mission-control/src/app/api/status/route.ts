@@ -150,7 +150,7 @@ async function getDbStats(workspaceId: number) {
       return { ...task, metadata }
     })
     let projectedTasks: Array<Record<string, unknown>> = cloudTasks
-    let taskProjectionClients: unknown[] = []
+    let taskProjectionClients: Array<{ live?: boolean; stale?: boolean }> = []
     let taskProjectionErrors: unknown[] = []
     try {
       const projection = await getLiveWorkTaskProjection(db, workspaceId)
@@ -261,8 +261,9 @@ async function getDbStats(workspaceId: number) {
       tasks: {
         total: totalTasks,
         byStatus: tasksByStatus,
-        authority: taskProjectionClients.length > 0 ? 'local_runtime' : 'cloud',
-        localLive: taskProjectionClients.length > 0,
+        authority: taskProjectionClients.some((client) => client.live !== false && !client.stale) ? 'local_runtime' : taskProjectionClients.length > 0 ? 'local_snapshot' : 'cloud',
+        localLive: taskProjectionClients.some((client) => client.live !== false && !client.stale),
+        localStale: taskProjectionClients.some((client) => client.stale),
         clients: taskProjectionClients,
         errors: taskProjectionErrors,
       },

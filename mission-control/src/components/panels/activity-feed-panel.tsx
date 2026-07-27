@@ -17,7 +17,7 @@ interface Activity {
   description: string
   data?: any
   created_at: number
-  source?: 'cloud' | 'local_runtime'
+  source?: 'cloud' | 'local_runtime' | 'local_snapshot'
   client_label?: string
   entity?: {
     type: string
@@ -123,9 +123,9 @@ function ActivityRow({ activity }: { activity: Activity }) {
             <div className="flex-1">
               <p className="text-foreground text-sm">
                 <span className="font-medium text-primary">{activity.actor}</span>{' '}
-                {activity.source === 'local_runtime' && (
+                {(activity.source === 'local_runtime' || activity.source === 'local_snapshot') && (
                   <span className="mr-1 rounded bg-cyan-500/10 px-1.5 py-0.5 text-[10px] text-cyan-400">
-                    local_runtime{activity.client_label ? ` · ${activity.client_label}` : ''}
+                    {activity.source}{activity.client_label ? ` · ${activity.client_label}` : ''}
                   </span>
                 )}
                 <span className={activityColors[activity.type] || 'text-muted-foreground'}>

@@ -3,8 +3,8 @@ import { requireRole } from '@/lib/auth'
 import { getDatabase } from '@/lib/db'
 import { heavyLimiter } from '@/lib/rate-limit'
 import { getConnectedBridgeClients, requestBridgeClientWorkSearch } from '@/lib/bridge-server'
-import { projectedWorkTaskId } from '@/lib/work-task-projection'
-import { projectedWorkActivityId } from '@/lib/work-activity-projection'
+import { getLiveWorkTaskProjection, projectedWorkTaskId } from '@/lib/work-task-projection'
+import { getLiveWorkActivityProjection, projectedWorkActivityId } from '@/lib/work-activity-projection'
 
 interface SearchResult {
   type: 'task' | 'agent' | 'activity' | 'audit' | 'message' | 'notification' | 'webhook' | 'pipeline'
@@ -14,8 +14,10 @@ interface SearchResult {
   excerpt?: string
   created_at: number
   relevance: number
-  source?: 'cloud_control' | 'local_runtime'
-  authority?: 'cloud' | 'local_runtime'
+  source?: 'cloud_control' | 'local_runtime' | 'local_snapshot'
+  authority?: 'cloud' | 'local_runtime' | 'local_snapshot'
+  stale?: boolean
+  snapshot_at?: number
   client_id?: string
   local_entity_id?: string | number
   agent_name?: string
@@ -211,12 +213,14 @@ export async function GET(request: NextRequest) {
     response: await requestBridgeClientWorkSearch({ clientId: client.clientId, query, types: localTypes, limit }),
   })))
   const localErrors: Array<{ client_id: string; error: string }> = []
+  const liveSearchClients = new Set<string>()
   remote.forEach((item, index) => {
     const client = connected[index]
     if (item.status === 'rejected') {
       localErrors.push({ client_id: client.clientId, error: item.reason instanceof Error ? item.reason.message : String(item.reason) })
       return
     }
+    liveSearchClients.add(client.clientId)
     for (const row of item.value.response.results) {
       const type = row.type === 'task' ? 'task' : row.type === 'activity' ? 'activity' : null
       const localId = String(row.local_id ?? '').trim()
@@ -236,6 +240,41 @@ export async function GET(request: NextRequest) {
       })
     }
   })
+  const [taskProjection, activityProjection] = await Promise.all([
+    localTypes.includes('task') ? getLiveWorkTaskProjection(db, workspaceId).catch(() => null) : Promise.resolve(null),
+    localTypes.includes('activity') ? getLiveWorkActivityProjection(db, workspaceId).catch(() => null) : Promise.resolve(null),
+  ])
+  const lowerQuery = query.toLowerCase()
+  for (const task of taskProjection?.tasks || []) {
+    if (liveSearchClients.has(task.client_id)) continue
+    const haystack = `${String(task.title || '')}\n${String(task.description || '')}\n${String(task.assigned_to || '')}`.toLowerCase()
+    if (!haystack.includes(lowerQuery)) continue
+    const originalAgentName = String(task.assigned_to || '')
+    const mapped = originalAgentName ? db.prepare(`SELECT remote_name FROM sync_agent_index WHERE client_id = ? AND original_name = ? COLLATE NOCASE LIMIT 1`).get(task.client_id, originalAgentName) as any : null
+    results.push({
+      type: 'task', id: task.id, title: String(task.title || ''),
+      subtitle: `${String(task.status || 'inbox')} ${originalAgentName ? `· ${originalAgentName}` : ''}`,
+      excerpt: truncateMatch(String(task.description || ''), query), created_at: Number(task.created_at || 0),
+      relevance: String(task.title || '').toLowerCase().includes(lowerQuery) ? 2 : 1,
+      source: task.source, authority: task.authority, stale: task.stale, snapshot_at: task.snapshot_at,
+      client_id: task.client_id, local_entity_id: task.local_task_id,
+      agent_name: mapped?.remote_name || (originalAgentName ? `${task.client_id}-${originalAgentName}` : undefined),
+      original_agent_name: originalAgentName || undefined,
+    })
+  }
+  for (const activity of activityProjection?.activities || []) {
+    if (liveSearchClients.has(activity.client_id)) continue
+    const haystack = `${activity.description}\n${activity.actor}`.toLowerCase()
+    if (!haystack.includes(lowerQuery)) continue
+    const mapped = activity.actor ? db.prepare(`SELECT remote_name FROM sync_agent_index WHERE client_id = ? AND original_name = ? COLLATE NOCASE LIMIT 1`).get(activity.client_id, activity.actor) as any : null
+    results.push({
+      type: 'activity', id: activity.id, title: activity.description, subtitle: `by ${activity.actor}`,
+      created_at: activity.created_at, relevance: 1, source: activity.source, authority: activity.authority,
+      stale: activity.stale, snapshot_at: activity.snapshot_at, client_id: activity.client_id,
+      local_entity_id: activity.local_activity_id, agent_name: mapped?.remote_name || `${activity.client_id}-${activity.actor}`,
+      original_agent_name: activity.actor,
+    })
+  }
   for (const result of results) {
     if (!result.source) { result.source = 'cloud_control'; result.authority = 'cloud' }
   }
@@ -245,8 +284,9 @@ export async function GET(request: NextRequest) {
     query,
     count: results.length,
     results: results.slice(0, limit),
-    authority: connected.length > 0 ? 'combined' : 'cloud',
-    local_live: connected.length > 0,
+    authority: liveSearchClients.size > 0 ? 'combined' : results.some((result) => result.source === 'local_snapshot') ? 'local_snapshot' : 'cloud',
+    local_live: liveSearchClients.size > 0,
+    local_stale: results.some((result) => result.source === 'local_snapshot'),
     local_errors: localErrors,
   })
 }
