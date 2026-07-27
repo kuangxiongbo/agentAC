@@ -9,8 +9,8 @@
 | 2 | 全局活动投影 | 已完成 | 本地会话/任务里程碑进入云端活动流 |
 | 3 | Agent 指标投影 | 已完成 | 诊断/归因/成本/评估与本地一致 |
 | 4 | 搜索投影与站会 | 已完成 | 搜索和站会可定位本地 Work 事实 |
-| 5 | Work 资源可靠写回 | 进行中 | 云端命令经本地校验/ACK 后生效 |
-| 6 | 离线快照、来源标识和端到端回归 | 待开始 | 断线/重连/旧客户端/回滚均通过 |
+| 5 | Work 资源可靠写回 | 已完成 | 云端命令经本地校验/ACK 后生效 |
+| 6 | 离线快照、来源标识和端到端回归 | 进行中 | 断线/重连/旧客户端/回滚均通过 |
 
 每项必须依次完成：实现 -> 自测 -> 发布 -> 生产验证。未通过生产验证不得将状态改为完成。
 
@@ -73,3 +73,14 @@
 - 生产 Runtime：托盘从公网清单下载约 41MB 更新包并原子替换，`package.json` 已升级为 `2.1.81`，`5101/api/status` 恢复可用；Bridge 仅保留一个有效客户端并声明 `work_search`、`standup_snapshot` 能力。
 - 生产搜索：临时本地任务 `E2E-SEARCH-STANDUP-2.1.81-1785117257` 返回稳定负 ID `-4138582491518280`，`source/authority=local_runtime`、`local_entity_id=7`，Agent 映射为 `mc-edge-a8901a06c732-安全专家`，`local_errors=[]`。
 - 生产站会：同一任务进入上述 Agent 的 `inProgress`，保持相同负 ID 和 `local_runtime` 来源；活动计数为 1，`sources.authority=combined`、`local_live=true`、`errors=[]`。验收后临时任务及活动均已删除，本地残留为 0。
+
+## 第 5 项验收记录
+
+- 版本：Center/Runtime `2.1.82`，Tray `3.0.10`；Git `6e9f5f6 feat(tasks): reliably write cloud mutations to edge`。
+- 镜像：`agentcenter:2.1.82` 与 `latest`，`linux/amd64` digest `sha256:81256db88134cbf029873f3cec6f1a0fa5dcd197745747b2df974db3b85b24e2`；生产容器健康运行并报告 `2.1.82`。
+- Runtime：`client-runtime-2.1.82-darwin-aarch64.zip`，SHA-256 `a53c65da0678f7eb34ca995a903e5ac195f4895bd09da185548dfb1a88973f6b`；Tray DMG SHA-256 `4e3cf1fb73835251ccad9e45bf7f6be60eabe7694a88077f3225e0d66f5abb08`。托盘真实下载并原子升级到 `2.1.82`，5101 服务恢复。
+- 自测：Center `1168/1168`、Edge `1011/1011`；Center 写回/投影聚焦 `5/5`、Edge mailbox/Bridge 聚焦 `20/20`；两端 typecheck、聚焦 lint、生产构建、Runtime 干净启动和发布面门禁通过。
+- 可靠更新：生产临时任务本地 ID `8` 经消息 `9358a4da-eeec-4835-9cd7-c6d6f623ee8e` 完成 `created -> leased -> acked`，标题、状态、优先级和 tags 在本地事务中生效；ACK result 返回 `changed=1` 和 `applied_at`。
+- 幂等与冲突：重复 `idempotency_key` 返回同一消息且 `duplicate=true`，未二次执行；使用旧 `expected_updated_at` 的消息 `ca83d5c0-af62-4a6f-a46a-42a0f36bb6ab` 进入 `dead_letter`，Edge fail outbox 返回 `TASK_VERSION_CONFLICT`、`retryable=false`，本地标题保持新值。
+- 可靠删除：消息 `83bd495f-58fd-4496-aa2c-fd993743340c` 完成 `created -> leased -> acked`，ACK result 为 `deleted=true`；本地任务残留 0，并保留 `task_updated/task_deleted` 两条 `cloud_control` 来源活动。
+- 生产 UI：`https://agent.1sheng.work/tasks` 显示 `v2.1.82`，任务看板、项目/客户端筛选和详情弹窗正常加载，无持续等待或空白。
