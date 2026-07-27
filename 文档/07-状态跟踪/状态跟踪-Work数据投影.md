@@ -10,7 +10,7 @@
 | 3 | Agent 指标投影 | 已完成 | 诊断/归因/成本/评估与本地一致 |
 | 4 | 搜索投影与站会 | 已完成 | 搜索和站会可定位本地 Work 事实 |
 | 5 | Work 资源可靠写回 | 已完成 | 云端命令经本地校验/ACK 后生效 |
-| 6 | 离线快照、来源标识和端到端回归 | 进行中 | 断线/重连/旧客户端/回滚均通过 |
+| 6 | 离线快照、来源标识和端到端回归 | 已完成 | 断线/重连/旧客户端/回滚均通过 |
 
 每项必须依次完成：实现 -> 自测 -> 发布 -> 生产验证。未通过生产验证不得将状态改为完成。
 
@@ -84,3 +84,15 @@
 - 幂等与冲突：重复 `idempotency_key` 返回同一消息且 `duplicate=true`，未二次执行；使用旧 `expected_updated_at` 的消息 `ca83d5c0-af62-4a6f-a46a-42a0f36bb6ab` 进入 `dead_letter`，Edge fail outbox 返回 `TASK_VERSION_CONFLICT`、`retryable=false`，本地标题保持新值。
 - 可靠删除：消息 `83bd495f-58fd-4496-aa2c-fd993743340c` 完成 `created -> leased -> acked`，ACK result 为 `deleted=true`；本地任务残留 0，并保留 `task_updated/task_deleted` 两条 `cloud_control` 来源活动。
 - 生产 UI：`https://agent.1sheng.work/tasks` 显示 `v2.1.82`，任务看板、项目/客户端筛选和详情弹窗正常加载，无持续等待或空白。
+
+## 第 6 项验收记录
+
+- 版本：Center/Runtime `2.1.83`，Tray `3.0.10`；Git `7701596 feat(projection): retain edge snapshots while offline`。
+- 镜像：`agentcenter:2.1.83` 与 `latest`，`linux/amd64` digest `sha256:9671bf3d7084bc687227143d7176e18810d6a5cc0e584a5d6e28186fdc7c5769`；生产容器健康运行并报告 `2.1.83`。
+- Runtime：`client-runtime-2.1.83-darwin-aarch64.zip`，SHA-256 `1d8c815360874cd9d2eb8ffdff502f73f41b3838f948eb89343f462910ac2469`；Tray DMG 继续使用 `3.0.10`，SHA-256 `4e3cf1fb73835251ccad9e45bf7f6be60eabe7694a88077f3225e0d66f5abb08`。托盘从公网清单自动升级到 `2.1.83`，5101 服务恢复。
+- 自测：Center `1172/1172`、Edge `1011/1011`；离线快照/搜索/站会聚焦 `16/16`，两端 typecheck、聚焦 lint、生产构建、Runtime 干净解压启动和发布面门禁通过。
+- 在线投影：临时任务本地 ID `9`、生产稳定 ID `-4121273739760162`，对应活动本地 ID `2320`、生产稳定 ID `-3242710780153230`；任务与活动均为 `source/authority=local_runtime`、`local_live=true`。
+- 真实断线：停止本地 Tray/Runtime 并确认 5101 离线后，任务与活动保持相同稳定 ID，均切换为 `source/authority=local_snapshot`、`stale=true`、`local_live=false`、`local_stale=true`，并返回各自 `snapshot_at`；生产迁移表 `work_projection_snapshots` 存在且保存 tasks/activities 两类快照。
+- 离线消费：全局搜索同时找到快照任务和活动；站会将快照任务归入 `mc-edge-a8901a06c732-安全专家`，来源汇总为 `local_snapshot` 且无投影错误。浏览器任务卡显示 `local_snapshot`、`draggable=false`，详情弹窗无编辑和删除入口。
+- 真实重连：重启 Tray 后约 4 秒恢复 5101，任务与活动各仅返回一条，恢复为 `local_runtime`、`local_live=true`、`local_stale=false`，稳定 ID 不变且无快照重复。临时任务及关联活动已清理，本地和生产残留均为 0。
+- 兼容性：无快照的旧客户端不会伪造离线数据，租户过滤和七天保留策略由自动化测试覆盖；回滚到 `2.1.82` 时新增表可保留，旧代码不会读取该表。
