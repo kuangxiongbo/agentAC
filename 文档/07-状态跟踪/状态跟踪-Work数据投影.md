@@ -1,6 +1,6 @@
 # Work 数据投影改进跟踪
 
-更新日期：2026-07-24
+更新日期：2026-07-27
 
 | 项 | 范围 | 状态 | 验收门禁 |
 |---|---|---|---|
@@ -8,8 +8,8 @@
 | 1 | 全局任务投影与 Dashboard | 已完成 | 本地新建/更新/删除在云端正确展示 |
 | 2 | 全局活动投影 | 已完成 | 本地会话/任务里程碑进入云端活动流 |
 | 3 | Agent 指标投影 | 已完成 | 诊断/归因/成本/评估与本地一致 |
-| 4 | 搜索投影与站会 | 进行中 | 搜索和站会可定位本地 Work 事实 |
-| 5 | Work 资源可靠写回 | 待开始 | 云端命令经本地校验/ACK 后生效 |
+| 4 | 搜索投影与站会 | 已完成 | 搜索和站会可定位本地 Work 事实 |
+| 5 | Work 资源可靠写回 | 进行中 | 云端命令经本地校验/ACK 后生效 |
 | 6 | 离线快照、来源标识和端到端回归 | 待开始 | 断线/重连/旧客户端/回滚均通过 |
 
 每项必须依次完成：实现 -> 自测 -> 发布 -> 生产验证。未通过生产验证不得将状态改为完成。
@@ -61,3 +61,15 @@
 - 生产诊断/归因：云端 Agent `305652` 实时解析本地 Agent `6` `安全专家`，`authority=local_runtime`、`local_live=true`，诊断活动数和归因成本结构正确。
 - 生产评估/成本：`/api/agents/evals?timeframe=day` 返回 `200/authority=combined`；`stats/trends/by-agent/task-costs/session-costs` 全部返回 `200`，空数据场景不再返回 400。
 - 生产 UI：`v2.1.79` 安全审计页正常显示 Agent 评估仪表板，热访问两个聚合请求约 `1.8s`；成本页四个聚合请求约 `0.81s`，页面无 400、空白或持续加载。
+
+## 第 4 项验收记录
+
+- 版本：Center/Runtime `2.1.81`，Tray `3.0.10`。
+- Git：`d405c00 feat(search): project edge work into search and standup`；`bd79589 fix(bridge): supersede stale edge connections`。
+- 镜像：`agentcenter:2.1.81` 与 `latest`，`linux/amd64` digest `sha256:a9a621a368cd6cd75c905633cb438ad71e59a014566d4b1fd62a65eef4b40507`，生产容器健康运行。
+- Runtime：`client-runtime-2.1.81-darwin-aarch64.zip`，SHA-256 `c0400ddab6a640612ce7effa769a9ac621b719e0731aa71267eb13dd39cf21d7`；Tray DMG SHA-256 `43a24ce1113e6b50fa4a11c0bf72ed733dd26c1acc6d8380d9ac083f867c54fb`。
+- 自测：Center `1166/1166`、Edge `1008/1008`，搜索/站会聚焦 `2/2`、Edge Bridge 聚焦 `11/11`；两端 typecheck、聚焦 lint、生产构建、Runtime 干净解压启动和发布面门禁通过。
+- 连接可靠性：同一 `client_id` 的新 Bridge 连接会主动替换旧连接，旧连接待处理 RPC 显式失败；Edge 旧 socket 关闭事件不会清除新连接或触发重复重连。
+- 生产 Runtime：托盘从公网清单下载约 41MB 更新包并原子替换，`package.json` 已升级为 `2.1.81`，`5101/api/status` 恢复可用；Bridge 仅保留一个有效客户端并声明 `work_search`、`standup_snapshot` 能力。
+- 生产搜索：临时本地任务 `E2E-SEARCH-STANDUP-2.1.81-1785117257` 返回稳定负 ID `-4138582491518280`，`source/authority=local_runtime`、`local_entity_id=7`，Agent 映射为 `mc-edge-a8901a06c732-安全专家`，`local_errors=[]`。
+- 生产站会：同一任务进入上述 Agent 的 `inProgress`，保持相同负 ID 和 `local_runtime` 来源；活动计数为 1，`sources.authority=combined`、`local_live=true`、`errors=[]`。验收后临时任务及活动均已删除，本地残留为 0。
