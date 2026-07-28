@@ -11,8 +11,8 @@
 | 项 | 范围 | 状态 | 验收门禁 |
 |---|---|---|---|
 | 0 | 生产基线与前置条件审计 | 已完成 | 2.1.83 的授权、绑定、会话、Bridge、MCP 和健康指标可用 |
-| 1 | 可重复的真实 Worker 问询夹具 | 进行中 | 可稳定产生等待确认并保留 Worker transcript、事件和 message ID |
-| 2 | 五类语义代答 | 待开始 | 确认、选择、补充信息、危险拒绝、无法判断转人工均符合问题语义 |
+| 1 | 可重复的真实 Worker 问询夹具 | 已完成 | 可稳定产生等待确认并保留 Worker transcript、事件和 message ID |
+| 2 | 五类语义代答 | 进行中 | 确认、选择、补充信息、危险拒绝、无法判断转人工均符合问题语义 |
 | 3 | 自动停止与循环保护 | 待开始 | 次数、时长、限流停止均生效；重新启用不立即再次停止 |
 | 4 | 断线排队、重连与幂等 | 待开始 | Bridge 断线期间排队，重连只投递一次且回复进入原会话 |
 | 5 | 端到端可观测证据 | 待开始 | UI/API 可关联触发、判断、投递、ACK、Worker 后续状态和失败原因 |
@@ -58,3 +58,15 @@
 - 延迟事实：Worker 问题时间 `09:11:41.729Z`，值守回复进入 transcript 时间 `09:12:02.023Z`，约 20.3 秒；Worker 后续回复时间 `09:12:24.097Z`。规则约 6 秒命中，但 judge 与发送使总回复时间超过 5 秒目标。
 - 未通过门禁：此次自动发送仍调用同步 `requestBridgeClientSessionContinue`，干预记录的 `message_id/correlation_id` 均为空，无法证明 lease/ACK 和断线幂等；第 1 项保持进行中。
 - 待实现：自动发送统一接入可靠 `session.continue.requested` mailbox；watch event、attempt、completed 关联同一 `message_id/correlation_id`；记录问题时间、规则命中、judge 完成、入队、ACK、Worker 后续时间，区分“5 秒触发”与“模型总回复耗时”。
+
+## 第 1 项验收记录
+
+- 版本：生产 Center/Runtime `2.1.84`、Tray `3.0.10`；Git `8f66ace feat(human-watch): deliver automatic replies reliably`。
+- 镜像：`agentcenter:2.1.84` 与 `latest`，`linux/amd64` digest `sha256:3f33ef1e396bed2b852020bdc71c389459705a3946e10c305a3c4547321fd03a`；生产容器健康。
+- Runtime：`client-runtime-2.1.84-darwin-aarch64.zip`，SHA-256 `5723af6a98229a908e5489a59bcb9aaa6f108635c3197fc091fc85a96ab1c049`；本地托盘从公网清单自动升级并恢复 5101。
+- 自测：聚焦 Human Watch/mailbox `28/28`、Center 全量 `1174/1174`；聚焦 lint、typecheck、Center/Edge 生产构建、Runtime 干净启动和发布面门禁通过。
+- 真实场景：`HW-E2E-MAILBOX-1785207201` 的 Worker 在原 `codex-cli` 会话询问“最终验收报告选择 PDF 还是 DOCX”；值守 Agent 语义回复“选择 PDF，确认。”。
+- 可靠消息：`b5ead008-2d71-4961-9c69-53fe28b6b204`，correlation `human-watch:6:019f5ecf-0e60-7d51-82dd-ed15e1896ede:5543ccc00362d87716572740`，`attempt_count=1`，最终 `status=completed`、`delivered=true`。
+- ACK 结果：Edge 在 Worker CLI 完成后返回 reply“已确认：最终验收报告选择 PDF。”；干预 `38039` 才记录 `intervention_completed/outcome=success`，与 attempt 使用同一消息和 correlation。
+- 幂等：Worker transcript 中值守 user 回复只出现 1 次，消息只 lease/执行 1 次；证明重复轮询没有造成重复续写。
+- 可观测遗留：message leased 期间重复规则评估会追加相同消息 ID 的 attempt 审计（本次为 `38036/38038`），但不重复创建或执行消息。该审计降噪进入第 5 项处理。
