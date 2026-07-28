@@ -124,3 +124,13 @@
 - 完整事件证据：message `3196b773-0cc6-4e20-9634-20f72a4cbe46` 关联 watch event `0903ed6e-cce3-44fb-82b8-306f1361dd87/resolved`，显示 `completed`、单次尝试、5 秒 ACK 时间线和 Worker reply“已确认报告交付日期为 2026-08-01。”。
 - 生产状态：容器 healthy，版本接口返回 `2.1.87`，Bridge `mc-edge-a8901a06c732` 已重连；原 binding `6` 和测试 binding `7/8` 保持禁用。
 - 结论：第 5 项通过，进入第 6 项 24 小时小范围持续稳定性观察。
+
+## 第 6 项观察基线（进行中）
+
+- 开始时间：2026-07-28 13:48（Asia/Shanghai）；目标先观察至 2026-07-29 13:48，再决定是否扩展到 72 小时。
+- 隔离对象：本地 Worker Agent `17`“值守稳定性灰度”，session `019fa742-18d1-7ad2-851a-0105d33e4d44`，生产 binding `9`，Steward Agent `7`；原 binding `6` 和历史测试 binding `7/8` 保持禁用。
+- 自动停止：`max_successful_interventions=3`、`max_runtime_seconds=86400`、`max_rate_limited_skips=3`，任一条件命中即停用。
+- 首轮问题：Worker 询问“测试结果应使用简洁版还是详细版？”；值守语义回复“选择简洁版。”，Worker 后续回复“已确认，测试结果使用简洁版。”。
+- 可靠证据：event `9792070b-9dfe-4fd7-93b8-98d4e8fd1f78/resolved`，message `b22c7658-989c-4826-aaac-ea1c8f23a232/completed`，`attempt_count=1`，attempt 至 ACK 7 秒，未产生重复消息。
+- 延迟拆分：Worker 问句时间 `13:48:06.818`，规则约 `13:48:13` 命中（约 6 秒），值守回复进入原会话时间 `13:48:34.139`（问题至回复约 27.3 秒），Worker 完成确认时间 `13:48:37.047`。当前满足约 5 秒发现，不满足 5 秒内最终回复；该性能差距必须独立优化，不能计作稳定性通过。
+- 起始资源：Center 容器约 172 MiB，CPU 约 0.1%，根盘 76%；观察项为重复 user reply、未终态 mailbox、Bridge 重连、judge/投递失败、容器内存和磁盘增长。
