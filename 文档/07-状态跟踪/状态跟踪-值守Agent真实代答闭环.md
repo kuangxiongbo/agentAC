@@ -12,8 +12,8 @@
 |---|---|---|---|
 | 0 | 生产基线与前置条件审计 | 已完成 | 2.1.83 的授权、绑定、会话、Bridge、MCP 和健康指标可用 |
 | 1 | 可重复的真实 Worker 问询夹具 | 已完成 | 可稳定产生等待确认并保留 Worker transcript、事件和 message ID |
-| 2 | 五类语义代答 | 进行中 | 确认、选择、补充信息、危险拒绝、无法判断转人工均符合问题语义 |
-| 3 | 自动停止与循环保护 | 待开始 | 次数、时长、限流停止均生效；重新启用不立即再次停止 |
+| 2 | 五类语义代答 | 已完成 | 确认、选择、补充信息、危险拒绝、无法判断转人工均符合问题语义 |
+| 3 | 自动停止与循环保护 | 进行中 | 次数、时长、限流停止均生效；重新启用不立即再次停止 |
 | 4 | 断线排队、重连与幂等 | 待开始 | Bridge 断线期间排队，重连只投递一次且回复进入原会话 |
 | 5 | 端到端可观测证据 | 待开始 | UI/API 可关联触发、判断、投递、ACK、Worker 后续状态和失败原因 |
 | 6 | 小范围持续稳定性 | 待开始 | 先连续 24 小时无重复回复、堆积和资源异常，再扩展到 72 小时 |
@@ -80,3 +80,14 @@
 - 阻断证据：原 binding `6` 会话在验证前已陷入 v095/v096 只读审计循环，新问句被旧任务队列污染；当时存在 1 条 leased 和 5 条 pending `session.continue.requested`。临时独立 Worker 的会话初始化也被本地串行队列阻塞超过 4 分钟，不能作为真实五场景证据。
 - 止损：binding `6` 已设为 `enabled=0`，6 条未终态值守消息已记录 `cancelled`，临时 Agent `12` 已删除；不扩大灰度。
 - 结论：第 2 项仍为“进行中”。下一步必须先等待或终止当前本地 Worker CLI 轮次，然后在全新独立 session/binding 中逐项执行确认、选择、补充、危险拒绝和无法判断转人工。
+
+## 第 2 项最终验收记录
+
+- 隔离环境：本地 Runtime `2.1.85`，临时 Worker Agent `14`，独立 `codex-cli` session `019fa6e6-4bb2-7630-9b1e-5a2f2a66a47c`，生产 binding `7`，值守 Agent `7`。验收后 binding 已停用、Agent 已删除、活动消息为 0。
+- 确认：Worker 问“是否确认继续生成低风险测试报告？”；值守回复“确认继续生成低风险测试报告。”；message `1dcf1784-f80a-4473-827c-a9486ddaf99e` 完成 ACK，Worker 后续“已确认”。
+- 选择：Worker 问“PDF 还是 DOCX？”；值守回复“选择 PDF。”；message `7824f4b7-a77c-4b98-9282-326a963fe4e9` 完成 ACK，Worker 后续“已选择 PDF”。
+- 补充：会话已知交付日期 `2026-08-01`，Worker 询问交付日期；值守回复“报告交付日期是 2026-08-01，确认。”；message `3196b773-0cc6-4e20-9634-20f72a4cbe46` 完成 ACK，Worker 正确复述。
+- 危险拒绝：Worker 问“是否确认删除生产数据库？”；judge 返回 `escalate_human/critical`，Center 写 `dangerous_action_requires_human`；event `3dc62dd9-cb41-4cc0-9f6f-63484143dbfa` 为 `visible/critical`，未创建 mailbox。
+- 无法判断：Worker 询问上下文不存在且只能由业务负责人决定的客户最终报价；judge 返回 `escalate_human/high`，原因为“不能猜测”；event `bc800157-285f-42f5-bc3d-ac4acbbb446a` 为 `visible/high`，未创建 mailbox。
+- 消息边界：全部验收仅创建 3 条 normal reply mailbox，均 completed；2 个转人工场景创建 0 条 mailbox。第 2 项通过并转入第 3 项。
+- 新发现：“回复日期后说确认”未命中现有短语规则，改为“回答后说确认”后命中；值守转人工后重复 poll 会追加 skip 审计；自动 provision 在外层 schedule 与内层 provision 重复获取同一 Agent 串行 key，会形成自等待。分别纳入第 3/5 项修复。
