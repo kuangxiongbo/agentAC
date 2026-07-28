@@ -14,8 +14,8 @@
 | 1 | 可重复的真实 Worker 问询夹具 | 已完成 | 可稳定产生等待确认并保留 Worker transcript、事件和 message ID |
 | 2 | 五类语义代答 | 已完成 | 确认、选择、补充信息、危险拒绝、无法判断转人工均符合问题语义 |
 | 3 | 自动停止与循环保护 | 已完成 | 次数、时长、限流停止均生效；重新启用不立即再次停止 |
-| 4 | 断线排队、重连与幂等 | 进行中 | Bridge 断线期间排队，重连只投递一次且回复进入原会话 |
-| 5 | 端到端可观测证据 | 待开始 | UI/API 可关联触发、判断、投递、ACK、Worker 后续状态和失败原因 |
+| 4 | 断线排队、重连与幂等 | 已完成 | Bridge 断线期间排队，重连只投递一次且回复进入原会话 |
+| 5 | 端到端可观测证据 | 进行中 | UI/API 可关联触发、判断、投递、ACK、Worker 后续状态和失败原因 |
 | 6 | 小范围持续稳定性 | 待开始 | 先连续 24 小时无重复回复、堆积和资源异常，再扩展到 72 小时 |
 
 每项必须依次完成：`实现 -> 自测 -> 发布 -> 生产验证 -> 标记完成`。仅文档或模拟测试通过不得标记业务闭环完成。
@@ -103,3 +103,14 @@
 - 循环去重：已有 visible 转人工事件时等待完整 60 秒 poll，`rule_evaluated` 增加但 `intervention_skipped` 保持 `4 -> 4`，judge 和 mailbox 均未重复。
 - Edge 自动 provision：新建非 manual Agent `15` 返回 `session_provisioning=true`，约 10 秒后自动转 `ready`并生成 session `019fa700-6eac-7691-8979-002b93ad4444`，不再自等待。Agent 验收后已删除，binding `7` 已停用。
 - 结论：第 3 项通过，进入第 4 项断线排队、重连和幂等验收。
+
+## 第 4 项验收记录
+
+- 自测：Center `edge-messages` + Human Watch 编排 `32/32`，Edge local mailbox + session continue `12/12`，覆盖云端 idempotency、lease/retry/ACK、本地重复 key 不二次执行和原 session 续写。
+- 隔离环境：Runtime `2.1.86`，临时 Worker Agent `16`，原 `codex-cli` session `019fa70f-ef6a-7853-ac93-925068b6b8b5`，生产 binding `8`。Worker 断线前提问“测试主题选择绿色还是蓝色？”并已落盘。
+- 断线排队：退出托盘并确认 `5101` 停止后，Center 创建 message `ca2636bd-1cdc-4839-88ee-1617fa4d05a5`，correlation/idempotency `human-watch:8:019fa70f-ef6a-7853-ac93-925068b6b8b5:offline-reconnect-green`；断线期间状态 `pending`、`attempt_count=0`、无 lease owner。
+- 重连投递：启动托盘后 Runtime 以 `2.1.86` 恢复，同一 message 只 lease/execute 1 次，最终 `completed`、`attempt_count=1`、`delivered=true`，ACK reply 为“已选择绿色主题，确认。”。
+- 原会话与幂等：Worker transcript 中值守 user 回复“选择绿色主题，确认。”计数为 1，Worker 后续正确回复；Center 相同 idempotency key 消息数为 1，attempt/completed 共享同一 message/correlation。
+- 清理：临时 Agent `16` 已删除，binding `8` 已停用，活动消息为 0；审计证据保留。
+- 边界说明：Bridge 已完全断线时 Center 无法读取新的本地 transcript，因此本项验证的可靠边界是“问题/决策已形成，Edge 在 lease 前断线”；消息可离线排队，但不会在无 transcript 时猜测新决策。
+- 结论：第 4 项通过，进入第 5 项端到端可观测证据。
