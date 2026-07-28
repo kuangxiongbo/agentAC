@@ -1,6 +1,6 @@
 # 值守 Agent 真实代答闭环与稳定性跟踪
 
-更新日期：2026-07-27
+更新日期：2026-07-28
 
 ## 目标
 
@@ -70,3 +70,13 @@
 - ACK 结果：Edge 在 Worker CLI 完成后返回 reply“已确认：最终验收报告选择 PDF。”；干预 `38039` 才记录 `intervention_completed/outcome=success`，与 attempt 使用同一消息和 correlation。
 - 幂等：Worker transcript 中值守 user 回复只出现 1 次，消息只 lease/执行 1 次；证明重复轮询没有造成重复续写。
 - 可观测遗留：message leased 期间重复规则评估会追加相同消息 ID 的 attempt 审计（本次为 `38036/38038`），但不重复创建或执行消息。该审计降噪进入第 5 项处理。
+
+## 第 2 项发布与首轮生产验证（未完成）
+
+- 版本：Git `17f72a3`，Center/Runtime `2.1.85`，Tray `3.0.10`；生产镜像 `2.1.85` 与 `latest` 共享 `linux/amd64` digest `sha256:e0d0c9990ae11c2921669e66e8457b0b0a82ead92a58f277e629e5c6853180f5`。
+- 实现：judge 新增 `reply|ask_worker|escalate_human` 结构化决策；Center 独立拦截删除/破坏、生产变更、提权和凭据处理问询。转人工事件保持 visible/high 或 critical，不创建 Worker mailbox。
+- 自测：五类语义聚焦测试 `27/27`，Center 全量 `1180/1180`，typecheck、聚焦 lint、Center/Edge 生产构建、Runtime 干净启动和 release-surface 通过。全量 lint 被无关页面的既有条件 Hook/未转义引号错误阻断，本次未修改该业务。
+- 生产部署：容器 healthy，Human Watch 编排器启动，Edge `mc-edge-a8901a06c732` 重连并声明所需能力；本地 Runtime 已从公网 manifest 自动升级为 `2.1.85`。
+- 阻断证据：原 binding `6` 会话在验证前已陷入 v095/v096 只读审计循环，新问句被旧任务队列污染；当时存在 1 条 leased 和 5 条 pending `session.continue.requested`。临时独立 Worker 的会话初始化也被本地串行队列阻塞超过 4 分钟，不能作为真实五场景证据。
+- 止损：binding `6` 已设为 `enabled=0`，6 条未终态值守消息已记录 `cancelled`，临时 Agent `12` 已删除；不扩大灰度。
+- 结论：第 2 项仍为“进行中”。下一步必须先等待或终止当前本地 Worker CLI 轮次，然后在全新独立 session/binding 中逐项执行确认、选择、补充、危险拒绝和无法判断转人工。
