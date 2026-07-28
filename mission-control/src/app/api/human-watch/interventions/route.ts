@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
-import { listHumanWatchInterventions } from '@/lib/human-watch-audit'
+import { listHumanWatchInterventionViews } from '@/lib/human-watch-audit'
 
 export const dynamic = 'force-dynamic'
 
@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
     limit = parsedLimit
   }
 
-  const interventions = listHumanWatchInterventions({
+  const interventions = listHumanWatchInterventionViews({
     workspaceId,
     tenantId: auth.user.tenant_id ?? undefined,
     clientId,
@@ -69,19 +69,7 @@ export async function GET(request: NextRequest) {
   })
 
   return NextResponse.json({
-    interventions: interventions.map((row) => ({
-      ...row,
-      rules_hit: row.rules_hit ? safeParseJson(row.rules_hit) : null,
-      llm_sweep: Boolean(row.llm_sweep),
-    })),
+    interventions,
     count: interventions.length,
   })
-}
-
-function safeParseJson(raw: string): unknown {
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return raw
-  }
 }

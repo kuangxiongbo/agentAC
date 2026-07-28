@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import { getDatabase } from './db'
 import type {
   HumanWatchInterventionRow,
+  HumanWatchInterventionView,
   ListHumanWatchInterventionsFilters,
   LogHumanWatchInterventionInput,
 } from './human-watch-types'
@@ -243,4 +244,113 @@ export function listHumanWatchInterventions(
        LIMIT ?`,
     )
     .all(...params) as HumanWatchInterventionRow[]
+}
+
+export function listHumanWatchInterventionViews(
+  filters: ListHumanWatchInterventionsFilters,
+  database?: Database.Database,
+): HumanWatchInterventionView[] {
+  const db = dbOr(database)
+  const rows = listHumanWatchInterventions(filters, db)
+  if (rows.length === 0) return []
+
+  const messageIds = [...new Set(rows.map((row) => row.message_id).filter((id): id is string => Boolean(id)))]
+  const correlationIds = [...new Set(rows.map((row) => row.correlation_id).filter((id): id is string => Boolean(id)))]
+  const messages = new Map<string, Record<string, unknown>>()
+
+  if (messageIds.length > 0 || correlationIds.length > 0) {
+    const clauses: string[] = []
+    const params: string[] = []
+    if (messageIds.length > 0) {
+      clauses.push(`id IN (${messageIds.map(() => '?').join(', ')})`)
+      params.push(...messageIds)
+    }
+    if (correlationIds.length > 0) {
+      clauses.push(`correlation_id IN (${correlationIds.map(() => '?').join(', ')})`)
+      params.push(...correlationIds)
+    }
+    const messageRows = db.prepare(`SELECT * FROM edge_messages WHERE ${clauses.join(' OR ')}`).all(...params) as Array<Record<string, unknown>>
+    for (const message of messageRows) {
+      messages.set(String(message.id), message)
+      messages.set(`correlation:${String(message.correlation_id)}`, message)
+    }
+  }
+
+  const eventIds = new Set<string>()
+  for (const message of messages.values()) {
+    const payload = parseJsonObject(message.payload_json)
+    const eventId = stringValue(payload?.human_watch_event_id)
+    if (eventId) eventIds.add(eventId)
+  }
+  const events = new Map<string, Record<string, unknown>>()
+  if (eventIds.size > 0) {
+    const ids = [...eventIds]
+    const eventRows = db.prepare(`SELECT * FROM human_watch_events WHERE id IN (${ids.map(() => '?').join(', ')})`).all(...ids) as Array<Record<string, unknown>>
+    for (const event of eventRows) events.set(String(event.id), event)
+  }
+
+  return rows.map((row) => {
+    const message = (row.message_id ? messages.get(row.message_id) : null)
+      ?? (row.correlation_id ? messages.get(`correlation:${row.correlation_id}`) : null)
+      ?? null
+    const payload = parseJsonObject(message?.payload_json)
+    const result = parseJsonObject(message?.result_json)
+    const eventId = stringValue(payload?.human_watch_event_id)
+    const event = eventId ? events.get(eventId) ?? null : null
+    const queuedAt = numberValue(message?.created_at)
+    const completedAt = numberValue(message?.completed_at)
+    const triggerAt = row.created_at
+
+    return {
+      ...row,
+      rules_hit: row.rules_hit ? parseJsonValue(row.rules_hit) : null,
+      llm_sweep: Boolean(row.llm_sweep),
+      evidence: {
+        watch_event_id: eventId,
+        watch_event_status: stringValue(event?.status) as HumanWatchInterventionView['evidence']['watch_event_status'],
+        watch_event_priority: stringValue(event?.priority) as HumanWatchInterventionView['evidence']['watch_event_priority'],
+        message_id: stringValue(message?.id) ?? row.message_id,
+        correlation_id: stringValue(message?.correlation_id) ?? row.correlation_id,
+        mailbox_status: stringValue(message?.status),
+        attempt_count: numberValue(message?.attempt_count),
+        queued_at: queuedAt,
+        updated_at: numberValue(message?.updated_at),
+        completed_at: completedAt,
+        delivery_result: result,
+        worker_reply: stringValue(result?.reply) ?? stringValue(result?.worker_reply) ?? stringValue(result?.steward_reply),
+        last_error_code: stringValue(message?.last_error_code),
+        last_error_message: stringValue(message?.last_error_message) ?? row.error_message,
+        trigger_at: triggerAt,
+        queue_delay_seconds: queuedAt == null ? null : Math.max(0, queuedAt - triggerAt),
+        delivery_duration_seconds: queuedAt == null || completedAt == null ? null : Math.max(0, completedAt - queuedAt),
+        total_duration_seconds: completedAt == null ? null : Math.max(0, completedAt - triggerAt),
+      },
+    }
+  })
+}
+
+function parseJsonValue(raw: string): HumanWatchInterventionView['rules_hit'] {
+  try {
+    return JSON.parse(raw) as HumanWatchInterventionView['rules_hit']
+  } catch {
+    return raw
+  }
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'string' || !value) return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
+  } catch {
+    return null
+  }
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }

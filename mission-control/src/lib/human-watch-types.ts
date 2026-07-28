@@ -99,6 +99,33 @@ export interface HumanWatchInterventionRow {
   created_at: number
 }
 
+export interface HumanWatchInterventionEvidence {
+  watch_event_id: string | null
+  watch_event_status: HumanWatchEventStatus | null
+  watch_event_priority: HumanWatchEventPriority | null
+  message_id: string | null
+  correlation_id: string | null
+  mailbox_status: string | null
+  attempt_count: number | null
+  queued_at: number | null
+  updated_at: number | null
+  completed_at: number | null
+  delivery_result: Record<string, unknown> | null
+  worker_reply: string | null
+  last_error_code: string | null
+  last_error_message: string | null
+  trigger_at: number
+  queue_delay_seconds: number | null
+  delivery_duration_seconds: number | null
+  total_duration_seconds: number | null
+}
+
+export interface HumanWatchInterventionView extends Omit<HumanWatchInterventionRow, 'rules_hit' | 'llm_sweep'> {
+  rules_hit: HumanWatchRulesHit | string | null
+  llm_sweep: boolean
+  evidence: HumanWatchInterventionEvidence
+}
+
 export interface ListHumanWatchInterventionsFilters {
   workspaceId: number
   tenantId?: number
