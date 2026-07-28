@@ -37,7 +37,10 @@ import {
   buildWorkerJudgeContext,
   buildStewardJudgePrompt,
   buildWorkerSummaryForJudge,
+  classifyDangerousWorkerRequest,
+  parseStewardJudgeDecision,
   parseStewardConfigFromAgent,
+  type StewardJudgeDecision,
   type StewardRuntimeConfig,
 } from './human-watch-judge'
 import type { LocalSessionTranscriptKind, TranscriptMessage } from './session-transcript'
@@ -278,6 +281,8 @@ function createPendingWatchEvent(
   evaluation: { fingerprint: string; rulesHit: Record<string, unknown> },
   source: 'transcript_rule' | 'transcript_wait',
   memoryContext?: string | null,
+  decision?: StewardJudgeDecision | null,
+  escalationReason?: string | null,
 ): HumanWatchEventView {
   const lastAssistant = [...messages].reverse().find((message) => message.role === 'assistant')
   const lastUser = [...messages].reverse().find((message) => message.role === 'user')
@@ -310,7 +315,11 @@ function createPendingWatchEvent(
     stewardName: binding.steward_name,
     source,
     status: 'pending',
-    priority: evaluation.rulesHit.pending_tool || evaluation.rulesHit.confirmation_strong ? 'high' : 'medium',
+    priority: decision?.risk === 'critical'
+      ? 'critical'
+      : escalationReason || evaluation.rulesHit.pending_tool || evaluation.rulesHit.confirmation_strong
+        ? 'high'
+        : 'medium',
     title: 'Worker 等待值守介入',
     summary: summaryParts.join(' · ') || 'Worker 会话等待回复或卡住',
     context: {
@@ -321,6 +330,8 @@ function createPendingWatchEvent(
       worker_summary: workerSummary,
       worker_judge_context: workerJudgeContext,
       steward_memory_context: memoryContext || null,
+      steward_decision: decision || null,
+      escalation_reason: escalationReason || null,
       last_user_message:
         lastUser?.parts
           ?.map((part) => (part.type === 'text' ? part.text : null))
@@ -484,7 +495,7 @@ async function resolveInterventionPrompt(
   messages: TranscriptMessage[],
   deps: EvaluateDeps,
 ): Promise<
-  | { prompt: string; memoryContext?: string | null }
+  | { decision: StewardJudgeDecision; memoryContext?: string | null }
   | { skipReason: 'steward_missing' | 'steward_judge_empty' | 'steward_judge_failed'; errorMessage?: string }
 > {
   const stewardId = binding.steward_local_agent_id
@@ -508,8 +519,8 @@ async function resolveInterventionPrompt(
       localAgentId: stewardId,
       prompt: judgePrompt,
     })
-    const reply = String(judge.reply || '').trim()
-    if (reply) return { prompt: reply, memoryContext }
+    const decision = parseStewardJudgeDecision(String(judge.reply || ''))
+    if (decision) return { decision, memoryContext }
     return { skipReason: 'steward_judge_empty' }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Steward judge failed'
@@ -669,6 +680,7 @@ export async function evaluateHumanWatchBinding(
       return
     }
 
+    const safetyReason = classifyDangerousWorkerRequest(page.messages)
     const resolved = await resolveInterventionPrompt(binding, page.messages, deps)
     if ('skipReason' in resolved) {
       logHumanWatchIntervention({
@@ -682,7 +694,11 @@ export async function evaluateHumanWatchBinding(
       })
       return
     }
-    const prompt = resolved.prompt
+    const judgeDecision = resolved.decision
+    const escalationReason = safetyReason
+      || (judgeDecision.action === 'escalate_human' || judgeDecision.risk !== 'normal'
+        ? judgeDecision.reason || `值守判官决定转人工（风险：${judgeDecision.risk}）`
+        : null)
     const watchEvent = createPendingWatchEvent(
       binding,
       page.messages,
@@ -692,7 +708,25 @@ export async function evaluateHumanWatchBinding(
       },
       eventSource,
       resolved.memoryContext,
+      judgeDecision,
+      escalationReason,
     )
+    if (escalationReason) {
+      logHumanWatchIntervention({
+        ...auditBase(binding),
+        eventType: 'intervention_skipped',
+        decision: 'skipped',
+        rulesHit: evaluation.rulesHit,
+        fingerprint: evaluation.fingerprint,
+        skipReason: safetyReason ? 'dangerous_action_requires_human' : 'steward_escalated_human',
+        errorMessage: escalationReason,
+      })
+      updateHumanWatchEvent(watchEvent.id, binding.workspace_id, {
+        status: 'visible',
+      })
+      return
+    }
+    const prompt = judgeDecision.reply
 
     try {
       const delivery = await deps.sendContinue({

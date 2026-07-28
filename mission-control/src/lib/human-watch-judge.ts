@@ -23,18 +23,77 @@ export interface StewardRuntimeConfig {
 }
 
 const DEFAULT_JUDGE_TEMPLATE = `你是人工值守判官。阅读下方 Worker 结构化上下文与会话摘录，判断 Worker 在等什么确认、卡在哪一步、下一步最合理的继续指令是什么。
-只输出一条可直接发给 Worker 的用户消息。要求：
-1. 只输出给 Worker 的最终消息，不要解释、不要分析、不要前缀。
+只输出一个 JSON 对象，不要 Markdown 代码块或额外文字：
+{"action":"reply|ask_worker|escalate_human","reply":"可直接发给 Worker 的消息","reason":"简短决策原因","risk":"normal|high|critical"}
+要求：
+1. reply 只包含给 Worker 的最终消息，不要分析或前缀。
 2. 如果 Worker 问了一个需要内容回答的问题，并要求“回答后说确认/回复后说确认”，必须先像人一样给出简洁实际回答，再在末尾包含确认；不要只回复“确认”，也不要跳过问题。
 3. 如果 Worker 明确只是在等待是否继续/是否确认且没有内容问题，直接给出明确选择。
 4. 如果 Worker 需要下一步执行指令，直接给出简洁可执行指令。
-5. 如果信息不足，先要求 Worker 汇报最关键缺口。
+5. 如果 Worker 能补充明确信息，action=ask_worker，要求其只汇报最关键缺口。
+6. 如果缺少的是只能由人决定的业务信息，action=escalate_human，reply 留空。
+7. 生产变更、删除/破坏性操作、权限提升、密码/密钥/凭据处理不得自动批准；action=escalate_human，risk=high 或 critical，reply 留空。
 
 Worker 上下文：
 {context}
 
 Worker 会话摘录：
 {summary}`
+
+export type StewardJudgeAction = 'reply' | 'ask_worker' | 'escalate_human'
+export type StewardJudgeRisk = 'normal' | 'high' | 'critical'
+
+export interface StewardJudgeDecision {
+  action: StewardJudgeAction
+  reply: string
+  reason: string
+  risk: StewardJudgeRisk
+  structured: boolean
+}
+
+export function parseStewardJudgeDecision(raw: string): StewardJudgeDecision | null {
+  const value = String(raw || '').trim()
+  if (!value) return null
+  const candidate = value.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+  try {
+    const parsed = JSON.parse(candidate) as Record<string, unknown>
+    const action = String(parsed.action || '') as StewardJudgeAction
+    const risk = String(parsed.risk || 'normal') as StewardJudgeRisk
+    if (!['reply', 'ask_worker', 'escalate_human'].includes(action)) return null
+    if (!['normal', 'high', 'critical'].includes(risk)) return null
+    const reply = String(parsed.reply || '').trim()
+    if (action !== 'escalate_human' && !reply) return null
+    return {
+      action,
+      reply,
+      reason: String(parsed.reason || '').trim(),
+      risk,
+      structured: true,
+    }
+  } catch {
+    return { action: 'reply', reply: value, reason: 'legacy_plain_text_reply', risk: 'normal', structured: false }
+  }
+}
+
+const DANGEROUS_REQUEST_PATTERNS = [
+  /(?:删除|清空|销毁|格式化|强制重置|覆盖).{0,24}(?:数据|数据库|文件|目录|磁盘|环境|记录|分支)?/i,
+  /\b(?:rm\s+-rf|drop\s+(?:database|table)|truncate\s+table|git\s+reset\s+--hard)\b/i,
+  /(?:生产|线上|prod(?:uction)?).{0,24}(?:发布|部署|变更|重启|停止|回滚|执行|操作)/i,
+  /(?:发布|部署|变更|重启|停止|回滚|执行|操作).{0,24}(?:生产|线上|prod(?:uction)?)/i,
+  /(?:提权|管理员权限|root\s*权限|sudo|chmod\s+777)/i,
+  /(?:密码|口令|密钥|私钥|token|api[_ -]?key|凭据).{0,24}(?:提供|发送|输入|暴露|显示|共享|更换|重置)/i,
+  /(?:提供|发送|输入|暴露|显示|共享|更换|重置).{0,24}(?:密码|口令|密钥|私钥|token|api[_ -]?key|凭据)/i,
+]
+
+export function classifyDangerousWorkerRequest(messages: TranscriptMessage[]): string | null {
+  const lines = transcriptMessagesToHumanWatchLines(messages)
+  const lastAssistant = [...lines].reverse().find((line) => line.role === 'assistant')
+  const text = String(lastAssistant?.content || '').replace(/\s+/g, ' ').trim()
+  if (!text) return null
+  return DANGEROUS_REQUEST_PATTERNS.some((pattern) => pattern.test(text))
+    ? '平台安全策略识别到高风险操作，需要人工确认'
+    : null
+}
 
 const MAX_STEWARD_JUDGE_PROMPT_CHARS = 5900
 const MIN_STEWARD_SECTION_CHARS = 800

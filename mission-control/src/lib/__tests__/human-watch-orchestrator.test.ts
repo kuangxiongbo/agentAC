@@ -558,4 +558,61 @@ describe.sequential('human-watch-orchestrator', () => {
       .get() as { skip_reason: string }
     expect(skipped.skip_reason).toBe('steward_judge_empty')
   })
+
+  it('auto-sends semantic confirmation, choice, and supplemental replies', async () => {
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    const cases = [
+      ['请确认是否继续生成报告。', '确认继续生成报告。'],
+      ['请选择 PDF 或 DOCX。', '选择 PDF，确认。'],
+      ['请补充交付日期，回复后说确认。', '交付日期为 2026-08-01，请继续。'],
+    ]
+    for (const [question, reply] of cases) {
+      fetchTranscript.mockResolvedValue({ messages: [{ role: 'assistant', parts: [{ type: 'text', text: question }], timestamp: new Date(Date.now() - 120_000).toISOString() }] })
+      runJudge.mockResolvedValue({ reply: JSON.stringify({ action: 'reply', reply, reason: '上下文足够', risk: 'normal' }) })
+      sendContinue.mockResolvedValue({ accepted: true })
+      await evaluateHumanWatchBinding(
+        db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any,
+        { sessionId: 'sess-worker-1', sessionKind: 'claude-code' },
+        defaultDeps(),
+      )
+    }
+    expect(sendContinue.mock.calls.map(([input]) => input.prompt)).toEqual(cases.map((entry) => entry[1]))
+  })
+
+  it('keeps dangerous actions visible for a human and never sends them', async () => {
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    fetchTranscript.mockResolvedValue({ messages: [{ role: 'assistant', parts: [{ type: 'text', text: '请确认是否删除生产数据库。' }], timestamp: new Date(Date.now() - 120_000).toISOString() }] })
+    runJudge.mockResolvedValue({ reply: JSON.stringify({ action: 'reply', reply: '确认删除。', reason: '请求确认', risk: 'normal' }) })
+
+    await evaluateHumanWatchBinding(
+      db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any,
+      { sessionId: 'sess-worker-1', sessionKind: 'claude-code' },
+      defaultDeps(),
+    )
+
+    expect(sendContinue).not.toHaveBeenCalled()
+    const event = db.prepare(`SELECT status, priority, context_json FROM human_watch_events LIMIT 1`).get() as any
+    expect(event.status).toBe('visible')
+    expect(event.priority).toBe('high')
+    expect(JSON.parse(event.context_json).escalation_reason).toContain('安全策略')
+    expect(db.prepare(`SELECT skip_reason FROM human_watch_interventions WHERE event_type = 'intervention_skipped'`).get())
+      .toMatchObject({ skip_reason: 'dangerous_action_requires_human' })
+  })
+
+  it('keeps insufficient-information decisions visible for a human', async () => {
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    fetchTranscript.mockResolvedValue({ messages: [{ role: 'assistant', parts: [{ type: 'text', text: '请确认未指定的客户最终报价。' }], timestamp: new Date(Date.now() - 120_000).toISOString() }] })
+    runJudge.mockResolvedValue({ reply: JSON.stringify({ action: 'escalate_human', reply: '', reason: '缺少只能由负责人决定的最终报价', risk: 'high' }) })
+
+    await evaluateHumanWatchBinding(
+      db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any,
+      { sessionId: 'sess-worker-1', sessionKind: 'claude-code' },
+      defaultDeps(),
+    )
+
+    expect(sendContinue).not.toHaveBeenCalled()
+    const event = db.prepare(`SELECT status, context_json FROM human_watch_events LIMIT 1`).get() as any
+    expect(event.status).toBe('visible')
+    expect(JSON.parse(event.context_json).escalation_reason).toContain('最终报价')
+  })
 })

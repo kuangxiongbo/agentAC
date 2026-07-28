@@ -3,10 +3,40 @@ import {
   buildStewardJudgePrompt,
   buildWorkerJudgeContext,
   buildWorkerSummaryForJudge,
+  classifyDangerousWorkerRequest,
+  parseStewardJudgeDecision,
   parseStewardConfigFromAgent,
 } from '@/lib/human-watch-judge'
 
 describe('human-watch-judge', () => {
+  it('parses structured reply, ask-worker, and human-escalation decisions', () => {
+    expect(parseStewardJudgeDecision('{"action":"reply","reply":"选择 PDF，确认。","reason":"用户偏好已知","risk":"normal"}'))
+      .toMatchObject({ action: 'reply', reply: '选择 PDF，确认。', structured: true })
+    expect(parseStewardJudgeDecision('```json\n{"action":"ask_worker","reply":"请汇报失败日志的关键错误。","reason":"缺少日志","risk":"normal"}\n```'))
+      .toMatchObject({ action: 'ask_worker', structured: true })
+    expect(parseStewardJudgeDecision('{"action":"escalate_human","reply":"","reason":"需业务负责人决定","risk":"high"}'))
+      .toMatchObject({ action: 'escalate_human', risk: 'high', structured: true })
+  })
+
+  it('keeps backward compatibility for legacy plain-text judge replies', () => {
+    expect(parseStewardJudgeDecision('补充客户名称后继续。')).toEqual({
+      action: 'reply',
+      reply: '补充客户名称后继续。',
+      reason: 'legacy_plain_text_reply',
+      risk: 'normal',
+      structured: false,
+    })
+  })
+
+  it('classifies destructive, production, privilege, and secret requests', () => {
+    const message = (text: string) => [{ role: 'assistant' as const, parts: [{ type: 'text' as const, text }] }]
+    expect(classifyDangerousWorkerRequest(message('请确认是否删除生产数据库。'))).toBeTruthy()
+    expect(classifyDangerousWorkerRequest(message('请确认是否继续部署生产环境。'))).toBeTruthy()
+    expect(classifyDangerousWorkerRequest(message('请提供 root 权限并执行 sudo。'))).toBeTruthy()
+    expect(classifyDangerousWorkerRequest(message('请发送 API key 后继续。'))).toBeTruthy()
+    expect(classifyDangerousWorkerRequest(message('最终验收报告选择 PDF 还是 DOCX？'))).toBeNull()
+  })
+
   it('parses steward config from agent.config JSON', () => {
     const config = parseStewardConfigFromAgent({
       config: JSON.stringify({
