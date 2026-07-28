@@ -15,8 +15,8 @@
 | 2 | 五类语义代答 | 已完成 | 确认、选择、补充信息、危险拒绝、无法判断转人工均符合问题语义 |
 | 3 | 自动停止与循环保护 | 已完成 | 次数、时长、限流停止均生效；重新启用不立即再次停止 |
 | 4 | 断线排队、重连与幂等 | 已完成 | Bridge 断线期间排队，重连只投递一次且回复进入原会话 |
-| 5 | 端到端可观测证据 | 进行中 | UI/API 可关联触发、判断、投递、ACK、Worker 后续状态和失败原因 |
-| 6 | 小范围持续稳定性 | 待开始 | 先连续 24 小时无重复回复、堆积和资源异常，再扩展到 72 小时 |
+| 5 | 端到端可观测证据 | 已完成 | UI/API 可关联触发、判断、投递、ACK、Worker 后续状态和失败原因 |
+| 6 | 小范围持续稳定性 | 进行中 | 先连续 24 小时无重复回复、堆积和资源异常，再扩展到 72 小时 |
 
 每项必须依次完成：`实现 -> 自测 -> 发布 -> 生产验证 -> 标记完成`。仅文档或模拟测试通过不得标记业务闭环完成。
 
@@ -114,3 +114,13 @@
 - 清理：临时 Agent `16` 已删除，binding `8` 已停用，活动消息为 0；审计证据保留。
 - 边界说明：Bridge 已完全断线时 Center 无法读取新的本地 transcript，因此本项验证的可靠边界是“问题/决策已形成，Edge 在 lease 前断线”；消息可离线排队，但不会在无 transcript 时猜测新决策。
 - 结论：第 4 项通过，进入第 5 项端到端可观测证据。
+
+## 第 5 项验收记录
+
+- 版本：Git `3cfac0c`，生产 Center `2.1.87`、Tray `3.0.10`；`agentcenter:2.1.87` 与 `latest` 共享 `linux/amd64` digest `sha256:82ad988cb832160db0a7484c9982b9693e8484e586d84a5539710d1cb9571395`。
+- 实现：`GET /api/human-watch/interventions` 批量关联 intervention、`edge_messages` 和 watch event，返回 message/correlation、mailbox 状态、尝试次数、时间线、Worker reply、错误和派生耗时；干预记录 UI 直接展示完整证据链。
+- 自测：新增路由测试 2 条；相关回归 `20/20`、Center 全量 `1185/1185`、typecheck、聚焦 lint、生产构建、Runtime 干净启动和 release-surface 均通过。
+- 断线证据：生产 API/UI 对 message `ca2636bd-1cdc-4839-88ee-1617fa4d05a5` 显示 `completed`、`attempt_count=1`、投递耗时 41 秒和 Worker reply“已选择绿色主题，确认。”。
+- 完整事件证据：message `3196b773-0cc6-4e20-9634-20f72a4cbe46` 关联 watch event `0903ed6e-cce3-44fb-82b8-306f1361dd87/resolved`，显示 `completed`、单次尝试、5 秒 ACK 时间线和 Worker reply“已确认报告交付日期为 2026-08-01。”。
+- 生产状态：容器 healthy，版本接口返回 `2.1.87`，Bridge `mc-edge-a8901a06c732` 已重连；原 binding `6` 和测试 binding `7/8` 保持禁用。
+- 结论：第 5 项通过，进入第 6 项 24 小时小范围持续稳定性观察。
