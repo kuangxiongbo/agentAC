@@ -109,6 +109,75 @@ describe('edge-messages', () => {
     expect(acked.completed_at).toBeTypeOf('number')
   })
 
+  it('completes a human-watch session continuation only after ACK', () => {
+    const eventId = 'watch-event-mailbox-1'
+    db.prepare(`
+      INSERT INTO human_watch_bindings (
+        id, workspace_id, tenant_id, client_id, worker_local_agent_id,
+        steward_local_agent_id, worker_session_id, enabled, mode
+      ) VALUES (1, 1, 1, 'mc-edge-1', 10, 9, 'worker-session-1', 1, 'auto_send')
+    `).run()
+    db.prepare(`
+      INSERT INTO human_watch_events (
+        id, workspace_id, tenant_id, client_id, binding_id, worker_local_agent_id,
+        steward_local_agent_id, worker_session_id, source, status, priority,
+        title, summary, context_json, dedupe_key, created_at, updated_at
+      ) VALUES (?, 1, 1, 'mc-edge-1', 1, 10, 9, 'worker-session-1',
+        'transcript_rule', 'pending', 'medium', 'Confirm', 'Confirm theme', '{}', ?, unixepoch(), unixepoch())
+    `).run(eventId, eventId)
+    const created = createEdgeMessage({
+      workspaceId: 1,
+      tenantId: 1,
+      clientId: 'mc-edge-1',
+      type: 'session.continue.requested',
+      correlationId: 'human-watch:1:worker-session-1:fp-1',
+      idempotencyKey: 'human-watch:1:worker-session-1:fp-1',
+      sessionRef: { session_id: 'worker-session-1', session_kind: 'codex-cli' },
+      payload: {
+        session_id: 'worker-session-1',
+        session_kind: 'codex-cli',
+        worker_local_agent_id: 10,
+        content: '使用蓝色主题，确认。',
+        human_watch_binding_id: 1,
+        human_watch_fingerprint: 'fp-1',
+        human_watch_event_id: eventId,
+        human_watch_prompt: '使用蓝色主题，确认。',
+        human_watch_steward_local_agent_id: 9,
+      },
+    }, db)
+    const leased = leaseEdgeMessages({ clientId: 'mc-edge-1', leaseOwner: 'runtime-1' }, db)
+    expect(leased[0]?.id).toBe(created.message.id)
+
+    const before = db.prepare(`SELECT COUNT(*) count FROM human_watch_interventions WHERE message_id = ?`)
+      .get(created.message.id) as { count: number }
+    expect(before.count).toBe(0)
+    ackEdgeMessage({
+      id: created.message.id,
+      clientId: 'mc-edge-1',
+      leaseOwner: 'runtime-1',
+      result: { delivered: true },
+    }, db)
+
+    const completed = db.prepare(`
+      SELECT event_type, outcome, message_id, correlation_id
+      FROM human_watch_interventions WHERE message_id = ?
+    `).get(created.message.id) as any
+    expect(completed).toMatchObject({
+      event_type: 'intervention_completed',
+      outcome: 'success',
+      message_id: created.message.id,
+      correlation_id: 'human-watch:1:worker-session-1:fp-1',
+    })
+    const event = db.prepare(`SELECT status, resolved_action, context_json FROM human_watch_events WHERE id = ?`)
+      .get(eventId) as { status: string; resolved_action: string; context_json: string }
+    expect(event.status).toBe('resolved')
+    expect(event.resolved_action).toBe('send_message_to_worker')
+    expect(JSON.parse(event.context_json)).toMatchObject({
+      message_id: created.message.id,
+      delivery_status: 'acked',
+    })
+  })
+
   it('records human-watch assist completion when a queued message is acknowledged', () => {
     db.prepare(`
       INSERT INTO human_watch_bindings (

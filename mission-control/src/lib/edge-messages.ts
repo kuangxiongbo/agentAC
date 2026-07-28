@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { getDatabase } from './db'
 import { logHumanWatchIntervention } from './human-watch-audit'
+import { updateHumanWatchEvent } from './human-watch-events'
 
 export type EdgeMessageDirection = 'cloud_to_edge' | 'edge_to_cloud'
 export type EdgeMessageStatus =
@@ -227,6 +228,84 @@ function logHumanWatchAssistFail(db: Database.Database, row: EdgeMessageRow, err
   }, db)
 }
 
+function humanWatchContinuePayload(row: EdgeMessageRow) {
+  if (row.type !== 'session.continue.requested') return null
+  const payload = parseObject(row.payload_json) ?? {}
+  const bindingId = numberOrNull(payload.human_watch_binding_id)
+  const fingerprint = stringOrNull(payload.human_watch_fingerprint)
+  if (!bindingId || !fingerprint) return null
+  return { payload, bindingId, fingerprint }
+}
+
+function logHumanWatchContinueAck(db: Database.Database, row: EdgeMessageRow, result: Record<string, unknown>) {
+  const context = humanWatchContinuePayload(row)
+  if (!context) return
+  const { payload, bindingId, fingerprint } = context
+  const prompt = stringOrNull(payload.human_watch_prompt)
+  logHumanWatchIntervention({
+    workspaceId: row.workspace_id,
+    tenantId: row.tenant_id,
+    clientId: row.client_id,
+    bindingId,
+    workerLocalAgentId: numberOrNull(payload.worker_local_agent_id),
+    workerName: stringOrNull(payload.human_watch_worker_name),
+    stewardLocalAgentId: numberOrNull(payload.human_watch_steward_local_agent_id),
+    stewardName: stringOrNull(payload.human_watch_steward_name),
+    workerSessionId: stringOrNull(payload.session_id),
+    eventType: 'intervention_completed',
+    decision: 'auto_send',
+    rulesHit: payload.human_watch_rules_hit as Record<string, unknown> | undefined,
+    fingerprint,
+    promptPreview: prompt,
+    outcome: result.delivered === false ? 'failed' : 'success',
+    errorMessage: result.delivered === false ? stringOrNull(result.error_message) ?? 'Human-watch reply was not delivered' : null,
+    messageId: row.id,
+    correlationId: row.correlation_id,
+  }, db)
+  const eventId = stringOrNull(payload.human_watch_event_id)
+  if (eventId) {
+    updateHumanWatchEvent(eventId, row.workspace_id, {
+      status: result.delivered === false ? 'visible' : 'resolved',
+      resolvedAction: result.delivered === false ? null : 'send_message_to_worker',
+      resolvedNote: prompt,
+      resolvedByType: result.delivered === false ? null : 'steward_agent',
+      resolvedByAgentId: result.delivered === false ? null : String(numberOrNull(payload.human_watch_steward_local_agent_id) ?? ''),
+      contextPatch: {
+        message_id: row.id,
+        correlation_id: row.correlation_id,
+        delivery_status: result.delivered === false ? 'failed' : 'acked',
+        delivery_result: result,
+      },
+    }, db)
+  }
+}
+
+function logHumanWatchContinueFail(db: Database.Database, row: EdgeMessageRow, errorMessage: string) {
+  const context = humanWatchContinuePayload(row)
+  if (!context) return
+  const { payload, bindingId, fingerprint } = context
+  logHumanWatchIntervention({
+    workspaceId: row.workspace_id,
+    tenantId: row.tenant_id,
+    clientId: row.client_id,
+    bindingId,
+    workerLocalAgentId: numberOrNull(payload.worker_local_agent_id),
+    workerName: stringOrNull(payload.human_watch_worker_name),
+    stewardLocalAgentId: numberOrNull(payload.human_watch_steward_local_agent_id),
+    stewardName: stringOrNull(payload.human_watch_steward_name),
+    workerSessionId: stringOrNull(payload.session_id),
+    eventType: 'intervention_completed',
+    decision: 'auto_send',
+    rulesHit: payload.human_watch_rules_hit as Record<string, unknown> | undefined,
+    fingerprint,
+    promptPreview: stringOrNull(payload.human_watch_prompt),
+    outcome: 'failed',
+    errorMessage,
+    messageId: row.id,
+    correlationId: row.correlation_id,
+  }, db)
+}
+
 function assertLease(row: EdgeMessageRow, leaseOwner?: string | null) {
   if (row.status !== 'leased') {
     throw new Error(`Edge message is ${row.status}`)
@@ -430,6 +509,7 @@ export function ackEdgeMessage(input: AckEdgeMessageInput, database?: Database.D
     `).run(JSON.stringify(input.result ?? {}), now, now, row.id)
     recordEvent(db, row.id, 'acked', row.status, 'completed', { result: input.result ?? {} })
     logHumanWatchAssistAck(db, row, input.result ?? {})
+    logHumanWatchContinueAck(db, row, input.result ?? {})
     const updated = getRow(db, row.id)
     if (!updated) throw new Error('Edge message not found after ack')
     return view(updated)
@@ -474,6 +554,7 @@ export function failEdgeMessage(input: FailEdgeMessageInput, database?: Database
       next_attempt_at: nextAttemptAt,
     })
     logHumanWatchAssistFail(db, row, input.errorMessage)
+    if (!canRetry) logHumanWatchContinueFail(db, row, input.errorMessage)
     const updated = getRow(db, row.id)
     if (!updated) throw new Error('Edge message not found after fail')
     return view(updated)

@@ -27,11 +27,12 @@ import { searchStewardMemories } from './steward-memory-search'
 import {
   isBridgeClientOnline,
   requestBridgeClientAgentDetail,
-  requestBridgeClientSessionContinue,
   requestBridgeClientSessionTranscript,
   requestBridgeClientStewardJudge,
   requestBridgeClientMemorySearch,
+  sendEdgeMessageWakeup,
 } from './bridge-server'
+import { createEdgeMessage } from './edge-messages'
 import {
   buildWorkerJudgeContext,
   buildStewardJudgePrompt,
@@ -58,7 +59,7 @@ const STEWARD_CONFIG_CACHE_MS = 60_000
 type EvaluateDeps = {
   isBridgeOnline: (clientId: string) => boolean
   fetchTranscript: typeof requestBridgeClientSessionTranscript
-  sendContinue: typeof requestBridgeClientSessionContinue
+  sendContinue: typeof queueHumanWatchContinue
   fetchAgentDetail: typeof requestBridgeClientAgentDetail
   runJudge: typeof requestBridgeClientStewardJudge
   fetchMemoryContext?: (
@@ -78,10 +79,67 @@ type HumanWatchAutoStopConfig = {
 const defaultDeps: EvaluateDeps = {
   isBridgeOnline: isBridgeClientOnline,
   fetchTranscript: requestBridgeClientSessionTranscript,
-  sendContinue: requestBridgeClientSessionContinue,
+  sendContinue: queueHumanWatchContinue,
   fetchAgentDetail: requestBridgeClientAgentDetail,
   runJudge: requestBridgeClientStewardJudge,
   fetchMemoryContext: fetchHumanWatchMemoryContext,
+}
+
+function queueHumanWatchContinue(input: {
+  binding: HumanWatchBindingRow
+  kind: LocalSessionTranscriptKind
+  sessionId: string
+  prompt: string
+  fingerprint: string
+  rulesHit: Record<string, unknown>
+  watchEventId: string
+}) {
+  const correlationId = `human-watch:${input.binding.id}:${input.sessionId}:${input.fingerprint}`
+  const result = createEdgeMessage({
+    workspaceId: input.binding.workspace_id,
+    tenantId: input.binding.tenant_id,
+    clientId: input.binding.client_id,
+    direction: 'cloud_to_edge',
+    type: 'session.continue.requested',
+    correlationId,
+    idempotencyKey: correlationId,
+    agentRef: {
+      local_agent_id: input.binding.worker_local_agent_id,
+      agent_name: input.binding.worker_name,
+      framework: input.kind,
+    },
+    sessionRef: {
+      session_id: input.sessionId,
+      session_kind: input.kind,
+      serial_key: `${input.binding.client_id}:${input.kind}:${input.sessionId}`,
+    },
+    payload: {
+      session_id: input.sessionId,
+      session_kind: input.kind,
+      worker_local_agent_id: input.binding.worker_local_agent_id,
+      content: input.prompt,
+      human_watch_binding_id: input.binding.id,
+      human_watch_fingerprint: input.fingerprint,
+      human_watch_rules_hit: input.rulesHit,
+      human_watch_event_id: input.watchEventId,
+      human_watch_prompt: input.prompt,
+      human_watch_worker_name: input.binding.worker_name,
+      human_watch_steward_local_agent_id: input.binding.steward_local_agent_id,
+      human_watch_steward_name: input.binding.steward_name,
+    },
+  })
+  if (result.created) {
+    sendEdgeMessageWakeup(input.binding.client_id, {
+      message_id: result.message.id,
+      type: result.message.type,
+      correlation_id: result.message.correlation_id,
+    })
+  }
+  return {
+    messageId: result.message.id,
+    correlationId: result.message.correlation_id,
+    duplicate: result.duplicate,
+  }
 }
 
 const globalState = globalThis as typeof globalThis & {
@@ -636,41 +694,55 @@ export async function evaluateHumanWatchBinding(
       resolved.memoryContext,
     )
 
-    logHumanWatchIntervention({
-      ...auditBase(binding),
-      eventType: 'intervention_attempt',
-      decision: 'auto_send',
-      rulesHit: evaluation.rulesHit,
-      fingerprint: evaluation.fingerprint,
-      promptPreview: prompt,
-    })
-
     try {
-      await deps.sendContinue({
-        clientId: binding.client_id,
+      const delivery = await deps.sendContinue({
+        binding,
         kind: sessionKind,
         sessionId,
         prompt,
+        fingerprint: evaluation.fingerprint,
+        rulesHit: evaluation.rulesHit,
+        watchEventId: watchEvent.id,
       })
       logHumanWatchIntervention({
         ...auditBase(binding),
-        eventType: 'intervention_completed',
+        eventType: 'intervention_attempt',
         decision: 'auto_send',
         rulesHit: evaluation.rulesHit,
         fingerprint: evaluation.fingerprint,
         promptPreview: prompt,
-        outcome: 'success',
+        messageId: delivery.messageId,
+        correlationId: delivery.correlationId,
       })
-      maybeAutoStopBinding(binding)
+      // Dependency-injected tests and legacy adapters may still complete synchronously.
+      // The production queue always returns messageId and completes only from Edge ACK.
+      if (!delivery.messageId) {
+        logHumanWatchIntervention({
+          ...auditBase(binding),
+          eventType: 'intervention_completed',
+          decision: 'auto_send',
+          rulesHit: evaluation.rulesHit,
+          fingerprint: evaluation.fingerprint,
+          promptPreview: prompt,
+          outcome: 'success',
+        })
+        maybeAutoStopBinding(binding)
+        updateHumanWatchEvent(watchEvent.id, binding.workspace_id, {
+          status: 'resolved',
+          resolvedAction: 'send_message_to_worker',
+          resolvedNote: prompt,
+          resolvedByType: 'steward_agent',
+          resolvedByAgentId: String(binding.steward_local_agent_id ?? ''),
+        })
+        return
+      }
       updateHumanWatchEvent(watchEvent.id, binding.workspace_id, {
-        status: 'resolved',
-        resolvedAction: 'send_message_to_worker',
-        resolvedNote: prompt,
-        resolvedByType: 'steward_agent',
-        resolvedByAgentId: String(binding.steward_local_agent_id ?? ''),
         contextPatch: {
           auto_send: true,
           intervention_fingerprint: evaluation.fingerprint,
+          message_id: delivery.messageId,
+          correlation_id: delivery.correlationId,
+          delivery_status: delivery.duplicate ? 'duplicate' : 'queued',
         },
       })
     } catch (err: unknown) {

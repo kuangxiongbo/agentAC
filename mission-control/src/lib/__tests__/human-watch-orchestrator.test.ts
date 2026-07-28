@@ -132,6 +132,47 @@ describe.sequential('human-watch-orchestrator', () => {
     expect(event.resolved_note).toBe('Please continue with option A.')
   })
 
+  it('records mailbox identity and waits for ACK before completing', async () => {
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    const stale = new Date(Date.now() - 120_000).toISOString()
+    fetchTranscript.mockResolvedValue({
+      messages: [{
+        role: 'assistant',
+        parts: [{ type: 'text', text: '请选择蓝色或绿色主题，然后确认。' }],
+        timestamp: stale,
+      }],
+    })
+    sendContinue.mockResolvedValue({
+      messageId: 'hw-message-1',
+      correlationId: 'human-watch:1:sess-worker-1:fingerprint',
+      duplicate: false,
+    })
+
+    await evaluateHumanWatchBinding(
+      db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any,
+      { sessionId: 'sess-worker-1', sessionKind: 'claude-code' },
+      defaultDeps(),
+    )
+
+    const rows = db.prepare(`
+      SELECT event_type, outcome, message_id, correlation_id
+      FROM human_watch_interventions ORDER BY id
+    `).all() as Array<{ event_type: string; outcome: string | null; message_id: string | null; correlation_id: string | null }>
+    const attempt = rows.find((row) => row.event_type === 'intervention_attempt')
+    expect(attempt).toMatchObject({
+      message_id: 'hw-message-1',
+      correlation_id: 'human-watch:1:sess-worker-1:fingerprint',
+    })
+    expect(rows.some((row) => row.event_type === 'intervention_completed')).toBe(false)
+    const event = db.prepare(`SELECT status, context_json FROM human_watch_events ORDER BY created_at DESC LIMIT 1`)
+      .get() as { status: string; context_json: string }
+    expect(event.status).toBe('pending')
+    expect(JSON.parse(event.context_json)).toMatchObject({
+      message_id: 'hw-message-1',
+      delivery_status: 'queued',
+    })
+  })
+
   it('uses steward judge for explicit answer-then-confirm prompts', async () => {
     const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
     const stale = new Date(Date.now() - 6_000).toISOString()

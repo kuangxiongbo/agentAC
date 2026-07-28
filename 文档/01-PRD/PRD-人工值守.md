@@ -469,6 +469,7 @@ POST /api/permission-requests/{id}/decision
 6. 同卡点不重复代发；新回合可再代发。
 7. 值守 Agent 不可被选为编排执行对象。
 8. **干预留痕**：代发/跳过/失败均可查；Worker 详情最近 20 条；字段含 client_id、规则命中、指纹、结果（见 FR-008.5）。
+9. 自动代答必须通过可靠 `session.continue.requested` mailbox 投递；入队只记录 attempt，只有 Edge 完成原 Worker 会话续写并 ACK 后才能记录 success。attempt/completed/watch event 必须共享 `message_id/correlation_id`。
 
 ## 16. 风险与依赖
 
@@ -497,3 +498,4 @@ POST /api/permission-requests/{id}/decision
 | V1.1 | 2026-05-19 | 值守 Agent 可选 Claude/Codex 运行时，列表归对应类型分组 + 值守徽标；Worker 绑定须 framework 一致 |
 | V1.2 | 2026-05-19 | 控制面/执行面分离；中心高级服务+选 client 创建；`human_watch_bindings`；中心编排；上下文窗口与 API 代发（模拟 user）；Bridge RPC 清单 |
 | V1.3 | 2026-05-19 | FR-008 强化：干预留痕 Phase 1 必做；`human_watch_interventions` 表、事件类型、API/UI、验收 |
+| V1.4 | 2026-07-28 | 2.1.84：自动代答统一接入可靠 mailbox，ACK 成为成功边界并关联 watch event 与干预审计 |
