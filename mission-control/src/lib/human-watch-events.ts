@@ -209,6 +209,24 @@ export function getHumanWatchEvent(
   return row ? rowToView(row) : null
 }
 
+export function hasActiveHumanWatchEventDedupeKey(
+  workspaceId: number,
+  clientId: string,
+  dedupeKey: string,
+  database?: Database.Database,
+): boolean {
+  const row = dbOr(database).prepare(`
+    SELECT 1
+    FROM human_watch_events
+    WHERE workspace_id = ?
+      AND client_id = ?
+      AND dedupe_key = ?
+      AND status IN ('pending', 'visible', 'claimed')
+    LIMIT 1
+  `).get(workspaceId, clientId, dedupeKey)
+  return Boolean(row)
+}
+
 export function listHumanWatchEvents(
   filters: ListHumanWatchEventsFilters,
   database?: Database.Database,

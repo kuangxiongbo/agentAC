@@ -1904,13 +1904,18 @@ export function enqueueProvisionAgentDedicatedSession(
     return { accepted: true }
   }
 
-  const executionKey = getSerializedAgentExecutionKey(freshAgent, kind)
-  scheduleSerializedLocalPrompt(
-    executionKey,
-    kind,
-    null,
-    () => provisionAgentDedicatedSession(freshAgent),
-  )
+  notifyPromptLifecycle(kind, null, 'prompt_queued', undefined, freshAgent.id ?? null)
+  void provisionAgentDedicatedSession(freshAgent)
+    .then((result) => {
+      notifyPromptLifecycle(kind, result.sessionId, 'prompt_completed', undefined, freshAgent.id ?? null)
+      if (result.sessionId) {
+        notifyLocalSessionVisibility(kind, result.sessionId, 'session_provisioned', freshAgent.id ?? null)
+      }
+    })
+    .catch((error) => {
+      notifyPromptLifecycle(kind, null, 'prompt_failed', undefined, freshAgent.id ?? null)
+      logger.error({ err: error, kind, agentId: freshAgent.id }, 'Background session provision failed')
+    })
 
   return { accepted: true }
 }

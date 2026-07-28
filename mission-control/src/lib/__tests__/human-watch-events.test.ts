@@ -4,6 +4,7 @@ import { runMigrations } from '@/lib/migrations'
 import {
   createHumanWatchEvent,
   getHumanWatchEvent,
+  hasActiveHumanWatchEventDedupeKey,
   listHumanWatchEvents,
   updateHumanWatchEvent,
 } from '@/lib/human-watch-events'
@@ -76,6 +77,8 @@ describe('human-watch-events', () => {
 
     expect(second.id).toBe(first.id)
     expect(listHumanWatchEvents({ workspaceId: 1 }, db)).toHaveLength(1)
+    expect(hasActiveHumanWatchEventDedupeKey(1, 'edge-a', 'dup-1', db)).toBe(true)
+    expect(hasActiveHumanWatchEventDedupeKey(1, 'edge-a', 'missing', db)).toBe(false)
   })
 
   it('records claim and resolve audit trail in context', () => {

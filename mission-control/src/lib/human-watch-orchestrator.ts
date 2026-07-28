@@ -8,7 +8,11 @@ import {
   hasSuccessfulInterventionFingerprint,
   logHumanWatchIntervention,
 } from './human-watch-audit'
-import { createHumanWatchEvent, updateHumanWatchEvent } from './human-watch-events'
+import {
+  createHumanWatchEvent,
+  hasActiveHumanWatchEventDedupeKey,
+  updateHumanWatchEvent,
+} from './human-watch-events'
 import type { HumanWatchEventView } from './human-watch-types'
 import type { HumanWatchBindingRow } from './human-watch-bindings'
 import {
@@ -677,6 +681,15 @@ export async function evaluateHumanWatchBinding(
         skipReason: 'rate_limited',
       })
       maybeAutoStopBinding(binding)
+      return
+    }
+
+    const eventDedupeKey = `transcript:${binding.id}:${binding.worker_session_id}:${evaluation.fingerprint}`
+    if (hasActiveHumanWatchEventDedupeKey(
+      binding.workspace_id,
+      binding.client_id,
+      eventDedupeKey,
+    )) {
       return
     }
 

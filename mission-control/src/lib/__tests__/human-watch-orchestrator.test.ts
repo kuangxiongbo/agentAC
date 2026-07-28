@@ -272,6 +272,56 @@ describe.sequential('human-watch-orchestrator', () => {
     expect(autoStops.count).toBe(0)
   })
 
+  it('auto-stops after the configured runtime expires', async () => {
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(`UPDATE human_watch_bindings SET created_at = ?, updated_at = ?, rules_override = ? WHERE id = 1`).run(
+      now - 120,
+      now - 120,
+      JSON.stringify({ auto_stop: { enabled: true, max_runtime_seconds: 60 } }),
+    )
+
+    await evaluateHumanWatchBinding(
+      db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any,
+      { sessionId: 'sess-worker-1', sessionKind: 'claude-code' },
+      defaultDeps(),
+    )
+
+    expect(fetchTranscript).not.toHaveBeenCalled()
+    expect(db.prepare(`SELECT enabled FROM human_watch_bindings WHERE id = 1`).get()).toMatchObject({ enabled: 0 })
+    expect(db.prepare(`SELECT skip_reason FROM human_watch_interventions WHERE event_type = 'auto_stop'`).get())
+      .toMatchObject({ skip_reason: 'max_runtime_seconds:60' })
+  })
+
+  it('auto-stops after configured rate-limit skips', async () => {
+    const { logHumanWatchIntervention } = await import('@/lib/human-watch-audit')
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    db.prepare(`UPDATE human_watch_bindings SET rules_override = ? WHERE id = 1`).run(
+      JSON.stringify({ auto_stop: { enabled: true, max_rate_limited_skips: 2 } }),
+    )
+    for (let index = 0; index < 2; index += 1) {
+      logHumanWatchIntervention({
+        workspaceId: 1,
+        clientId: 'mac-1',
+        bindingId: 1,
+        eventType: 'intervention_skipped',
+        decision: 'skipped',
+        skipReason: 'rate_limited',
+      })
+    }
+
+    await evaluateHumanWatchBinding(
+      db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any,
+      { sessionId: 'sess-worker-1', sessionKind: 'claude-code' },
+      defaultDeps(),
+    )
+
+    expect(fetchTranscript).not.toHaveBeenCalled()
+    expect(db.prepare(`SELECT enabled FROM human_watch_bindings WHERE id = 1`).get()).toMatchObject({ enabled: 0 })
+    expect(db.prepare(`SELECT skip_reason FROM human_watch_interventions WHERE event_type = 'auto_stop'`).get())
+      .toMatchObject({ skip_reason: 'max_rate_limited_skips:2' })
+  })
+
   it('falls back to synced session kind when worker agent index is missing', async () => {
     const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
     db.prepare(`DELETE FROM sync_agent_index WHERE client_id = 'mac-1' AND local_agent_id = 10`).run()
@@ -614,5 +664,22 @@ describe.sequential('human-watch-orchestrator', () => {
     const event = db.prepare(`SELECT status, context_json FROM human_watch_events LIMIT 1`).get() as any
     expect(event.status).toBe('visible')
     expect(JSON.parse(event.context_json).escalation_reason).toContain('最终报价')
+  })
+
+  it('does not rerun the judge while the same fingerprint has an active watch event', async () => {
+    const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
+    const messages = [{ role: 'assistant', parts: [{ type: 'text', text: '请确认是否删除生产数据库。' }], timestamp: new Date(Date.now() - 120_000).toISOString() }]
+    fetchTranscript.mockResolvedValue({ messages })
+    runJudge.mockResolvedValue({ reply: JSON.stringify({ action: 'escalate_human', reply: '', reason: '高风险操作', risk: 'critical' }) })
+    const binding = db.prepare(`SELECT * FROM human_watch_bindings WHERE id = 1`).get() as any
+
+    await evaluateHumanWatchBinding(binding, { sessionId: 'sess-worker-1', sessionKind: 'claude-code' }, defaultDeps())
+    await evaluateHumanWatchBinding(binding, { sessionId: 'sess-worker-1', sessionKind: 'claude-code' }, defaultDeps())
+
+    expect(runJudge).toHaveBeenCalledTimes(1)
+    expect(sendContinue).not.toHaveBeenCalled()
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM human_watch_events`).get()).toMatchObject({ count: 1 })
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM human_watch_interventions WHERE event_type = 'intervention_skipped'`).get())
+      .toMatchObject({ count: 1 })
   })
 })
