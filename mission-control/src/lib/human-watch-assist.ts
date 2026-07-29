@@ -11,6 +11,7 @@ import {
   buildStewardJudgePrompt,
   buildWorkerJudgeContext,
   buildWorkerSummaryForJudge,
+  parseStewardJudgeDecision,
   parseStewardConfigFromAgent,
 } from './human-watch-judge'
 import type { HumanWatchBindingMode } from './human-watch-types'
@@ -200,8 +201,9 @@ export async function triggerHumanWatchAssist(
     prompt: judgePrompt,
     timeoutMs: 180000,
   })
-  const reply = String(judge.reply || '').trim()
-  if (!reply) {
+  const rawReply = String(judge.reply || '').trim()
+  const decision = parseStewardJudgeDecision(rawReply)
+  if (!decision) {
     updateHumanWatchEvent(event.id, binding.workspace_id, {
       status: 'resolved',
       resolvedAction: 'dismiss',
@@ -211,6 +213,17 @@ export async function triggerHumanWatchAssist(
     }, database)
     throw new Error('Steward judge returned empty reply')
   }
+  if (decision.action === 'escalate_human') {
+    logHumanWatchIntervention({
+      ...auditBase(binding),
+      eventType: 'intervention_skipped',
+      decision: 'skipped',
+      skipReason: 'steward_escalated_human',
+      errorMessage: decision.reason || 'Steward requested human review',
+    })
+    throw new Error(decision.reason || 'Steward requested human review')
+  }
+  const reply = decision.reply
 
   logHumanWatchIntervention({
     ...auditBase(binding),

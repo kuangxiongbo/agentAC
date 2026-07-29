@@ -637,6 +637,12 @@ const TOOLS = [
   {
     name: 'mc_create_watch_event',
     description: 'Ask the bound human-watch steward to reply to this Worker session. Use when the Worker has replied and needs a continued confirmation, clarification, or next user-style response. If options are supplied, this falls back to a structured permission request.',
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -988,7 +994,7 @@ for (const tool of TOOLS) {
 
 const SERVER_INFO = {
   name: 'mission-control',
-  version: '2.1.90',
+  version: '2.1.91',
 };
 
 const CAPABILITIES = {

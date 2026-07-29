@@ -165,3 +165,5 @@
 - 待验收：发布 `2.1.89` 后设置隔离规则 `idle_timeout_with_stuck_seconds=0`，用新 Worker session 真实提问并按 transcript 时间戳验证最终回复不超过 5 秒；未通过不得完成 HW-101。
 - 2.1.89 首轮生产失败证据：binding `11`、Worker Agent `18`、session `019facc3-7d51-76c3-992c-bf655ced278d`。Worker 问句时间 `07:27:41.651Z`，值守 user 消息时间 `07:27:48.752Z`，延迟约 7.10 秒；值守错误回复“用户尚未回答，请继续等待”，未代替用户选择。message `5ca96018-2d67-486d-96ed-d1603b8cfab6` 为 completed、`attempt_count=1`。binding 已停用，全局规则已恢复，HW-101 保持进行中。
 - 2.1.90 修复候选：快速 judge 明确作为用户代理，低风险二选一必须选择合理选项，禁止继续等待或把同一问题退回用户；下一轮使用 Worker `mc_create_watch_event` 真实主动求助路径验收。
+- 2.1.90 受管 MCP 生产证据：binding `13`、Worker `20`、session `019face1-40b4-71f3-8861-3bf6fa113171`；event `20578c23-1a68-4caa-b421-f3ff5808da15` 来源 `worker_tool`。Worker 问句 `07:59:47.615Z`，值守 user 消息 `07:59:50.056Z`，延迟 2.441 秒；但消息为完整 judge JSON，故不通过。binding 已停用、活动测试消息已取消、全局规则已恢复。
+- 2.1.91 修复候选：`mc_create_watch_event` 补 non-destructive/idempotent annotations；同步 assist 解析 decision，只续写纯文本 reply，escalate_human 不代发。
