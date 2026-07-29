@@ -1,6 +1,6 @@
 # 值守 Agent 真实代答闭环与稳定性跟踪
 
-更新日期：2026-07-28
+更新日期：2026-07-29
 
 ## 目标
 
@@ -16,7 +16,7 @@
 | 3 | 自动停止与循环保护 | 已完成 | 次数、时长、限流停止均生效；重新启用不立即再次停止 |
 | 4 | 断线排队、重连与幂等 | 已完成 | Bridge 断线期间排队，重连只投递一次且回复进入原会话 |
 | 5 | 端到端可观测证据 | 已完成 | UI/API 可关联触发、判断、投递、ACK、Worker 后续状态和失败原因 |
-| 6 | 小范围持续稳定性 | 进行中 | 先连续 24 小时无重复回复、堆积和资源异常，再扩展到 72 小时 |
+| 6 | 小范围持续稳定性 | 已完成 | 24 小时无重复回复、堆积和资源异常；2.1.88 离线 120 秒自动停止故障注入通过 |
 
 每项必须依次完成：`实现 -> 自测 -> 发布 -> 生产验证 -> 标记完成`。仅文档或模拟测试通过不得标记业务闭环完成。
 
@@ -125,7 +125,7 @@
 - 生产状态：容器 healthy，版本接口返回 `2.1.87`，Bridge `mc-edge-a8901a06c732` 已重连；原 binding `6` 和测试 binding `7/8` 保持禁用。
 - 结论：第 5 项通过，进入第 6 项 24 小时小范围持续稳定性观察。
 
-## 第 6 项观察基线（进行中）
+## 第 6 项观察与验收记录（已完成）
 
 - 开始时间：2026-07-28 13:48（Asia/Shanghai）；目标先观察至 2026-07-29 13:48，再决定是否扩展到 72 小时。
 - 隔离对象：本地 Worker Agent `17`“值守稳定性灰度”，session `019fa742-18d1-7ad2-851a-0105d33e4d44`，生产 binding `9`，Steward Agent `7`；原 binding `6` 和历史测试 binding `7/8` 保持禁用。
@@ -144,3 +144,13 @@
 - 修复：中心每分钟轮询先对全部启用 binding 执行 `enforceHumanWatchAutoStops`，再判断 session 和 Bridge；运行时长属于中心策略，不再依赖 Edge 在线。
 - 验证：离线自动停止新增回归测试，Human Watch 聚焦 `22/22`、Center 全量 `1186/1186`、typecheck、聚焦 lint 和生产构建通过。
 - 清理：binding `9` 已人工禁用，灰度 Worker Agent `17` 已删除，历史证据保留。第 6 项等待补丁发布后以 120 秒离线故障注入验证，不再重复等待 24 小时。
+
+### 2.1.88 生产故障注入验收
+
+- 发布：Git `8918972` 为离线自动停止修复，发布提交 `f0e9d86`；生产 Center/Runtime `2.1.88`、Tray `3.0.10`。`agentcenter:2.1.88` 与 `latest` 共享 `linux/amd64` digest `sha256:ab17b04ec26ff9f2c2da7022c1b08cbf5fe44ce1e0cb1104ac29f44160dac091`。
+- 制品：`client-runtime-2.1.88-darwin-aarch64.zip` SHA-256 为 `4c3a2ccbd785207761bc11f641e8930928c358bc68dc9994960db9ad0ed6e2f3`；干净解压启动和 release-surface 门禁通过。
+- 隔离注入：创建不存在的离线 client `hw-offline-fault-2.1.88` 与 binding `10`，设置 `max_runtime_seconds=120`；不连接 Edge、不提供 transcript，也不触发 Worker。
+- 自动停止：binding 创建时间 `1785306064`，中心于 `1785306222` 自动停用，实际 158 秒；干预 `38428` 为 `auto_stop/success/disabled`，原因准确为 `max_runtime_seconds:120`。
+- 无副作用：验收前后 watch event 均为 0、该 client 的可靠消息均为 0、活动消息为 0；证明离线停止未读取 transcript、未调用 judge、未投递 MCP/Bridge 消息且不消耗模型 Token。
+- 生产健康：公网 `/api/status?action=health` 返回 `version=2.1.88`；容器 healthy、RSS 约 80 MiB、磁盘 76%。binding `10` 保持 disabled 作为审计证据，原 binding `6` 保持 disabled。
+- 结论：第 6 项通过。24 小时稳定性和离线安全阀均完成闭环，不需要为同一问题追加 72 小时等待；下一项进入 `HW-101` 最终回复 5 秒延迟优化。
