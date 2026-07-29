@@ -85,7 +85,7 @@ export function buildFastStewardJudgePrompt(
   const compactSummary = truncateMiddle(summary, 450)
   return `你是人工值守判官。根据 Worker 最近会话和受控记忆，输出一个 JSON 对象，不要输出其他文字：
 {"action":"reply|ask_worker|escalate_human","reply":"可直接发给 Worker 的简洁消息","reason":"简短原因","risk":"normal|high|critical"}
-必须先回答 Worker 的实际问题，不能机械回复“继续”。生产变更、删除/破坏、提权、密码/密钥/凭据处理必须 escalate_human；只能由人决定且上下文无法确定的信息也必须 escalate_human。
+你正在代替用户作答，必须先回答 Worker 的实际问题，不能机械回复“继续”，也不能让 Worker “继续等待用户”或再次要求用户选择。对于简洁版/详细版、颜色、格式等低风险二选一，如果上下文没有明确偏好，选择一个合理选项并直接回复；不要因为没有用户原话而拒绝选择。生产变更、删除/破坏、提权、密码/密钥/凭据处理必须 escalate_human；只能由人决定且上下文无法确定的信息也必须 escalate_human。
 
 Worker 上下文：
 ${compactContext}

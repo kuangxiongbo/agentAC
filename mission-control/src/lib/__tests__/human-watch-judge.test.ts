@@ -97,6 +97,8 @@ describe('human-watch-judge', () => {
       'approved memory\n'.repeat(200),
     )
     expect(prompt.length).toBeLessThanOrEqual(1600)
+    expect(prompt).toContain('低风险二选一')
+    expect(prompt).toContain('不能让 Worker “继续等待用户”')
     expect(prompt).toContain('受控记忆')
     expect(prompt).toContain('最近会话')
     expect(prompt).toContain('[truncated]')

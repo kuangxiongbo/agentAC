@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "version": "2.1.89",
-  "published_at": "2026-07-29T07:00:50Z",
+  "version": "2.1.90",
+  "published_at": "2026-07-29T07:34:29Z",
   "documents": {
     "master_prd": "/project-docs/core/01-主需求文档.md",
     "master_architecture": "/project-docs/core/02-主架构文档.md",
     "master_api": "/project-docs/core/03-主接口文档.md",
-    "server_release_notes": "/project-docs/releases/mission-control/2.1.89.md",
-    "client_release_notes": "/project-docs/releases/mission-control-client/2.1.89.md"
+    "server_release_notes": "/project-docs/releases/mission-control/2.1.90.md",
+    "client_release_notes": "/project-docs/releases/mission-control-client/2.1.90.md"
   }
 }

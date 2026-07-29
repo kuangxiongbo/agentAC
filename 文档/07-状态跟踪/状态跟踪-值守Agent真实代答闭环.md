@@ -163,3 +163,5 @@
 - 安全：快速输出仍由中心解析，并经过危险操作独立分类、active event/fingerprint 去重、额度、自动停止和可靠 mailbox；不直接写 Worker transcript。
 - 自测：Center 聚焦 `45/45`、全量 `1187/1187`；Edge 聚焦 `17/17`、全量 `1013/1013`；双端 typecheck 与聚焦 lint 通过。自定义 provider 短提示真实基准约 2.96 秒，完整 CLI 一次性基准约 6.62 秒。
 - 待验收：发布 `2.1.89` 后设置隔离规则 `idle_timeout_with_stuck_seconds=0`，用新 Worker session 真实提问并按 transcript 时间戳验证最终回复不超过 5 秒；未通过不得完成 HW-101。
+- 2.1.89 首轮生产失败证据：binding `11`、Worker Agent `18`、session `019facc3-7d51-76c3-992c-bf655ced278d`。Worker 问句时间 `07:27:41.651Z`，值守 user 消息时间 `07:27:48.752Z`，延迟约 7.10 秒；值守错误回复“用户尚未回答，请继续等待”，未代替用户选择。message `5ca96018-2d67-486d-96ed-d1603b8cfab6` 为 completed、`attempt_count=1`。binding 已停用，全局规则已恢复，HW-101 保持进行中。
+- 2.1.90 修复候选：快速 judge 明确作为用户代理，低风险二选一必须选择合理选项，禁止继续等待或把同一问题退回用户；下一轮使用 Worker `mc_create_watch_event` 真实主动求助路径验收。
