@@ -134,3 +134,13 @@
 - 可靠证据：event `9792070b-9dfe-4fd7-93b8-98d4e8fd1f78/resolved`，message `b22c7658-989c-4826-aaac-ea1c8f23a232/completed`，`attempt_count=1`，attempt 至 ACK 7 秒，未产生重复消息。
 - 延迟拆分：Worker 问句时间 `13:48:06.818`，规则约 `13:48:13` 命中（约 6 秒），值守回复进入原会话时间 `13:48:34.139`（问题至回复约 27.3 秒），Worker 完成确认时间 `13:48:37.047`。当前满足约 5 秒发现，不满足 5 秒内最终回复；该性能差距必须独立优化，不能计作稳定性通过。
 - 起始资源：Center 容器约 172 MiB，CPU 约 0.1%，根盘 76%；观察项为重复 user reply、未终态 mailbox、Bridge 重连、judge/投递失败、容器内存和磁盘增长。
+
+### 24 小时审计结果与修复
+
+- 观察期内仅产生 1 次 attempt、1 次 completed success 和 1 条可靠消息；消息 `attempt_count=1`，无失败、无未终态消息、无重复 Worker 回复。
+- Center 容器连续运行约 25 小时且 healthy，内存约 195 MiB，根盘保持 76%，未发现资源异常增长。
+- 未通过项：binding `9` 超过 `max_runtime_seconds=86400` 后仍为 enabled。规则扫描在约 3.7 小时后停止，因为 Edge WebSocket Bridge 离线；HTTP heartbeat 正常不等于 transcript Bridge 在线。
+- 根因：`pollActiveBindings` 在调用 `evaluateHumanWatchBinding` 前先跳过离线 Bridge，而自动停止检查位于 evaluation 内，导致 Edge 离线期间中心不执行运行时长停止。
+- 修复：中心每分钟轮询先对全部启用 binding 执行 `enforceHumanWatchAutoStops`，再判断 session 和 Bridge；运行时长属于中心策略，不再依赖 Edge 在线。
+- 验证：离线自动停止新增回归测试，Human Watch 聚焦 `22/22`、Center 全量 `1186/1186`、typecheck、聚焦 lint 和生产构建通过。
+- 清理：binding `9` 已人工禁用，灰度 Worker Agent `17` 已删除，历史证据保留。第 6 项等待补丁发布后以 120 秒离线故障注入验证，不再重复等待 24 小时。

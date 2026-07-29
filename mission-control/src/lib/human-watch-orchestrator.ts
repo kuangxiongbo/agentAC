@@ -847,6 +847,7 @@ function handleTranscriptEvent(payload: SessionRealtimePayload) {
 
 async function pollActiveBindings() {
   if (!config.centralMode) return
+  enforceHumanWatchAutoStops()
   const bindings = listAllEnabledHumanWatchBindings(1)
   for (const binding of bindings) {
     const sessionId = String(binding.worker_session_id || '').trim()
@@ -854,6 +855,15 @@ async function pollActiveBindings() {
     if (!isBridgeClientOnline(binding.client_id)) continue
     scheduleBindingEvaluation(binding, sessionId, null, 'poll')
   }
+}
+
+export function enforceHumanWatchAutoStops(): number {
+  let stopped = 0
+  for (const binding of listAllEnabledHumanWatchBindings(1)) {
+    // Runtime limits are Center-owned and must still expire while Edge is offline.
+    if (maybeAutoStopBinding(binding)) stopped += 1
+  }
+  return stopped
 }
 
 async function pollLlmSweepBindings(deps: EvaluateDeps = defaultDeps) {

@@ -293,6 +293,23 @@ describe.sequential('human-watch-orchestrator', () => {
       .toMatchObject({ skip_reason: 'max_runtime_seconds:60' })
   })
 
+  it('enforces runtime auto-stop without reading an offline Edge transcript', async () => {
+    const { enforceHumanWatchAutoStops } = await import('@/lib/human-watch-orchestrator')
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(`UPDATE human_watch_bindings SET created_at = ?, updated_at = ?, rules_override = ? WHERE id = 1`).run(
+      now - 120,
+      now - 120,
+      JSON.stringify({ auto_stop: { enabled: true, max_runtime_seconds: 60 } }),
+    )
+
+    expect(enforceHumanWatchAutoStops()).toBe(1)
+    expect(fetchTranscript).not.toHaveBeenCalled()
+    expect(runJudge).not.toHaveBeenCalled()
+    expect(db.prepare(`SELECT enabled FROM human_watch_bindings WHERE id = 1`).get()).toMatchObject({ enabled: 0 })
+    expect(db.prepare(`SELECT skip_reason FROM human_watch_interventions WHERE event_type = 'auto_stop'`).get())
+      .toMatchObject({ skip_reason: 'max_runtime_seconds:60' })
+  })
+
   it('auto-stops after configured rate-limit skips', async () => {
     const { logHumanWatchIntervention } = await import('@/lib/human-watch-audit')
     const { evaluateHumanWatchBinding } = await import('@/lib/human-watch-orchestrator')
