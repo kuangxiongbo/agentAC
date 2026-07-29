@@ -75,6 +75,28 @@ export function parseStewardJudgeDecision(raw: string): StewardJudgeDecision | n
   }
 }
 
+export function buildFastStewardJudgePrompt(
+  summary: string,
+  workerContext: string,
+  memoryContext?: string | null,
+): string {
+  const compactContext = truncateMiddle(workerContext, 350)
+  const compactMemory = memoryContext ? truncateMiddle(memoryContext, 250) : '无匹配记忆'
+  const compactSummary = truncateMiddle(summary, 450)
+  return `你是人工值守判官。根据 Worker 最近会话和受控记忆，输出一个 JSON 对象，不要输出其他文字：
+{"action":"reply|ask_worker|escalate_human","reply":"可直接发给 Worker 的简洁消息","reason":"简短原因","risk":"normal|high|critical"}
+必须先回答 Worker 的实际问题，不能机械回复“继续”。生产变更、删除/破坏、提权、密码/密钥/凭据处理必须 escalate_human；只能由人决定且上下文无法确定的信息也必须 escalate_human。
+
+Worker 上下文：
+${compactContext}
+
+受控记忆：
+${compactMemory}
+
+最近会话：
+${compactSummary}`
+}
+
 const DANGEROUS_REQUEST_PATTERNS = [
   /(?:删除|清空|销毁|格式化|强制重置|覆盖).{0,24}(?:数据|数据库|文件|目录|磁盘|环境|记录|分支)?/i,
   /\b(?:rm\s+-rf|drop\s+(?:database|table)|truncate\s+table|git\s+reset\s+--hard)\b/i,

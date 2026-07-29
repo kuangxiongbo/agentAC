@@ -1,5 +1,9 @@
 import { getDatabase } from './db'
 import { logger } from './logger'
+import { readFileSync } from 'fs'
+import os from 'os'
+import path from 'path'
+import { parse as parseToml } from 'smol-toml'
 import {
   executeBoundLocalAgentPrompt,
   getLocalSessionKindForFramework,
@@ -9,10 +13,93 @@ import { readLocalSessionTranscriptPage } from './session-transcript'
 
 const EMPTY_SESSION_REPLY = 'Session continued, but no text response was returned.'
 const STEWARD_JUDGE_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000
+const FAST_JUDGE_TIMEOUT_MS = 3_500
+const FAST_JUDGE_MODEL = 'gpt-5-mini'
+
+type FastJudgeProvider = { apiKey: string; endpoint: string; model: string }
+
+function fastJudgeEndpoint(baseUrl: string): string {
+  const base = baseUrl.replace(/\/+$/, '')
+  return `${base}${base.endsWith('/v1') ? '' : '/v1'}/chat/completions`
+}
+
+function resolveFastJudgeProvider(): FastJudgeProvider | null {
+  const explicitBase = String(process.env.MC_HUMAN_WATCH_FAST_JUDGE_BASE_URL || '').trim()
+  const explicitModel = String(process.env.MC_HUMAN_WATCH_FAST_JUDGE_MODEL || '').trim()
+  const explicitKey = String(process.env.OPENAI_API_KEY || '').trim()
+  if (explicitBase && explicitKey) {
+    return {
+      apiKey: explicitKey,
+      endpoint: fastJudgeEndpoint(explicitBase),
+      model: explicitModel || FAST_JUDGE_MODEL,
+    }
+  }
+
+  try {
+    const codexHome = String(process.env.CODEX_HOME || path.join(os.homedir(), '.codex')).trim()
+    const parsed = parseToml(readFileSync(path.join(codexHome, 'config.toml'), 'utf8')) as Record<string, unknown>
+    const providerName = String(parsed.model_provider || '').trim()
+    const providers = parsed.model_providers as Record<string, unknown> | undefined
+    const provider = providers?.[providerName] as Record<string, unknown> | undefined
+    const baseUrl = String(provider?.base_url || '').trim()
+    const envKey = String(provider?.env_key || 'OPENAI_API_KEY').trim()
+    const apiKey = String(process.env[envKey] || '').trim()
+    const model = explicitModel || FAST_JUDGE_MODEL
+    if (!baseUrl || !apiKey || !model) return null
+    return { apiKey, endpoint: fastJudgeEndpoint(baseUrl), model }
+  } catch (error) {
+    logger.debug({ err: error }, '[HumanWatch] Codex provider config unavailable for fast judge')
+    return null
+  }
+}
+
+async function runFastStewardJudge(
+  prompt: string,
+): Promise<{ reply: string; model: string; inputTokens: number; outputTokens: number } | null> {
+  if (process.env.MC_HUMAN_WATCH_FAST_JUDGE === '0') return null
+  const provider = resolveFastJudgeProvider()
+  if (!provider) return null
+
+  try {
+    const response = await fetch(provider.endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${provider.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        messages: [{ role: 'user', content: prompt }],
+        response_format: { type: 'json_object' },
+        max_tokens: 300,
+        temperature: 0,
+      }),
+      signal: AbortSignal.timeout(FAST_JUDGE_TIMEOUT_MS),
+    })
+    if (!response.ok) {
+      throw new Error(`OpenAI HTTP ${response.status}`)
+    }
+    const body = await response.json() as {
+      choices?: Array<{ message?: { content?: string | null } }>
+      usage?: { prompt_tokens?: number; completion_tokens?: number }
+    }
+    const reply = String(body.choices?.[0]?.message?.content || '').trim()
+    return reply ? {
+      reply,
+      model: provider.model,
+      inputTokens: Number(body.usage?.prompt_tokens || 0),
+      outputTokens: Number(body.usage?.completion_tokens || 0),
+    } : null
+  } catch (error) {
+    logger.warn({ err: error, model: provider.model }, '[HumanWatch] Fast judge unavailable; falling back to steward CLI')
+    return null
+  }
+}
 
 export async function runStewardJudgeOnEdge(
   localAgentId: number,
   prompt: string,
+  options: { fastPrompt?: string } = {},
 ): Promise<{ reply: string; sessionId: string }> {
   const db = getDatabase()
   const agent = db
@@ -55,6 +142,33 @@ export async function runStewardJudgeOnEdge(
 
   const sessionKey = String(agent.session_key || '').trim()
   logger.info({ agentId: agent.id, kind, sessionKey: sessionKey || null }, '[HumanWatch] Running steward judge on edge')
+
+  const fastPrompt = String(options.fastPrompt || trimmedPrompt).trim()
+  const fastResult = fastPrompt.length <= 2_000
+    ? await runFastStewardJudge(fastPrompt)
+    : null
+  if (fastResult) {
+    if (isStewardJudgeRuntimeError(fastResult.reply)) {
+      throw new Error(`Fast judge returned runtime error: ${fastResult.reply.slice(0, 160)}`)
+    }
+    try {
+      db.prepare(`
+        INSERT INTO token_usage (
+          model, session_id, input_tokens, output_tokens, workspace_id, agent_name
+        ) VALUES (?, ?, ?, ?, 1, ?)
+      `).run(
+        fastResult.model,
+        `human-watch-fast:${agent.id}`,
+        fastResult.inputTokens,
+        fastResult.outputTokens,
+        agent.name,
+      )
+    } catch (error) {
+      logger.debug({ err: error, agentId: agent.id }, '[HumanWatch] Failed to record fast judge token usage')
+    }
+    logger.info({ agentId: agent.id, model: fastResult.model }, '[HumanWatch] Fast judge completed')
+    return { reply: fastResult.reply, sessionId: sessionKey }
+  }
 
   const baseline = readLatestAssistantState(kind, sessionKey)
   const result = await executeBoundLocalAgentPrompt(agent, trimmedPrompt, {

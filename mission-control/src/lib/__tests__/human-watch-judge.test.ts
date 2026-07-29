@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildStewardJudgePrompt,
+  buildFastStewardJudgePrompt,
   buildWorkerJudgeContext,
   buildWorkerSummaryForJudge,
   classifyDangerousWorkerRequest,
@@ -86,6 +87,18 @@ describe('human-watch-judge', () => {
   it('bounds generated judge prompt for edge executor limits', () => {
     const prompt = buildStewardJudgePrompt('summary\n'.repeat(1200), 'context\n'.repeat(900), {})
     expect(prompt.length).toBeLessThanOrEqual(5900)
+    expect(prompt).toContain('[truncated]')
+  })
+
+  it('builds a bounded fast judge prompt with context, memory, and recent transcript', () => {
+    const prompt = buildFastStewardJudgePrompt(
+      'recent transcript\n'.repeat(200),
+      'worker context\n'.repeat(200),
+      'approved memory\n'.repeat(200),
+    )
+    expect(prompt.length).toBeLessThanOrEqual(1600)
+    expect(prompt).toContain('受控记忆')
+    expect(prompt).toContain('最近会话')
     expect(prompt).toContain('[truncated]')
   })
 

@@ -121,11 +121,11 @@ export function normalizeGlobalRulesPatch(
   const merged = mergeGlobalRulesWithDefaults(raw)
   return {
     enabled: merged.enabled !== false,
-    idle_timeout_seconds: numOrDefault(merged.idle_timeout_seconds, 50, 5),
+    idle_timeout_seconds: numOrDefault(merged.idle_timeout_seconds, 50, 0),
     idle_timeout_with_stuck_seconds: numOrDefault(
       merged.idle_timeout_with_stuck_seconds,
       30,
-      5,
+      0,
     ),
     exclude_if_tool_active_within_seconds: numOrDefault(
       merged.exclude_if_tool_active_within_seconds,

@@ -1680,6 +1680,7 @@ export async function requestBridgeClientStewardJudge(input: {
   clientId: string
   localAgentId: number
   prompt: string
+  fastPrompt?: string
   timeoutMs?: number
 }): Promise<{ reply: string; sessionId: string; source: string }> {
   const { ws, connectionId } = findConnectedEdgeBridge(input.clientId)
@@ -1705,6 +1706,7 @@ export async function requestBridgeClientStewardJudge(input: {
         requestId,
         localAgentId: input.localAgentId,
         prompt: input.prompt,
+        ...(input.fastPrompt ? { fastPrompt: input.fastPrompt } : {}),
       }))
     } catch (error) {
       clearTimeout(timeout)

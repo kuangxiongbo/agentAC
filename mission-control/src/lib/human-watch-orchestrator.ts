@@ -39,6 +39,7 @@ import {
 import { createEdgeMessage } from './edge-messages'
 import {
   buildWorkerJudgeContext,
+  buildFastStewardJudgePrompt,
   buildStewardJudgePrompt,
   buildWorkerSummaryForJudge,
   classifyDangerousWorkerRequest,
@@ -57,7 +58,7 @@ import {
 } from './human-watch-defaults'
 import { resolveHumanWatchRulesForBinding } from './human-watch-global-rules'
 
-const EVAL_DEBOUNCE_MS = 5_000
+const EVAL_DEBOUNCE_MS = 100
 const POLL_INTERVAL_MS = 60_000
 const TRANSCRIPT_FETCH_LIMIT = 80
 const RULES_LOOKBACK = 12
@@ -414,12 +415,12 @@ async function fetchHumanWatchMemoryContext(
       `${index + 1}. 值守长期记忆 ${hit.memory.summary || hit.memory.category}: ${hit.snippet}`,
     ))
 
-    try {
+    if (rows.length === 0) try {
       const edge = await requestBridgeClientMemorySearch({
         clientId: binding.client_id,
         query,
         limit,
-        timeoutMs: 8000,
+        timeoutMs: 1000,
       })
       rows.push(...edge.results
         .slice(0, limit)
@@ -518,10 +519,12 @@ async function resolveInterventionPrompt(
       memoryContext ? `值守记忆检索:\n${memoryContext}` : '',
     ].filter(Boolean).join('\n\n')
     const judgePrompt = buildStewardJudgePrompt(summary, workerContext, stewardConfig)
+    const fastJudgePrompt = buildFastStewardJudgePrompt(summary, baseWorkerContext, memoryContext)
     const judge = await deps.runJudge({
       clientId: binding.client_id,
       localAgentId: stewardId,
       prompt: judgePrompt,
+      fastPrompt: fastJudgePrompt,
     })
     const decision = parseStewardJudgeDecision(String(judge.reply || ''))
     if (decision) return { decision, memoryContext }

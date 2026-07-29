@@ -1453,6 +1453,7 @@ async function handleStewardJudgeRequest(message: any): Promise<void> {
   const requestId = typeof message?.requestId === 'string' ? message.requestId : ''
   const localAgentId = Number(message?.localAgentId)
   const prompt = typeof message?.prompt === 'string' ? message.prompt : ''
+  const fastPrompt = typeof message?.fastPrompt === 'string' ? message.fastPrompt : ''
 
   if (!requestId) return
 
@@ -1478,7 +1479,7 @@ async function handleStewardJudgeRequest(message: any): Promise<void> {
 
   activeStewardJudgeAgentIds.add(localAgentId)
   try {
-    const result = await runStewardJudgeOnEdge(localAgentId, prompt)
+    const result = await runStewardJudgeOnEdge(localAgentId, prompt, { fastPrompt })
     safeSend(state.ws, {
       type: 'steward_judge_response',
       requestId,

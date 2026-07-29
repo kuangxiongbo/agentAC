@@ -154,3 +154,12 @@
 - 无副作用：验收前后 watch event 均为 0、该 client 的可靠消息均为 0、活动消息为 0；证明离线停止未读取 transcript、未调用 judge、未投递 MCP/Bridge 消息且不消耗模型 Token。
 - 生产健康：公网 `/api/status?action=health` 返回 `version=2.1.88`；容器 healthy、RSS 约 80 MiB、磁盘 76%。binding `10` 保持 disabled 作为审计证据，原 binding `6` 保持 disabled。
 - 结论：第 6 项通过。24 小时稳定性和离线安全阀均完成闭环，不需要为同一问题追加 72 小时等待；下一项进入 `HW-101` 最终回复 5 秒延迟优化。
+
+## HW-101 最终回复延迟优化（进行中）
+
+- 基线：稳定性场景从 Worker 问句到规则命中约 6 秒，到值守回复进入原 transcript 约 27.3 秒；主要由 5 秒事件防抖、Edge 记忆串行等待和长期 Codex judge 会话组成。
+- 实现：事件防抖降为 100ms；中心受控记忆命中后不再重复等待 Edge 搜索，未命中最多等待 1 秒；Center 生成不超过 1600 字符的快速提示和 5900 字符完整回退提示。
+- Edge：结构化读取当前 Codex TOML provider/base URL/env key，使用 `gpt-5-mini` 快速判断，3.5 秒失败回退原 CLI judge；成功 Token 归属值守 Agent 写入本地 `token_usage`。
+- 安全：快速输出仍由中心解析，并经过危险操作独立分类、active event/fingerprint 去重、额度、自动停止和可靠 mailbox；不直接写 Worker transcript。
+- 自测：Center 聚焦 `45/45`、全量 `1187/1187`；Edge 聚焦 `17/17`、全量 `1013/1013`；双端 typecheck 与聚焦 lint 通过。自定义 provider 短提示真实基准约 2.96 秒，完整 CLI 一次性基准约 6.62 秒。
+- 待验收：发布 `2.1.89` 后设置隔离规则 `idle_timeout_with_stuck_seconds=0`，用新 Worker session 真实提问并按 transcript 时间戳验证最终回复不超过 5 秒；未通过不得完成 HW-101。
