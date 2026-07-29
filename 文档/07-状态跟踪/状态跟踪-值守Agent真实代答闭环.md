@@ -155,7 +155,7 @@
 - 生产健康：公网 `/api/status?action=health` 返回 `version=2.1.88`；容器 healthy、RSS 约 80 MiB、磁盘 76%。binding `10` 保持 disabled 作为审计证据，原 binding `6` 保持 disabled。
 - 结论：第 6 项通过。24 小时稳定性和离线安全阀均完成闭环，不需要为同一问题追加 72 小时等待；下一项进入 `HW-101` 最终回复 5 秒延迟优化。
 
-## HW-101 最终回复延迟优化（进行中）
+## HW-101 最终回复延迟优化（已完成）
 
 - 基线：稳定性场景从 Worker 问句到规则命中约 6 秒，到值守回复进入原 transcript 约 27.3 秒；主要由 5 秒事件防抖、Edge 记忆串行等待和长期 Codex judge 会话组成。
 - 实现：事件防抖降为 100ms；中心受控记忆命中后不再重复等待 Edge 搜索，未命中最多等待 1 秒；Center 生成不超过 1600 字符的快速提示和 5900 字符完整回退提示。
@@ -167,3 +167,8 @@
 - 2.1.90 修复候选：快速 judge 明确作为用户代理，低风险二选一必须选择合理选项，禁止继续等待或把同一问题退回用户；下一轮使用 Worker `mc_create_watch_event` 真实主动求助路径验收。
 - 2.1.90 受管 MCP 生产证据：binding `13`、Worker `20`、session `019face1-40b4-71f3-8861-3bf6fa113171`；event `20578c23-1a68-4caa-b421-f3ff5808da15` 来源 `worker_tool`。Worker 问句 `07:59:47.615Z`，值守 user 消息 `07:59:50.056Z`，延迟 2.441 秒；但消息为完整 judge JSON，故不通过。binding 已停用、活动测试消息已取消、全局规则已恢复。
 - 2.1.91 修复候选：`mc_create_watch_event` 补 non-destructive/idempotent annotations；同步 assist 解析 decision，只续写纯文本 reply，escalate_human 不代发。
+- 2.1.91 发布：Git `015c31d`；Center/Runtime `2.1.91`、Tray `3.0.10`；`agentcenter:2.1.91` 与 `latest` 共享 `linux/amd64` digest `sha256:86ea31adfebc1fbaccdfb1fc5de4ac4850b2ca3ad200248e60ae0c338a806770`。Runtime ZIP SHA-256 为 `d1e611188162c9968775880188f3722eb48c5e110ce856095ae099a473f46991`。
+- 自测：release-surface、双端 typecheck、Center `1187/1187`、Edge `1013/1013`、聚焦 `14/14` 和 Runtime 干净启动通过；生产健康接口返回 `version=2.1.91`，本地托盘正式升级链路已运行 Runtime `2.1.91`。
+- 生产真实验收：临时 Worker Agent `21`、binding `14`、session `019facfa-13d4-7331-b7b6-3970ac65a7ba`；云端初始 mailbox `74890223-e5c8-417a-9e71-fd957001c33f` 为 `completed/attempt_count=1`。Worker 通过 MCP 创建唯一 event `4d02a66d-2773-48df-9cc7-8d194c43b00d`，`source=worker_tool`。
+- 语义与延迟：Worker 用户可见问句时间 `08:28:11.376Z`，值守 user 消息“选择详细版。”时间 `08:28:14.995Z`，间隔 `3.619` 秒；消息为纯文本而非 judge JSON。Worker 于 `08:28:18.505Z` 回复“已确认，最终采用详细版测试报告”，证明值守已代替人回答并推动原 Worker 继续。
+- 去重与清理：该 binding 仅产生 1 个 watch event，成功后按 `max_successful_interventions=1` 自动停用；临时 Agent `21` 已删除，binding `14` 保持 disabled，审计证据保留。`HW-101` 验收完成。
