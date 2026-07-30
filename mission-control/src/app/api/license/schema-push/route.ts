@@ -3,6 +3,7 @@ import { getUserFromRequest } from '@/lib/auth'
 import { getLicenseSchemaTemplateJson } from '@/lib/license-schema-meta'
 import { getLicenseSetting, LICENSE_CENTER_URL_KEY } from '@/lib/license-settings-store'
 import { LICENSE_APP_ID, APP_STAGE } from '@/lib/license-verifier'
+import { userCenterFetch } from '@/lib/usercenter-fetch'
 
 function resolveUserCenterApiUrl(): string {
   const stored = getLicenseSetting(LICENSE_CENTER_URL_KEY)
@@ -36,7 +37,7 @@ export async function POST(request: Request) {
   const secret = String(process.env.USER_CENTER_INTERNAL_SECRET || '').trim()
 
   try {
-    const resp = await fetch(`${baseUrl}/api/internal/license-schema`, {
+    const resp = await userCenterFetch(`${baseUrl}/api/internal/license-schema`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

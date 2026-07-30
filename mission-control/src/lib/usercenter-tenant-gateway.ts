@@ -1,3 +1,5 @@
+import { userCenterFetch } from './usercenter-fetch'
+
 /**
  * 与奕升 `1sheng-console/server/services/usercenterTenantGateway.ts` 对齐：
  * 服务端调用用户中心 `POST /api/internal/tenant-context` 判断 Zitadel 主体是否已绑定租户。
@@ -97,7 +99,7 @@ export async function fetchUsercenterTenantContextIfConfigured(input: {
   }
 
   try {
-    const resp = await fetch(`${base}/api/internal/tenant-context`, {
+    const resp = await userCenterFetch(`${base}/api/internal/tenant-context`, {
       method: 'POST',
       headers: internalHeaders(),
       body: JSON.stringify({
@@ -188,7 +190,7 @@ export async function searchUsercenterTenant(input: {
   q: string
 }): Promise<UsercenterTenantSearchResult> {
   const base = requireUsercenterApiOrThrow()
-  const resp = await fetch(`${base}/api/internal/onboarding/search-tenant`, {
+  const resp = await userCenterFetch(`${base}/api/internal/onboarding/search-tenant`, {
     method: 'POST',
     headers: internalHeaders(),
     body: JSON.stringify({
@@ -212,7 +214,7 @@ export async function createUsercenterTenant(input: {
   slug: string
 }): Promise<{ ok: true; tenantId: number; slug: string }> {
   const base = requireUsercenterApiOrThrow()
-  const resp = await fetch(`${base}/api/internal/onboarding/create-tenant`, {
+  const resp = await userCenterFetch(`${base}/api/internal/onboarding/create-tenant`, {
     method: 'POST',
     headers: internalHeaders(),
     body: JSON.stringify({
@@ -238,7 +240,7 @@ export async function applyUsercenterTenant(input: {
   tenantId: number
 }): Promise<{ ok: true }> {
   const base = requireUsercenterApiOrThrow()
-  const resp = await fetch(`${base}/api/internal/onboarding/apply-tenant`, {
+  const resp = await userCenterFetch(`${base}/api/internal/onboarding/apply-tenant`, {
     method: 'POST',
     headers: internalHeaders(),
     body: JSON.stringify({
@@ -258,7 +260,7 @@ export async function applyUsercenterTenant(input: {
 
 export async function fetchUsercenterOnboardingStatus(subject: string): Promise<UsercenterOnboardingStatus> {
   const base = requireUsercenterApiOrThrow()
-  const resp = await fetch(`${base}/api/internal/onboarding/status/${encodeURIComponent(subject)}`, {
+  const resp = await userCenterFetch(`${base}/api/internal/onboarding/status/${encodeURIComponent(subject)}`, {
     method: 'GET',
     headers: internalHeaders(),
     signal: AbortSignal.timeout(8000),

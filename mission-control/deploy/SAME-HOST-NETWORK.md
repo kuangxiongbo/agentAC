@@ -117,7 +117,7 @@ server {
 |------|------|
 | Zitadel 在独立机器 | `ZITADEL_ISSUER=https://sso.1sheng.work` 保持不变 |
 | Zitadel 也在本机 Docker | MC 调 discovery/token 可试 `http://host.docker.internal:<zitadel端口>`，浏览器仍用 `https://sso.1sheng.work`；或统一走公网（IdP 通常无 hairpin 问题时可接受） |
-| 证书自签 | 开发可用 `MC_OIDC_TLS_INSECURE=1`；生产用 `NODE_EXTRA_CA_CERTS` |
+| 证书自签 | OIDC 用 `MC_OIDC_TLS_INSECURE=1`；用户中心用 `MC_USERCENTER_TLS_INSECURE=1`；长期生产优先 `NODE_EXTRA_CA_CERTS` |
 
 ---
 

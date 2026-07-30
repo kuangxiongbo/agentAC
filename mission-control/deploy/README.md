@@ -115,4 +115,4 @@ docker compose -f docker-compose.1panel.yml up -d --force-recreate
 
 1. **`USER_CENTER_API_URL`** 是否应为**内网地址**（同机勿用公网 `https://user.…`）；用 `docker exec` 请求 `http://host.docker.internal:<端口>/api/internal/tenant-context` 验证（见 `SAME-HOST-NETWORK.md`）。
 2. **`USER_CENTER_INTERNAL_SECRET`** 是否与用户中心生产环境一致（缺失或错误常导致 403/500）。
-3. 生产勿依赖 **`MC_OIDC_TLS_INSECURE`**；用户中心 `fetch` 使用系统 CA，证书异常需在镜像/宿主机配置 **`NODE_EXTRA_CA_CERTS`**。
+3. 自签用户中心可设置 **`MC_USERCENTER_TLS_INSECURE=1`**，该开关仅放宽 `USER_CENTER_API_URL` 请求；自签 OIDC 使用独立的 **`MC_OIDC_TLS_INSECURE=1`**。长期生产部署优先通过 **`NODE_EXTRA_CA_CERTS`** 信任私有 CA。

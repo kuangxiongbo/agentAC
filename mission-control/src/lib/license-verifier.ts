@@ -1,6 +1,7 @@
 import { LICENSE_SCHEMA_SETTINGS } from './license-schema-meta'
 import { LICENSE_ENTITLEMENT_META_LIST } from './license-schema-meta'
 import { getLicenseSetting, LICENSE_CENTER_URL_KEY } from './license-settings-store'
+import { userCenterFetch } from './usercenter-fetch'
 
 function fallbackStage(): string {
   const raw = String(process.env.NODE_ENV || '').trim().toLowerCase()
@@ -118,7 +119,7 @@ export function verifyLicense(
     return Promise.resolve(cached.result)
   }
 
-  return fetch(`${userCenterApiUrl}/api/internal/verify-access`, {
+  return userCenterFetch(`${userCenterApiUrl}/api/internal/verify-access`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -22,6 +22,8 @@ services:
       HOSTNAME: "0.0.0.0"
       # 公网 AgentCenter 只汇聚 Edge/托盘数据，不扫描容器本机运行时。
       MC_ENABLE_LOCAL_MONITORING: "false"
+      # 用户中心使用自签 HTTPS 时显式设为 1；仅放宽用户中心请求，不影响其他 HTTPS。
+      MC_USERCENTER_TLS_INSECURE: "${MC_USERCENTER_TLS_INSECURE:-0}"
 
     volumes:
       # 必须：SQLite、tokens、自动生成密钥等
