@@ -7,7 +7,7 @@ node_modules
 !public/project-docs/
 !public/project-docs/**
 public/edge-runtime/client-runtime-*.zip
-!public/edge-runtime/client-runtime-2.1.96-darwin-aarch64.zip
+!public/edge-runtime/client-runtime-2.1.97-darwin-aarch64.zip
 .github
 ops
 scripts/*

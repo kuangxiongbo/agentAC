@@ -56,6 +56,19 @@ interface ProcessingResult {
   suggestions: string[]
 }
 
+interface StewardMemorySummary {
+  id: string
+  scope_type: string
+  scope_id: string
+  category: string
+  content: string
+  summary: string | null
+  confidence: number
+  status: 'candidate' | 'approved' | 'rejected' | 'expired'
+  expires_at: number | null
+  updated_at: number
+}
+
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 B'
   const k = 1024
@@ -150,6 +163,9 @@ export function MemoryBrowserPanel() {
     agents: Array<{ name: string; dbSize: number; totalChunks: number; totalFiles: number; files: Array<{ path: string; chunks: number; textSize: number }> }>
   }>>([])
   const [selectedClientId, setSelectedClientId] = useState<string>('')
+  const [stewardMemories, setStewardMemories] = useState<StewardMemorySummary[]>([])
+  const [isLoadingStewardMemories, setIsLoadingStewardMemories] = useState(false)
+  const [stewardMemoryError, setStewardMemoryError] = useState<string | null>(null)
 
   useEffect(() => {
     memoryFilesRef.current = memoryFiles
@@ -164,10 +180,26 @@ export function MemoryBrowserPanel() {
     setSelectedClientId((current) => current || clients[0]?.client_id || '')
   }, [])
 
+  const loadStewardMemories = useCallback(async () => {
+    setIsLoadingStewardMemories(true)
+    setStewardMemoryError(null)
+    try {
+      const res = await fetch('/api/steward-memories?limit=100', { cache: 'no-store' })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body?.error || 'Failed to load steward memories')
+      setStewardMemories(Array.isArray(body?.memories) ? body.memories : [])
+    } catch (error) {
+      setStewardMemoryError(error instanceof Error ? error.message : 'Failed to load steward memories')
+    } finally {
+      setIsLoadingStewardMemories(false)
+    }
+  }, [])
+
   useEffect(() => {
     if (!centralMode) return
     loadRemoteMemory().catch((error) => log.error('Failed to load remote memory:', error))
-  }, [centralMode, loadRemoteMemory])
+    void loadStewardMemories()
+  }, [centralMode, loadRemoteMemory, loadStewardMemories])
 
   const fetchTree = useCallback(async (options?: { path?: string; depth?: number }) => {
     const params = new URLSearchParams({ action: 'tree' })
@@ -559,14 +591,66 @@ export function MemoryBrowserPanel() {
 
   if (centralMode) {
     const selectedClient = remoteClients.find((client) => client.client_id === selectedClientId) || remoteClients[0] || null
+    const approvedCount = stewardMemories.filter((memory) => memory.status === 'approved').length
+    const candidateCount = stewardMemories.filter((memory) => memory.status === 'candidate').length
     return (
-      <div className="h-[calc(100vh-3.5rem)] flex flex-col overflow-hidden p-4 md:p-6 space-y-4">
-        <div>
-          <h2 className="text-lg font-semibold text-foreground">{t('title')}</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">{t('remoteMemoryReadOnly')}</p>
-        </div>
+      <div className="h-[calc(100vh-3.5rem)] overflow-y-auto p-4 md:p-6">
+        <div className="mx-auto max-w-6xl space-y-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-foreground">{t('title')}</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">{t('stewardMemoryDescription')}</p>
+            </div>
+            <Button size="sm" variant="secondary" onClick={() => void loadStewardMemories()} disabled={isLoadingStewardMemories}>
+              {t('refresh')}
+            </Button>
+          </div>
 
-        {remoteClients.length > 0 ? (
+          <section className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-2">
+              <h3 className="text-sm font-medium text-foreground">{t('stewardMemoryTitle')}</h3>
+              <div className="flex gap-4 text-xs text-muted-foreground">
+                <span>{t('approvedCount', { count: approvedCount })}</span>
+                <span>{t('candidateCount', { count: candidateCount })}</span>
+              </div>
+            </div>
+            {stewardMemoryError ? (
+              <div className="border border-rose-500/30 bg-rose-500/5 px-4 py-3 text-xs text-rose-400">{stewardMemoryError}</div>
+            ) : isLoadingStewardMemories ? (
+              <Loader variant="panel" label={t('loadingStewardMemories')} />
+            ) : stewardMemories.length === 0 ? (
+              <div className="border-y border-border px-4 py-8 text-center text-sm text-muted-foreground">{t('noStewardMemories')}</div>
+            ) : (
+              <div className="divide-y divide-border border-y border-border">
+                {stewardMemories.map((memory) => (
+                  <article key={memory.id} className="grid gap-3 py-4 md:grid-cols-[160px_1fr_auto]">
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-foreground">{t(`status_${memory.status}`)}</div>
+                      <div className="font-mono text-[11px] text-muted-foreground">{memory.category}</div>
+                      <div className="font-mono text-[11px] text-muted-foreground">{memory.scope_type}:{memory.scope_id}</div>
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="text-sm font-medium text-foreground">{memory.summary || memory.content.slice(0, 80)}</h4>
+                      <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">{memory.content}</p>
+                    </div>
+                    <div className="text-right text-[11px] text-muted-foreground">
+                      <div>{t('confidence', { value: Math.round(memory.confidence * 100) })}</div>
+                      <div className="mt-1">{memory.expires_at == null ? t('neverExpires') : new Date(memory.expires_at * 1000).toLocaleDateString()}</div>
+                      <div className="mt-1">{new Date(memory.updated_at * 1000).toLocaleString()}</div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="space-y-3 pt-2">
+            <div className="border-b border-border pb-2">
+              <h3 className="text-sm font-medium text-foreground">{t('clientMemoryTitle')}</h3>
+              <p className="mt-1 text-xs text-muted-foreground">{t('remoteMemoryReadOnly')}</p>
+            </div>
+
+            {remoteClients.length > 0 ? (
           <>
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted-foreground">{t('selectClientNode')}</span>
@@ -628,11 +712,13 @@ export function MemoryBrowserPanel() {
               </>
             )}
           </>
-        ) : (
-          <div className="rounded-lg border border-border bg-card px-4 py-6 text-sm text-muted-foreground">
-            {t('noClientNodes')}
-          </div>
-        )}
+            ) : (
+              <div className="border-y border-border px-4 py-6 text-sm text-muted-foreground">
+                {t('noClientNodes')}
+              </div>
+            )}
+          </section>
+        </div>
       </div>
     )
   }
