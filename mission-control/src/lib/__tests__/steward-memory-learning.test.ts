@@ -96,6 +96,35 @@ describe('steward memory learning', () => {
     expect(runJudge).toHaveBeenCalledOnce()
   })
 
+  it('bounds completed-goal context to the Edge steward judge protocol limit', async () => {
+    completedGoal('goal-large-context')
+    db.prepare(`
+      UPDATE supervision_goals
+      SET objective = ?, constraints_json = ?, success_criteria_json = ?
+      WHERE id = 'goal-large-context'
+    `).run('O'.repeat(10_000), JSON.stringify(['C'.repeat(10_000)]), JSON.stringify([{ id: 'tests', text: 'S'.repeat(10_000) }]))
+    for (let index = 0; index < 20; index++) {
+      db.prepare(`
+        INSERT INTO supervision_events (
+          workspace_id, tenant_id, goal_id, event_type, actor_type, reason, evidence_json, action_json
+        ) VALUES (1, 1, 'goal-large-context', 'test_event', 'system', ?, ?, ?)
+      `).run('R'.repeat(2_000), JSON.stringify({ detail: 'E'.repeat(2_000) }), JSON.stringify({ detail: 'A'.repeat(2_000) }))
+    }
+    let capturedPrompt = ''
+    const runJudge = vi.fn(async (input: { prompt: string }) => {
+      capturedPrompt = input.prompt
+      return { reply: judgeReply, sessionId: 'steward-session', source: 'test' }
+    })
+
+    const result = await extractStewardMemoryCandidates({ goalId: 'goal-large-context', workspaceId: 1 }, { runJudge }, db)
+
+    expect(result.memories).toHaveLength(2)
+    expect(capturedPrompt.length).toBeLessThanOrEqual(6000)
+    expect(capturedPrompt).toContain('只输出 JSON')
+    expect(capturedPrompt).toContain('goal-large-context')
+    expect(capturedPrompt).toContain('[truncated]')
+  })
+
   it('promotes a procedure after three independent successful goals but not a preference', async () => {
     const runJudge = vi.fn(async () => ({ reply: judgeReply, sessionId: 'steward-session', source: 'test' }))
     for (const id of ['goal-memory-1', 'goal-memory-2', 'goal-memory-3']) {

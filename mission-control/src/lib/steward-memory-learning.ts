@@ -25,6 +25,16 @@ interface MemoryCandidateDraft {
 
 const CATEGORIES = new Set(['preference', 'fact', 'episode', 'procedure'])
 const SCOPES = new Set(['goal', 'project', 'user', 'steward', 'client', 'workspace', 'tenant'])
+const MAX_JUDGE_PROMPT_CHARS = 6000
+
+function boundedText(value: unknown, maxChars: number): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value)
+  if (text.length <= maxChars) return text
+  const marker = '...[truncated]...'
+  const remaining = Math.max(0, maxChars - marker.length)
+  const head = Math.ceil(remaining * 0.6)
+  return `${text.slice(0, head)}${marker}${text.slice(text.length - (remaining - head))}`
+}
 
 function dbOr(database?: Database.Database) {
   return database ?? getDatabase()
@@ -104,7 +114,7 @@ function learningContext(db: Database.Database, goal: SupervisionGoalView) {
 }
 
 function learningPrompt(goal: SupervisionGoalView, context: ReturnType<typeof learningContext>): string {
-  return `你是值守 Agent 的受控记忆提取器。根据已完成目标提取可复用候选，不要把一次偶然输出当成长期事实。
+  const prompt = `你是值守 Agent 的受控记忆提取器。根据已完成目标提取可复用候选，不要把一次偶然输出当成长期事实。
 
 只输出 JSON：
 {"candidates":[{"category":"preference|fact|episode|procedure","scope_type":"goal|project|user|steward|client|workspace|tenant","scope_id":"合法 ID","content":"原子化记忆","summary":"摘要","confidence":0.0,"evidence_note":"来源依据","expires_at":null}]}
@@ -118,12 +128,13 @@ function learningPrompt(goal: SupervisionGoalView, context: ReturnType<typeof le
 - workspace: ${goal.workspace_id}
 - tenant: ${goal.tenant_id ?? '(无)'}
 
-目标：${goal.title}
-目标描述：${goal.objective}
-约束：${JSON.stringify(goal.constraints)}
-成功标准：${JSON.stringify(goal.success_criteria)}
-任务结果：${JSON.stringify(context.tasks)}
-监督事件：${JSON.stringify(context.events)}`
+目标：${boundedText(goal.title, 300)}
+目标描述：${boundedText(goal.objective, 900)}
+约束：${boundedText(goal.constraints, 500)}
+成功标准：${boundedText(goal.success_criteria, 700)}
+任务结果：${boundedText(context.tasks, 1500)}
+监督事件：${boundedText(context.events, 1200)}`
+  return boundedText(prompt, MAX_JUDGE_PROMPT_CHARS)
 }
 
 function mergeCandidate(
