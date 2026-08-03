@@ -75,6 +75,7 @@ describe('steward memory learning', () => {
     expect(first).toMatchObject({ duplicate: false })
     expect(first.memories).toHaveLength(2)
     expect(first.memories.every((memory) => memory.status === 'candidate')).toBe(true)
+    expect(first.memories.every((memory) => memory.expires_at === null)).toBe(true)
     const duplicate = await extractStewardMemoryCandidates({ goalId: 'goal-memory-1', workspaceId: 1 }, { runJudge }, db)
     expect(duplicate).toEqual({ memories: [], duplicate: true })
     expect(runJudge).toHaveBeenCalledOnce()

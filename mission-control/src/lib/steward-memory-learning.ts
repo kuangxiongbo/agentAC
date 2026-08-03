@@ -82,7 +82,9 @@ function normalizeDrafts(raw: string, goal: SupervisionGoalView, projectIds: num
       summary: typeof value.summary === 'string' ? value.summary.trim() : undefined,
       confidence,
       evidence_note: evidenceNote,
-      expires_at: Number.isFinite(Number(value.expires_at)) ? Number(value.expires_at) : null,
+      expires_at: value.expires_at == null
+        ? null
+        : Number.isFinite(Number(value.expires_at)) ? Number(value.expires_at) : null,
     }
   })
 }

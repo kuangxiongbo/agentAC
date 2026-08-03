@@ -93,6 +93,30 @@ describe('steward memories', () => {
     expect(getStewardMemory('memory-new', 1, db)?.supersedes_id).toBe('memory-old')
   })
 
+  it('can explicitly clear a legacy zero expiry during review', () => {
+    createStewardMemory({
+      id: 'memory-zero-expiry',
+      workspaceId: 1,
+      tenantId: 1,
+      scopeType: 'project',
+      scopeId: '1',
+      category: 'fact',
+      content: 'Reusable project fact.',
+      expiresAt: 0,
+      createdByType: 'steward_agent',
+    }, db)
+
+    const approved = reviewStewardMemory({
+      id: 'memory-zero-expiry',
+      workspaceId: 1,
+      action: 'approve',
+      reviewer: '2',
+      expiresAt: null,
+    }, db)
+
+    expect(approved).toMatchObject({ status: 'approved', expires_at: null })
+  })
+
   it('rejects invalid scopes, confidence and expiry ranges', () => {
     expect(() => createStewardMemory({
       workspaceId: 1,

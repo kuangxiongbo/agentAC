@@ -240,9 +240,18 @@ export function reviewStewardMemory(input: {
     db.prepare(`
       UPDATE steward_memories
       SET status = ?, confidence = COALESCE(?, confidence), reviewed_by = ?,
-          expires_at = COALESCE(?, expires_at), updated_at = ?
+          expires_at = CASE WHEN ? = 1 THEN ? ELSE expires_at END, updated_at = ?
       WHERE id = ? AND workspace_id = ?
-    `).run(nextStatus, input.confidence ?? null, input.reviewer, input.expiresAt ?? null, now, current.id, current.workspace_id)
+    `).run(
+      nextStatus,
+      input.confidence ?? null,
+      input.reviewer,
+      input.expiresAt !== undefined ? 1 : 0,
+      input.expiresAt ?? null,
+      now,
+      current.id,
+      current.workspace_id,
+    )
   })()
   const updated = getStewardMemory(current.id, current.workspace_id, db)
   if (!updated) throw new Error('Memory not found after review')

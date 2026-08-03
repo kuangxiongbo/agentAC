@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
       status: body.status,
       supersedesId: typeof body.supersedes_id === 'string' ? body.supersedes_id : null,
       effectiveAt: Number.isFinite(Number(body.effective_at)) ? Number(body.effective_at) : null,
-      expiresAt: Number.isFinite(Number(body.expires_at)) ? Number(body.expires_at) : null,
+      expiresAt: body.expires_at == null ? null : Number(body.expires_at),
       createdByType: 'human_user',
     })
     return NextResponse.json({ memory }, { status: 201 })

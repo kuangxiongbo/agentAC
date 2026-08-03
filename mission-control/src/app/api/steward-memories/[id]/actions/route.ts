@@ -27,7 +27,9 @@ export async function POST(
       summary: typeof body.summary === 'string' ? body.summary : null,
       confidence: body.confidence == null ? undefined : Number(body.confidence),
       supersedesId: typeof body.supersedes_id === 'string' ? body.supersedes_id : null,
-      expiresAt: Number.isFinite(Number(body.expires_at)) ? Number(body.expires_at) : null,
+      expiresAt: Object.prototype.hasOwnProperty.call(body, 'expires_at')
+        ? body.expires_at == null ? null : Number(body.expires_at)
+        : undefined,
     })
     return NextResponse.json({ memory })
   } catch (error) {
