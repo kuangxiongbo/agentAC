@@ -149,7 +149,7 @@ function mergeCandidate(
     SELECT id FROM steward_memories
     WHERE workspace_id = ? AND tenant_id IS ? AND scope_type = ? AND scope_id = ?
       AND category = ? AND lower(trim(content)) = lower(trim(?))
-      AND status IN ('candidate', 'approved')
+      AND status IN ('candidate', 'approved', 'rejected')
     ORDER BY updated_at DESC LIMIT 1
   `).get(
     goal.workspace_id,
@@ -171,6 +171,8 @@ function mergeCandidate(
       sourceRefs: [sourceRef],
       evidence: [{ goal_id: goal.id, outcome: 'success', note: draft.evidence_note }],
       confidence: draft.confidence,
+      status: 'approved',
+      effectiveAt: Math.floor(Date.now() / 1000),
       expiresAt: draft.expires_at,
       createdByType: 'steward_agent',
     }, db)
@@ -180,9 +182,7 @@ function mergeCandidate(
   const evidence = existing.evidence.some((item) => item.goal_id === goal.id)
     ? existing.evidence
     : [...existing.evidence, { goal_id: goal.id, outcome: 'success', note: draft.evidence_note }]
-  const autoPromote = existing.status === 'candidate'
-    && draft.category === 'procedure'
-    && sourceRefs.filter((ref) => ref.startsWith('goal:')).length >= 3
+  const nextStatus = existing.status === 'candidate' ? 'approved' : existing.status
   db.prepare(`
     UPDATE steward_memories
     SET source_refs_json = ?, evidence_json = ?,
@@ -193,8 +193,8 @@ function mergeCandidate(
     JSON.stringify(sourceRefs),
     JSON.stringify(evidence),
     Math.min(0.99, Math.max(existing.confidence, draft.confidence) + (sourceRefs.length - existing.source_refs.length) * 0.05),
-    autoPromote ? 'approved' : existing.status,
-    autoPromote ? Math.floor(Date.now() / 1000) : null,
+    nextStatus,
+    nextStatus === 'approved' ? Math.floor(Date.now() / 1000) : null,
     Math.floor(Date.now() / 1000),
     existing.id,
   )
@@ -231,13 +231,13 @@ export async function extractStewardMemoryCandidates(
         workspace_id, tenant_id, goal_id, event_type, actor_type, actor_id,
         decision, reason, action_json, idempotency_key
       ) VALUES (?, ?, ?, 'memory_candidates_extracted', 'steward_agent', ?,
-        'candidate', ?, ?, ?)
+        'active', ?, ?, ?)
     `).run(
       goal.workspace_id,
       goal.tenant_id,
       goal.id,
       String(goal.steward_local_agent_id),
-      `Extracted ${saved.length} memory candidates`,
+      `Extracted and activated ${saved.length} memories`,
       JSON.stringify({ memory_ids: saved.map((memory) => memory.id) }),
       marker,
     )

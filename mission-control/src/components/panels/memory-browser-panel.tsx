@@ -592,7 +592,7 @@ export function MemoryBrowserPanel() {
   if (centralMode) {
     const selectedClient = remoteClients.find((client) => client.client_id === selectedClientId) || remoteClients[0] || null
     const approvedCount = stewardMemories.filter((memory) => memory.status === 'approved').length
-    const candidateCount = stewardMemories.filter((memory) => memory.status === 'candidate').length
+    const disabledCount = stewardMemories.filter((memory) => memory.status === 'rejected').length
     return (
       <div className="h-[calc(100vh-3.5rem)] overflow-y-auto p-4 md:p-6">
         <div className="mx-auto max-w-6xl space-y-6">
@@ -611,7 +611,7 @@ export function MemoryBrowserPanel() {
               <h3 className="text-sm font-medium text-foreground">{t('stewardMemoryTitle')}</h3>
               <div className="flex gap-4 text-xs text-muted-foreground">
                 <span>{t('approvedCount', { count: approvedCount })}</span>
-                <span>{t('candidateCount', { count: candidateCount })}</span>
+                <span>{t('candidateCount', { count: disabledCount })}</span>
               </div>
             </div>
             {stewardMemoryError ? (

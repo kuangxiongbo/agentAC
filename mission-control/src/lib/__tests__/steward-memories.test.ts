@@ -19,7 +19,7 @@ describe('steward memories', () => {
 
   afterEach(() => db.close())
 
-  it('stores layered candidate memory with source, evidence and expiry', () => {
+  it('stores layered memory as active by default with source, evidence and expiry', () => {
     const memory = createStewardMemory({
       id: 'memory-1',
       workspaceId: 1,
@@ -36,13 +36,13 @@ describe('steward memories', () => {
       createdByType: 'steward_agent',
     }, db)
     expect(memory).toMatchObject({
-      status: 'candidate',
+      status: 'approved',
       scope_type: 'project',
       category: 'procedure',
       confidence: 0.72,
       source_refs: ['goal:release-1', 'task:42'],
     })
-    expect(listStewardMemories({ workspaceId: 1, tenantId: 1, status: 'candidate' }, db).total).toBe(1)
+    expect(listStewardMemories({ workspaceId: 1, tenantId: 1, status: 'approved' }, db).total).toBe(1)
   })
 
   it('supports correction, approval and immutable supersede history', () => {
@@ -64,7 +64,7 @@ describe('steward memories', () => {
       content: 'Prefer a five second response window.',
       confidence: 0.9,
     }, db)
-    expect(corrected).toMatchObject({ status: 'candidate', confidence: 0.9 })
+    expect(corrected).toMatchObject({ status: 'approved', confidence: 0.9 })
     expect(reviewStewardMemory({
       id: 'memory-old',
       workspaceId: 1,
@@ -91,6 +91,30 @@ describe('steward memories', () => {
     }, db)
     expect(getStewardMemory('memory-old', 1, db)?.status).toBe('superseded')
     expect(getStewardMemory('memory-new', 1, db)?.supersedes_id).toBe('memory-old')
+  })
+
+  it('supports reversible disable and restore', () => {
+    createStewardMemory({
+      id: 'memory-toggle', workspaceId: 1, scopeType: 'workspace', scopeId: '1',
+      category: 'fact', content: 'A reusable fact.', createdByType: 'steward_agent',
+    }, db)
+    expect(reviewStewardMemory({
+      id: 'memory-toggle', workspaceId: 1, action: 'disable', reviewer: '2',
+    }, db).status).toBe('rejected')
+    expect(reviewStewardMemory({
+      id: 'memory-toggle', workspaceId: 1, action: 'restore', reviewer: '2',
+    }, db).status).toBe('approved')
+  })
+
+  it('rejects unknown actions instead of changing memory state', () => {
+    createStewardMemory({
+      id: 'memory-action', workspaceId: 1, scopeType: 'workspace', scopeId: '1',
+      category: 'fact', content: 'A stable fact.', createdByType: 'steward_agent',
+    }, db)
+    expect(() => reviewStewardMemory({
+      id: 'memory-action', workspaceId: 1, action: 'unknown' as 'approve', reviewer: '2',
+    }, db)).toThrow('Invalid memory action')
+    expect(getStewardMemory('memory-action', 1, db)?.status).toBe('approved')
   })
 
   it('can explicitly clear a legacy zero expiry during review', () => {

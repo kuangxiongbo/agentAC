@@ -3,7 +3,7 @@ import Database from 'better-sqlite3'
 import { runMigrations } from '@/lib/migrations'
 import { createSupervisionGoal } from '@/lib/supervision-goals'
 import { extractStewardMemoryCandidates, runStewardMemoryLearning } from '@/lib/steward-memory-learning'
-import { listStewardMemories } from '@/lib/steward-memories'
+import { listStewardMemories, reviewStewardMemory } from '@/lib/steward-memories'
 
 describe('steward memory learning', () => {
   let db: Database.Database
@@ -68,13 +68,13 @@ describe('steward memory learning', () => {
     ],
   })
 
-  it('extracts candidates once per completed goal', async () => {
+  it('extracts active memories once per completed goal', async () => {
     completedGoal('goal-memory-1')
     const runJudge = vi.fn(async () => ({ reply: judgeReply, sessionId: 'steward-session', source: 'test' }))
     const first = await extractStewardMemoryCandidates({ goalId: 'goal-memory-1', workspaceId: 1 }, { runJudge }, db)
     expect(first).toMatchObject({ duplicate: false })
     expect(first.memories).toHaveLength(2)
-    expect(first.memories.every((memory) => memory.status === 'candidate')).toBe(true)
+    expect(first.memories.every((memory) => memory.status === 'approved')).toBe(true)
     expect(first.memories.every((memory) => memory.expires_at === null)).toBe(true)
     const duplicate = await extractStewardMemoryCandidates({ goalId: 'goal-memory-1', workspaceId: 1 }, { runJudge }, db)
     expect(duplicate).toEqual({ memories: [], duplicate: true })
@@ -126,7 +126,7 @@ describe('steward memory learning', () => {
     expect(capturedPrompt).toContain('[truncated]')
   })
 
-  it('promotes a procedure after three independent successful goals but not a preference', async () => {
+  it('keeps automatically learned procedures and preferences active across repeated evidence', async () => {
     const runJudge = vi.fn(async () => ({ reply: judgeReply, sessionId: 'steward-session', source: 'test' }))
     for (const id of ['goal-memory-1', 'goal-memory-2', 'goal-memory-3']) {
       completedGoal(id)
@@ -138,7 +138,23 @@ describe('steward memory learning', () => {
     expect(procedure).toMatchObject({ status: 'approved' })
     expect(procedure.source_refs).toHaveLength(3)
     expect(procedure.evidence).toHaveLength(3)
-    expect(preference.status).toBe('candidate')
+    expect(preference.status).toBe('approved')
+  })
+
+  it('does not reactivate a manually disabled memory when later goals repeat it', async () => {
+    const runJudge = vi.fn(async () => ({ reply: judgeReply, sessionId: 'steward-session', source: 'test' }))
+    completedGoal('goal-disable-1')
+    const first = await extractStewardMemoryCandidates({ goalId: 'goal-disable-1', workspaceId: 1 }, { runJudge }, db)
+    const procedure = first.memories.find((memory) => memory.category === 'procedure')!
+    reviewStewardMemory({ id: procedure.id, workspaceId: 1, action: 'disable', reviewer: '2' }, db)
+
+    completedGoal('goal-disable-2')
+    await extractStewardMemoryCandidates({ goalId: 'goal-disable-2', workspaceId: 1 }, { runJudge }, db)
+
+    const procedures = listStewardMemories({ workspaceId: 1, tenantId: 1, category: 'procedure' }, db).memories
+    expect(procedures).toHaveLength(1)
+    expect(procedures[0].status).toBe('rejected')
+    expect(procedures[0].source_refs).toHaveLength(2)
   })
 
   it('rejects a scope id invented by the model', async () => {

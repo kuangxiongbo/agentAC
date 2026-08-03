@@ -9,6 +9,7 @@ export type StewardMemoryScope = 'goal' | 'project' | 'user' | 'steward' | 'clie
 const CATEGORIES = new Set<StewardMemoryCategory>(['preference', 'fact', 'episode', 'procedure'])
 const SCOPES = new Set<StewardMemoryScope>(['goal', 'project', 'user', 'steward', 'client', 'workspace', 'tenant'])
 const STATUSES = new Set<StewardMemoryStatus>(['candidate', 'approved', 'rejected', 'expired', 'superseded'])
+const REVIEW_ACTIONS = new Set(['approve', 'restore', 'reject', 'disable', 'correct', 'expire', 'supersede'])
 
 interface StewardMemoryRow {
   id: string
@@ -122,7 +123,7 @@ export function createStewardMemory(
     JSON.stringify([...new Set(input.sourceRefs ?? [])]),
     JSON.stringify(input.evidence ?? []),
     input.confidence ?? 0.5,
-    input.status ?? 'candidate',
+    input.status ?? 'approved',
     input.supersedesId ?? null,
     input.effectiveAt ?? null,
     input.expiresAt ?? null,
@@ -193,7 +194,7 @@ export function listStewardMemories(input: {
 export function reviewStewardMemory(input: {
   id: string
   workspaceId: number
-  action: 'approve' | 'reject' | 'correct' | 'expire' | 'supersede'
+  action: 'approve' | 'restore' | 'reject' | 'disable' | 'correct' | 'expire' | 'supersede'
   reviewer: string
   content?: string
   summary?: string | null
@@ -201,6 +202,7 @@ export function reviewStewardMemory(input: {
   supersedesId?: string | null
   expiresAt?: number | null
 }, database?: Database.Database): StewardMemoryView {
+  if (!REVIEW_ACTIONS.has(input.action)) throw new Error('Invalid memory action')
   const db = dbOr(database)
   const current = getStewardMemory(input.id, input.workspaceId, db)
   if (!current) throw new Error('Memory not found')
@@ -210,7 +212,7 @@ export function reviewStewardMemory(input: {
   const now = Math.floor(Date.now() / 1000)
   db.transaction(() => {
     if (input.action === 'correct') {
-      if (current.status !== 'candidate') throw new Error('Only candidate memory can be corrected in place')
+      if (!['candidate', 'approved'].includes(current.status)) throw new Error('Only active memory can be corrected in place')
       const content = input.content?.trim()
       if (!content) throw new Error('Corrected memory content is required')
       db.prepare(`
@@ -221,9 +223,9 @@ export function reviewStewardMemory(input: {
       `).run(content, input.summary?.trim() || null, input.confidence ?? null, input.reviewer, now, current.id, current.workspace_id)
       return
     }
-    const nextStatus: StewardMemoryStatus = input.action === 'approve'
+    const nextStatus: StewardMemoryStatus = input.action === 'approve' || input.action === 'restore'
       ? 'approved'
-      : input.action === 'reject'
+      : input.action === 'reject' || input.action === 'disable'
         ? 'rejected'
         : input.action === 'expire'
           ? 'expired'
