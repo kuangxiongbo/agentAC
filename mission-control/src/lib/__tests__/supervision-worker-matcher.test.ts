@@ -77,6 +77,7 @@ describe('supervision worker matcher', () => {
     dependencies: [],
     required_capabilities: ['backend', 'database'],
     preferred_framework: 'codex-cli',
+    goal_criteria: ['sc-1'],
     acceptance_criteria: ['Unit tests pass'],
     risk: 'low',
   }

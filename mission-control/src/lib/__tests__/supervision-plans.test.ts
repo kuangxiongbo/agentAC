@@ -60,6 +60,7 @@ describe('supervision plans', () => {
         dependencies: [],
         required_capabilities: ['backend'],
         preferred_framework: 'codex-cli' as const,
+        goal_criteria: ['sc-1'],
         acceptance_criteria: ['Unit tests pass'],
         estimated_minutes: 30,
         risk: 'low' as const,
@@ -70,6 +71,7 @@ describe('supervision plans', () => {
         description: 'Run integration verification',
         dependencies: ['implement'],
         required_capabilities: ['testing'],
+        goal_criteria: ['sc-1'],
         acceptance_criteria: ['Integration tests pass'],
         risk: 'low' as const,
       },
@@ -85,6 +87,16 @@ describe('supervision plans', () => {
         { ...plan.tasks[1], dependencies: ['implement'] },
       ],
     }, getSupervisionGoal('goal-plan', 1, db)!.budget)).toThrow('PLAN_DEPENDENCY_CYCLE')
+  })
+
+  it('requires every goal criterion to be covered by at least one task', () => {
+    const goal = createGoal()
+    expect(() => validateSupervisionGoalPlan(plan, goal.budget, ['sc-1', 'sc-2']))
+      .toThrow('PLAN_GOAL_CRITERIA_UNCOVERED: sc-2')
+    expect(() => validateSupervisionGoalPlan({
+      ...plan,
+      tasks: [{ ...plan.tasks[0], goal_criteria: ['unknown'] }],
+    }, goal.budget, ['sc-1'])).toThrow('unknown goal criterion unknown')
   })
 
   it('saves an immutable plan and waits for approval', () => {

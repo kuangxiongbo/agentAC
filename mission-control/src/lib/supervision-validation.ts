@@ -78,6 +78,7 @@ export const supervisionPlanTaskSchema = z.object({
   dependencies: z.array(z.string().min(1).max(100)).max(50).default([]),
   required_capabilities: z.array(z.string().min(1).max(100)).max(30).default([]),
   preferred_framework: z.enum(['claude-code', 'codex-cli', 'hermes']).optional(),
+  goal_criteria: z.array(z.string().min(1).max(100)).min(1).max(50),
   acceptance_criteria: z.array(z.string().min(1).max(1000)).min(1).max(30),
   estimated_minutes: z.number().int().min(1).max(30 * 24 * 60).optional(),
   risk: z.enum(['low', 'medium', 'high', 'critical']).default('low'),

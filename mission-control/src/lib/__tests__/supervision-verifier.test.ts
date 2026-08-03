@@ -60,6 +60,7 @@ describe('supervision verifier', () => {
           description: 'Implement endpoint and tests',
           dependencies: [],
           required_capabilities: ['backend'],
+          goal_criteria: ['tests-pass'],
           acceptance_criteria: ['Automated tests pass'],
           risk: 'low',
         }],

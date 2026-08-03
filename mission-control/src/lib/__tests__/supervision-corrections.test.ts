@@ -63,6 +63,7 @@ describe('supervision corrections', () => {
           description: 'Implement endpoint and tests',
           dependencies: [],
           required_capabilities: ['backend'],
+          goal_criteria: ['sc-1'],
           acceptance_criteria: ['Tests pass'],
           risk: 'low',
         }],

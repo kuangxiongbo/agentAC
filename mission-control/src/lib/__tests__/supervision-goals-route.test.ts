@@ -103,6 +103,7 @@ describe('supervision goal routes', () => {
               description: 'Implement the release change',
               dependencies: [],
               required_capabilities: ['backend'],
+              goal_criteria: ['sc-1'],
               acceptance_criteria: ['Tests pass'],
               risk: 'low',
             }],

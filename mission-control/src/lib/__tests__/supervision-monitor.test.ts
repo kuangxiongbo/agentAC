@@ -68,6 +68,7 @@ describe('supervision monitor', () => {
           description: 'Implement only the expected endpoint',
           dependencies: [],
           required_capabilities: ['backend'],
+          goal_criteria: ['sc-1'],
           acceptance_criteria: ['Feature tests pass'],
           risk: 'low',
         }],

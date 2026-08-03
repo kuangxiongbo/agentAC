@@ -236,18 +236,29 @@ export async function extractStewardMemoryCandidates(
 }
 
 export async function runStewardMemoryLearning(
-  input: { workspaceId?: number; limit?: number } = {},
-  dependencies: { runJudge?: JudgeRunner } = {},
+  input: { workspaceId?: number; limit?: number; retryCooldownSeconds?: number } = {},
+  dependencies: { runJudge?: JudgeRunner; now?: () => number } = {},
   database?: Database.Database,
-): Promise<{ processed: number; candidates: number; errors: string[] }> {
+): Promise<{ processed: number; candidates: number; skipped_cooldown: number; errors: string[] }> {
   const db = dbOr(database)
+  const now = dependencies.now?.() ?? Math.floor(Date.now() / 1000)
+  const retryCooldownSeconds = Math.min(Math.max(input.retryCooldownSeconds ?? 900, 0), 86400)
   const goals = listSupervisionGoals({
     workspaceId: input.workspaceId ?? 1,
     status: 'completed',
     limit: Math.min(Math.max(input.limit ?? 10, 1), 50),
   }, db).goals
-  const summary = { processed: 0, candidates: 0, errors: [] as string[] }
+  const summary = { processed: 0, candidates: 0, skipped_cooldown: 0, errors: [] as string[] }
   for (const goal of goals) {
+    const failureMarker = `goal:${goal.id}:memory-candidates-extraction-failed`
+    const recentFailure = db.prepare(`
+      SELECT created_at FROM supervision_events
+      WHERE workspace_id = ? AND idempotency_key = ? AND created_at > ?
+    `).get(goal.workspace_id, failureMarker, now - retryCooldownSeconds) as { created_at: number } | undefined
+    if (recentFailure && retryCooldownSeconds > 0) {
+      summary.skipped_cooldown++
+      continue
+    }
     try {
       const result = await extractStewardMemoryCandidates({ goalId: goal.id, workspaceId: goal.workspace_id }, dependencies, db)
       if (!result.duplicate) {
@@ -255,7 +266,35 @@ export async function runStewardMemoryLearning(
         summary.candidates += result.memories.length
       }
     } catch (error) {
-      summary.errors.push(`goal=${goal.id}: ${error instanceof Error ? error.message : 'memory extraction failed'}`)
+      const message = error instanceof Error ? error.message : 'memory extraction failed'
+      summary.errors.push(`goal=${goal.id}: ${message}`)
+      const previous = db.prepare(`
+        SELECT action_json FROM supervision_events WHERE workspace_id = ? AND idempotency_key = ?
+      `).get(goal.workspace_id, failureMarker) as { action_json: string | null } | undefined
+      let attempts = 1
+      try {
+        attempts = Number(JSON.parse(previous?.action_json || '{}').attempts || 0) + 1
+      } catch {}
+      db.prepare(`
+        INSERT INTO supervision_events (
+          workspace_id, tenant_id, goal_id, event_type, actor_type, actor_id,
+          decision, reason, action_json, idempotency_key, created_at
+        ) VALUES (?, ?, ?, 'memory_candidates_extraction_failed', 'steward_agent', ?,
+          'failed', ?, ?, ?, ?)
+        ON CONFLICT(workspace_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO UPDATE SET
+          reason = excluded.reason,
+          action_json = excluded.action_json,
+          created_at = excluded.created_at
+      `).run(
+        goal.workspace_id,
+        goal.tenant_id,
+        goal.id,
+        String(goal.steward_local_agent_id),
+        message.slice(0, 5000),
+        JSON.stringify({ attempts, retry_after: now + retryCooldownSeconds }),
+        failureMarker,
+        now,
+      )
     }
   }
   return summary

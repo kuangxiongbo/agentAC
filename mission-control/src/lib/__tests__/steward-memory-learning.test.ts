@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { runMigrations } from '@/lib/migrations'
 import { createSupervisionGoal } from '@/lib/supervision-goals'
-import { extractStewardMemoryCandidates } from '@/lib/steward-memory-learning'
+import { extractStewardMemoryCandidates, runStewardMemoryLearning } from '@/lib/steward-memory-learning'
 import { listStewardMemories } from '@/lib/steward-memories'
 
 describe('steward memory learning', () => {
@@ -115,5 +115,33 @@ describe('steward memory learning', () => {
       goalId: 'goal-invalid-scope',
       workspaceId: 1,
     }, { runJudge }, db)).rejects.toThrow('MEMORY_SCOPE_ID_INVALID')
+  })
+
+  it('audits failures, cools down scheduled retries, and recovers later', async () => {
+    completedGoal('goal-retry')
+    let now = 1_800_000_000
+    const runJudge = vi.fn()
+      .mockRejectedValueOnce(new Error('EDGE_STEWARD_OFFLINE'))
+      .mockResolvedValue({ reply: judgeReply, sessionId: 'steward-session', source: 'test' })
+
+    const failed = await runStewardMemoryLearning({}, { runJudge, now: () => now }, db)
+    expect(failed).toMatchObject({ processed: 0, candidates: 0, skipped_cooldown: 0 })
+    expect(failed.errors[0]).toContain('EDGE_STEWARD_OFFLINE')
+    const failureEvent = db.prepare(`
+      SELECT event_type, reason, action_json FROM supervision_events
+      WHERE goal_id = 'goal-retry' AND event_type = 'memory_candidates_extraction_failed'
+    `).get() as { event_type: string; reason: string; action_json: string }
+    expect(failureEvent.reason).toBe('EDGE_STEWARD_OFFLINE')
+    expect(JSON.parse(failureEvent.action_json)).toMatchObject({ attempts: 1, retry_after: now + 900 })
+
+    now += 60
+    const cooled = await runStewardMemoryLearning({}, { runJudge, now: () => now }, db)
+    expect(cooled).toMatchObject({ processed: 0, skipped_cooldown: 1, errors: [] })
+    expect(runJudge).toHaveBeenCalledOnce()
+
+    now += 900
+    const recovered = await runStewardMemoryLearning({}, { runJudge, now: () => now }, db)
+    expect(recovered).toMatchObject({ processed: 1, candidates: 2, skipped_cooldown: 0, errors: [] })
+    expect(runJudge).toHaveBeenCalledTimes(2)
   })
 })

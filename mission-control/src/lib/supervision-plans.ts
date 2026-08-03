@@ -18,6 +18,7 @@ export interface SupervisionPlanTask {
   dependencies: string[]
   required_capabilities: string[]
   preferred_framework?: 'claude-code' | 'codex-cli' | 'hermes'
+  goal_criteria: string[]
   acceptance_criteria: string[]
   estimated_minutes?: number
   risk: 'low' | 'medium' | 'high' | 'critical'
@@ -94,6 +95,7 @@ function assertAcyclic(tasks: SupervisionPlanTask[]) {
 export function validateSupervisionGoalPlan(
   raw: unknown,
   budget: SupervisionGoalBudget,
+  goalCriterionIds: string[] = [],
 ): SupervisionGoalPlanDraft {
   const parsed = supervisionGoalPlanDraftSchema.safeParse(raw)
   if (!parsed.success) {
@@ -103,6 +105,22 @@ export function validateSupervisionGoalPlan(
     throw new Error(`GOAL_BUDGET_EXCEEDED: plan has ${parsed.data.tasks.length} tasks, max is ${budget.max_tasks}`)
   }
   assertAcyclic(parsed.data.tasks)
+  if (goalCriterionIds.length > 0) {
+    const expected = new Set(goalCriterionIds)
+    const covered = new Set<string>()
+    for (const task of parsed.data.tasks) {
+      for (const criterionId of task.goal_criteria) {
+        if (!expected.has(criterionId)) {
+          throw new Error(`PLAN_SCHEMA_INVALID: unknown goal criterion ${criterionId}`)
+        }
+        covered.add(criterionId)
+      }
+    }
+    const missing = goalCriterionIds.filter((criterionId) => !covered.has(criterionId))
+    if (missing.length > 0) {
+      throw new Error(`PLAN_GOAL_CRITERIA_UNCOVERED: ${missing.join(', ')}`)
+    }
+  }
   return parsed.data
 }
 
@@ -119,6 +137,7 @@ function buildPlanPrompt(goal: SupervisionGoalView, memoryContext = ''): string 
     "dependencies": ["前置 logical_key"],
     "required_capabilities": ["能力标签"],
     "preferred_framework": "codex-cli|claude-code|hermes",
+    "goal_criteria": ["该任务负责达成的成功标准 ID"],
     "acceptance_criteria": ["可验证条件"],
     "estimated_minutes": 30,
     "risk": "low|medium|high|critical"
@@ -127,10 +146,11 @@ function buildPlanPrompt(goal: SupervisionGoalView, memoryContext = ''): string 
 
 规则：
 1. 最多 ${goal.budget.max_tasks} 个任务，依赖必须无环。
-2. 每个任务至少一条可验证验收标准。
-3. 不把值守 Agent 自己作为执行者。
-4. 高风险动作只可标记风险，不能假设已获批准。
-5. 任务要足够独立，便于分给不同 Worker。
+2. 每个任务必须通过 goal_criteria 映射到至少一条目标成功标准，整个计划必须覆盖全部成功标准。
+3. 每个任务至少一条可验证验收标准，写清证据类型、获取方式和通过阈值，不能只写“完成”或“检查通过”。
+4. 不把值守 Agent 自己作为执行者。
+5. 高风险动作只可标记风险，不能假设已获批准。
+6. 任务要足够独立，便于分给不同 Worker；最后必须能用独立证据验收目标效果，而不只是验收产出物存在。
 
 目标：${goal.title}
 目标描述：${goal.objective}
@@ -157,7 +177,11 @@ export function saveSupervisionGoalPlan(input: {
   const goal = getSupervisionGoal(input.goalId, input.workspaceId, db)
   if (!goal) throw new Error('Goal not found')
   if (goal.status !== 'planning') throw new Error(`Invalid goal state for planning: ${goal.status}`)
-  const plan = validateSupervisionGoalPlan(input.draft, goal.budget)
+  const plan = validateSupervisionGoalPlan(
+    input.draft,
+    goal.budget,
+    goal.success_criteria.map((criterion) => criterion.id),
+  )
   const now = Math.floor(Date.now() / 1000)
   return db.transaction(() => {
     const next = (db.prepare(`
