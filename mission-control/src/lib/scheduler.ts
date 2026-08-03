@@ -537,7 +537,7 @@ async function tick() {
             const errorCount = r.errors.length + corrections.errors.length + verifications.errors.length + learning.errors.length
             return {
               ok: errorCount === 0,
-              message: `Scanned ${r.goals_scanned} goals, activated ${r.tasks_activated} dependent tasks, blocked ${budgets.blocked} over budget, expired ${forgotten.expired + forgotten.harmful} memories, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}, learned ${learning.candidates} candidates, memory cooldown ${learning.skipped_cooldown}${errorCount ? `, ${errorCount} errors` : ''}`,
+              message: `Scanned ${r.goals_scanned} goals, activated ${r.tasks_activated} dependent tasks, blocked ${budgets.blocked} over budget, expired ${forgotten.expired + forgotten.harmful} memories, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}, learned ${learning.candidates} candidates, memory cooldown ${learning.skipped_cooldown}, memory exhausted ${learning.skipped_exhausted}${errorCount ? `, ${errorCount} errors` : ''}`,
             }
           })()
         : await runCleanup()
@@ -619,7 +619,7 @@ export async function triggerTask(taskId: string): Promise<{ ok: boolean; messag
     const errorCount = r.errors.length + corrections.errors.length + verifications.errors.length + learning.errors.length
     return {
       ok: errorCount === 0,
-      message: `Scanned ${r.goals_scanned} goals, activated ${r.tasks_activated} dependent tasks, blocked ${budgets.blocked} over budget, expired ${forgotten.expired + forgotten.harmful} memories, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}, learned ${learning.candidates} candidates, memory cooldown ${learning.skipped_cooldown}${errorCount ? `, ${errorCount} errors` : ''}`,
+      message: `Scanned ${r.goals_scanned} goals, activated ${r.tasks_activated} dependent tasks, blocked ${budgets.blocked} over budget, expired ${forgotten.expired + forgotten.harmful} memories, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}, learned ${learning.candidates} candidates, memory cooldown ${learning.skipped_cooldown}, memory exhausted ${learning.skipped_exhausted}${errorCount ? `, ${errorCount} errors` : ''}`,
     }
   })()
   return { ok: false, message: `Unknown task: ${taskId}` }

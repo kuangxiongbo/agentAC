@@ -1,6 +1,5 @@
 import type Database from 'better-sqlite3'
 import { requestBridgeClientStewardJudge } from './bridge-server'
-import { consumeSupervisionModelCall } from './supervision-budget'
 import { getDatabase } from './db'
 import { getSupervisionGoal, listSupervisionGoals, type SupervisionGoalView } from './supervision-goals'
 import {
@@ -204,7 +203,6 @@ export async function extractStewardMemoryCandidates(
   `).get(goal.workspace_id, marker) as { action_json: string | null } | undefined
   if (existingMarker) return { memories: [], duplicate: true }
   const context = learningContext(db, goal)
-  consumeSupervisionModelCall({ goalId: goal.id, workspaceId: goal.workspace_id }, db)
   const runJudge = dependencies.runJudge ?? requestBridgeClientStewardJudge
   const result = await runJudge({
     clientId: goal.client_id,
@@ -236,26 +234,35 @@ export async function extractStewardMemoryCandidates(
 }
 
 export async function runStewardMemoryLearning(
-  input: { workspaceId?: number; limit?: number; retryCooldownSeconds?: number } = {},
+  input: { workspaceId?: number; limit?: number; retryCooldownSeconds?: number; maxScheduledAttempts?: number } = {},
   dependencies: { runJudge?: JudgeRunner; now?: () => number } = {},
   database?: Database.Database,
-): Promise<{ processed: number; candidates: number; skipped_cooldown: number; errors: string[] }> {
+): Promise<{ processed: number; candidates: number; skipped_cooldown: number; skipped_exhausted: number; errors: string[] }> {
   const db = dbOr(database)
   const now = dependencies.now?.() ?? Math.floor(Date.now() / 1000)
   const retryCooldownSeconds = Math.min(Math.max(input.retryCooldownSeconds ?? 900, 0), 86400)
+  const maxScheduledAttempts = Math.min(Math.max(input.maxScheduledAttempts ?? 3, 1), 20)
   const goals = listSupervisionGoals({
     workspaceId: input.workspaceId ?? 1,
     status: 'completed',
     limit: Math.min(Math.max(input.limit ?? 10, 1), 50),
   }, db).goals
-  const summary = { processed: 0, candidates: 0, skipped_cooldown: 0, errors: [] as string[] }
+  const summary = { processed: 0, candidates: 0, skipped_cooldown: 0, skipped_exhausted: 0, errors: [] as string[] }
   for (const goal of goals) {
     const failureMarker = `goal:${goal.id}:memory-candidates-extraction-failed`
     const recentFailure = db.prepare(`
-      SELECT created_at FROM supervision_events
-      WHERE workspace_id = ? AND idempotency_key = ? AND created_at > ?
-    `).get(goal.workspace_id, failureMarker, now - retryCooldownSeconds) as { created_at: number } | undefined
-    if (recentFailure && retryCooldownSeconds > 0) {
+      SELECT created_at, action_json FROM supervision_events
+      WHERE workspace_id = ? AND idempotency_key = ?
+    `).get(goal.workspace_id, failureMarker) as { created_at: number; action_json: string | null } | undefined
+    let scheduledAttempts = 0
+    try {
+      scheduledAttempts = Number(JSON.parse(recentFailure?.action_json || '{}').attempts || 0)
+    } catch {}
+    if (scheduledAttempts >= maxScheduledAttempts) {
+      summary.skipped_exhausted++
+      continue
+    }
+    if (recentFailure && recentFailure.created_at > now - retryCooldownSeconds && retryCooldownSeconds > 0) {
       summary.skipped_cooldown++
       continue
     }
@@ -271,10 +278,10 @@ export async function runStewardMemoryLearning(
       const previous = db.prepare(`
         SELECT action_json FROM supervision_events WHERE workspace_id = ? AND idempotency_key = ?
       `).get(goal.workspace_id, failureMarker) as { action_json: string | null } | undefined
-      let attempts = 1
-      try {
-        attempts = Number(JSON.parse(previous?.action_json || '{}').attempts || 0) + 1
-      } catch {}
+      let attempts = scheduledAttempts + 1
+      if (previous && scheduledAttempts === 0) {
+        try { attempts = Number(JSON.parse(previous.action_json || '{}').attempts || 0) + 1 } catch {}
+      }
       db.prepare(`
         INSERT INTO supervision_events (
           workspace_id, tenant_id, goal_id, event_type, actor_type, actor_id,

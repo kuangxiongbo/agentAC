@@ -80,6 +80,22 @@ describe('steward memory learning', () => {
     expect(runJudge).toHaveBeenCalledOnce()
   })
 
+  it('learns after completion even when execution runtime and model-call budgets are exhausted', async () => {
+    completedGoal('goal-exhausted-execution')
+    db.prepare(`
+      UPDATE supervision_goals
+      SET created_at = 1, usage_json = '{"model_calls":2,"estimated_cost":0}'
+      WHERE id = 'goal-exhausted-execution'
+    `).run()
+    const runJudge = vi.fn(async () => ({ reply: judgeReply, sessionId: 'steward-session', source: 'test' }))
+    const result = await extractStewardMemoryCandidates({
+      goalId: 'goal-exhausted-execution',
+      workspaceId: 1,
+    }, { runJudge }, db)
+    expect(result.memories).toHaveLength(2)
+    expect(runJudge).toHaveBeenCalledOnce()
+  })
+
   it('promotes a procedure after three independent successful goals but not a preference', async () => {
     const runJudge = vi.fn(async () => ({ reply: judgeReply, sessionId: 'steward-session', source: 'test' }))
     for (const id of ['goal-memory-1', 'goal-memory-2', 'goal-memory-3']) {
@@ -125,7 +141,7 @@ describe('steward memory learning', () => {
       .mockResolvedValue({ reply: judgeReply, sessionId: 'steward-session', source: 'test' })
 
     const failed = await runStewardMemoryLearning({}, { runJudge, now: () => now }, db)
-    expect(failed).toMatchObject({ processed: 0, candidates: 0, skipped_cooldown: 0 })
+    expect(failed).toMatchObject({ processed: 0, candidates: 0, skipped_cooldown: 0, skipped_exhausted: 0 })
     expect(failed.errors[0]).toContain('EDGE_STEWARD_OFFLINE')
     const failureEvent = db.prepare(`
       SELECT event_type, reason, action_json FROM supervision_events
@@ -141,7 +157,20 @@ describe('steward memory learning', () => {
 
     now += 900
     const recovered = await runStewardMemoryLearning({}, { runJudge, now: () => now }, db)
-    expect(recovered).toMatchObject({ processed: 1, candidates: 2, skipped_cooldown: 0, errors: [] })
+    expect(recovered).toMatchObject({ processed: 1, candidates: 2, skipped_cooldown: 0, skipped_exhausted: 0, errors: [] })
     expect(runJudge).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops automatic retries after the scheduled attempt limit', async () => {
+    completedGoal('goal-retry-limit')
+    const runJudge = vi.fn(async () => { throw new Error('EDGE_STEWARD_OFFLINE') })
+    let now = 1_800_000_000
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await runStewardMemoryLearning({ retryCooldownSeconds: 0 }, { runJudge, now: () => now++ }, db)
+      expect(result.errors).toHaveLength(1)
+    }
+    const exhausted = await runStewardMemoryLearning({ retryCooldownSeconds: 0 }, { runJudge, now: () => now }, db)
+    expect(exhausted).toMatchObject({ skipped_exhausted: 1, errors: [] })
+    expect(runJudge).toHaveBeenCalledTimes(3)
   })
 })
