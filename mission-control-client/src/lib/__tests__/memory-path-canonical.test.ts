@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canonicalizeMemoryRelativePath } from '../memory-path'
+import { canonicalizeMemoryRelativePath, memoryPathForMode } from '../memory-path'
 
 describe('canonical memory paths', () => {
   it('accepts canonical relative paths', () => {
@@ -10,4 +10,9 @@ describe('canonical memory paths', () => {
     'rejects non-canonical path %s',
     (value) => expect(() => canonicalizeMemoryRelativePath(value)).toThrow(),
   )
+
+  it('does not expose a local memory path in central mode', () => {
+    expect(memoryPathForMode('/nonexistent/.openclaw/memory', true)).toBe('')
+    expect(memoryPathForMode('/home/user/.openclaw/memory', false)).toBe('/home/user/.openclaw/memory')
+  })
 })

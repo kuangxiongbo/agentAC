@@ -10,6 +10,10 @@ const requireHumanWatchEntitlement = vi.fn()
 vi.mock('@/lib/auth', () => ({ requireRole }))
 vi.mock('@/lib/rate-limit', () => ({ mutationLimiter }))
 vi.mock('@/lib/human-watch-policy', () => ({ requireHumanWatchEntitlement }))
+vi.mock('@/lib/bridge-server', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/lib/bridge-server')>(),
+  isBridgeClientOnline: () => true,
+}))
 
 describe('supervision goal routes', () => {
   let db: Database.Database

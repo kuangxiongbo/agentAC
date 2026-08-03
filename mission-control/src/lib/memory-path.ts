@@ -9,7 +9,11 @@ import { dirname, sep } from 'path'
 import { config } from '@/lib/config'
 import { resolveWithin } from '@/lib/paths'
 
-export const MEMORY_PATH = config.memoryDir
+export function memoryPathForMode(memoryDir: string, centralMode: boolean): string {
+  return centralMode ? '' : memoryDir
+}
+
+export const MEMORY_PATH = memoryPathForMode(config.memoryDir, config.centralMode)
 export const MEMORY_ALLOWED_PREFIXES = (config.memoryAllowedPrefixes || []).map((p) => p.replace(/\\/g, '/'))
 
 export function canonicalizeMemoryRelativePath(value: unknown): string {

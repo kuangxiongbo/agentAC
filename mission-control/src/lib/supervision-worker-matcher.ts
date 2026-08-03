@@ -3,7 +3,6 @@ import { isBridgeClientOnline } from './bridge-server'
 import { getDatabase } from './db'
 import { getSupervisionGoal } from './supervision-goals'
 import type { SupervisionPlanTask } from './supervision-plans'
-import { listSyncClients } from './sync-clients'
 
 const SUPPORTED_FRAMEWORKS = new Set(['claude-code', 'codex-cli', 'hermes'])
 const UNAVAILABLE_STATUSES = new Set(['error', 'disabled'])
@@ -138,13 +137,10 @@ function findMirror(
   return { row: null, config: { capabilities: [], highRiskAllowed: false, projectIds: [] } }
 }
 
-function defaultClientOnline(workspaceId: number): (clientId: string) => boolean {
-  const connected = new Set(
-    listSyncClients(workspaceId)
-      .filter((client) => client.status === 'connected')
-      .map((client) => client.client_id),
-  )
-  return (clientId) => isBridgeClientOnline(clientId) || connected.has(clientId)
+function defaultClientOnline(): (clientId: string) => boolean {
+  // Supervision dispatch requires a live WebSocket to deliver the reliable
+  // mailbox message. A recent sync heartbeat can outlive a dropped socket.
+  return (clientId) => isBridgeClientOnline(clientId)
 }
 
 export function matchSupervisionWorker(
@@ -160,7 +156,7 @@ export function matchSupervisionWorker(
   const allowedWorkerIds = new Set(goal.allowed_worker_ids)
   const excludedWorkerIds = new Set(input.excludedWorkerIds ?? [])
   const maxActiveTasks = Math.max(1, input.maxActiveTasks ?? 3)
-  const isClientOnline = dependencies.isClientOnline ?? defaultClientOnline(input.workspaceId)
+  const isClientOnline = dependencies.isClientOnline ?? defaultClientOnline()
   const now = dependencies.nowSeconds ?? Math.floor(Date.now() / 1000)
 
   const indexed = db.prepare(`

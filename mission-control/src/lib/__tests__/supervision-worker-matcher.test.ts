@@ -143,6 +143,24 @@ describe('supervision worker matcher', () => {
     ]))
   })
 
+  it('does not treat a recent sync heartbeat as a live dispatch connection', () => {
+    createGoal([11])
+    db.prepare(`
+      INSERT INTO sync_clients (
+        client_id, client_name, workspace_id, agent_count, last_seen,
+        last_sync_source, created_at, updated_at
+      ) VALUES ('edge-a', 'Mac', 1, 1, unixepoch(), 'push', unixepoch(), unixepoch())
+    `).run()
+
+    const result = matchSupervisionWorker({ goalId: 'goal-match', workspaceId: 1, task }, {}, db)
+
+    expect(result.selected).toBeNull()
+    expect(result.rejected).toContainEqual(expect.objectContaining({
+      local_agent_id: 11,
+      reason: 'client_offline',
+    }))
+  })
+
   it('allows a resumable offline worker when the bridge is live', () => {
     createGoal([13])
     db.prepare(`
