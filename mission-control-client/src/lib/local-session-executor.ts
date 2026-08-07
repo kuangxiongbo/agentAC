@@ -863,6 +863,17 @@ function resolveExecutionSandbox(options: LocalSessionExecutionOptions) {
   }))
 }
 
+function resolveCodexModelProviderArgs(agent: LocalRuntimeAgentRef | null | undefined): string[] {
+  const config = parseConfigRecord(agent?.config)
+  const provider = asTrimmedString(config?.codex_model_provider)
+  if (!provider) return []
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(provider)) {
+    logger.warn({ agentId: agent?.id, provider }, 'Ignoring invalid agent Codex model provider')
+    return []
+  }
+  return ['-c', `model_provider=${JSON.stringify(provider)}`]
+}
+
 function buildAgentExecutionOptions(
   agent: LocalRuntimeAgentRef,
   workingDirectory?: string,
@@ -890,7 +901,8 @@ async function runCodexExecCommand(
   options: LocalSessionExecutionOptions,
 ): Promise<{ stdout: string; stderr: string }> {
   const permissionMode = resolveExecutionPermissionMode(options)
-  const mcpArgs = withCodexMcpConfigArgs(args, {
+  const providerArgs = resolveCodexModelProviderArgs(options.agent)
+  const mcpArgs = withCodexMcpConfigArgs([...providerArgs, ...args], {
     managedByPlatform: options.managedByPlatform,
     agentId: options.agent?.id,
     agentName: options.agent?.name ?? null,

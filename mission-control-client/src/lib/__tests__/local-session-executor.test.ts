@@ -254,6 +254,7 @@ describe('local-session-executor', () => {
       config: JSON.stringify({
         session_mode: 'dedicated',
         session_state: 'ready',
+        codex_model_provider: 'OpenAI3',
         primary_session_key: '019ed56d-1f38-7983-b79c-87543322e549',
         mc_session_project_path: '/Users/kuangxb/.e-agent-client/agent-sessions/6',
       }),
@@ -275,6 +276,8 @@ describe('local-session-executor', () => {
     expect(runCommand).toHaveBeenCalledWith(
       expect.any(String),
       expect.arrayContaining([
+        '-c',
+        'model_provider="OpenAI3"',
         'exec',
         'resume',
         '019ed56d-1f38-7983-b79c-87543322e549',
@@ -539,7 +542,11 @@ describe('local-session-executor', () => {
       name: 'backend',
       framework: 'codex',
       session_key: null,
-      config: JSON.stringify({ session_mode: 'dedicated', session_state: 'pending' }),
+      config: JSON.stringify({
+        session_mode: 'dedicated',
+        session_state: 'pending',
+        codex_model_provider: 'OpenAI3',
+      }),
       workspace_path: '/tmp',
       source: 'user',
       parent_id: 4,
@@ -562,6 +569,8 @@ describe('local-session-executor', () => {
         expect.stringContaining('mcp_servers.mission_control.args='),
         '-c',
         expect.stringContaining('mcp_servers.mission_control.env='),
+        '-c',
+        'model_provider="OpenAI3"',
         'exec',
         expect.stringContaining('Now respond to the following user message in character:'),
         '--skip-git-repo-check',
