@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const executeBoundLocalAgentPrompt = vi.fn()
+const invalidateAgentDedicatedSession = vi.fn()
 const getLocalSessionKindForFramework = vi.fn((framework: string | null) => {
   if (framework === 'claude') return 'claude-code'
   if (framework === 'codex') return 'codex-cli'
@@ -24,6 +25,7 @@ vi.mock('@/lib/db', () => ({
 vi.mock('@/lib/local-session-executor', () => ({
   executeBoundLocalAgentPrompt,
   getLocalSessionKindForFramework,
+  invalidateAgentDedicatedSession,
 }))
 
 vi.mock('@/lib/session-transcript', () => ({
@@ -35,6 +37,7 @@ describe('human-watch-judge', () => {
     vi.stubEnv('OPENAI_API_KEY', '')
     vi.resetModules()
     executeBoundLocalAgentPrompt.mockReset()
+    invalidateAgentDedicatedSession.mockReset()
     getLocalSessionKindForFramework.mockClear()
     readLocalSessionTranscriptPage.mockReset()
     prepare.mockClear()
@@ -54,6 +57,7 @@ describe('human-watch-judge', () => {
   })
 
   afterEach(() => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
     vi.unstubAllEnvs()
   })
@@ -136,6 +140,45 @@ describe('human-watch-judge', () => {
     await expect(runStewardJudgeOnEdge(9, 'Worker 需要确认下一步。'))
       .rejects
       .toThrow('Judge session returned runtime error')
+  })
+
+  it('reprovisions once when the bound judge session returns an empty reply', async () => {
+    vi.useFakeTimers()
+    agentRow = {
+      ...agentRow,
+      framework: 'codex',
+      session_key: 'stale-judge-session',
+    }
+    readLocalSessionTranscriptPage.mockReturnValue({ messages: [] })
+    executeBoundLocalAgentPrompt
+      .mockResolvedValueOnce({
+        reply: 'Session continued, but no text response was returned.',
+        sessionId: 'stale-judge-session',
+      })
+      .mockResolvedValueOnce({
+        reply: '{"decision":"aligned","reason":"evidence matches"}',
+        sessionId: 'replacement-judge-session',
+      })
+
+    const { runStewardJudgeOnEdge } = await import('@/lib/human-watch-judge')
+    const pending = runStewardJudgeOnEdge(9, 'Review the Worker evidence.')
+    await vi.runAllTimersAsync()
+    const result = await pending
+
+    expect(invalidateAgentDedicatedSession).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 9, session_key: 'stale-judge-session' }),
+      'Judge session returned empty reply',
+    )
+    expect(executeBoundLocalAgentPrompt).toHaveBeenCalledTimes(2)
+    expect(executeBoundLocalAgentPrompt).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: 9, session_key: null }),
+      'Review the Worker evidence.',
+      expect.objectContaining({ timeoutMs: 600000 }),
+    )
+    expect(result).toEqual({
+      reply: '{"decision":"aligned","reason":"evidence matches"}',
+      sessionId: 'replacement-judge-session',
+    })
   })
 
   it('accepts repeated steward text when a new assistant message was added', async () => {

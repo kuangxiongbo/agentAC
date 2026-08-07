@@ -7,6 +7,7 @@ import { parse as parseToml } from 'smol-toml'
 import {
   executeBoundLocalAgentPrompt,
   getLocalSessionKindForFramework,
+  invalidateAgentDedicatedSession,
 } from './local-session-executor'
 import { isHumanWatchAgent } from './human-watch-helpers'
 import { readLocalSessionTranscriptPage } from './session-transcript'
@@ -185,7 +186,27 @@ export async function runStewardJudgeOnEdge(
     }
   }
   if (!reply || reply === EMPTY_SESSION_REPLY) {
-    throw new Error('Judge session returned empty reply')
+    logger.warn(
+      { agentId: agent.id, sessionKey: resultSessionId || sessionKey || null },
+      '[HumanWatch] Judge session returned empty reply; reprovisioning once',
+    )
+    invalidateAgentDedicatedSession(agent, 'Judge session returned empty reply')
+    const retry = await executeBoundLocalAgentPrompt(
+      { ...agent, session_key: null },
+      trimmedPrompt,
+      { timeoutMs: STEWARD_JUDGE_EXECUTION_TIMEOUT_MS },
+    )
+    reply = String(retry.reply || '').trim()
+    if (!reply || reply === EMPTY_SESSION_REPLY) {
+      throw new Error('Judge session returned empty reply after reprovision')
+    }
+    if (isStewardJudgeRuntimeError(reply)) {
+      throw new Error(`Judge session returned runtime error after reprovision: ${reply.slice(0, 160)}`)
+    }
+    return {
+      reply,
+      sessionId: String(retry.sessionId || '').trim(),
+    }
   }
   if (isStewardJudgeRuntimeError(reply)) {
     throw new Error(`Judge session returned runtime error: ${reply.slice(0, 160)}`)

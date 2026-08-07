@@ -1960,6 +1960,24 @@ export async function executeBoundLocalAgentPrompt(
   )
 }
 
+export function invalidateAgentDedicatedSession(
+  agentInput: LocalRuntimeAgentRef,
+  reason: string,
+): void {
+  const freshAgent = getFreshAgentRecord(agentInput)
+  const roleHash = computeAgentRoleHash(freshAgent)
+  persistAgentSessionBinding(freshAgent, {
+    sessionKey: null,
+    state: 'pending',
+    roleHash,
+    sessionBootstrapHash: null,
+    sessionBootstrapState: 'pending',
+    sessionBootstrapError: null,
+    lastSessionError: reason,
+    status: 'idle',
+  })
+}
+
 function notifyPromptLifecycle(
   kind: LocalSessionKind,
   sessionId: string | null | undefined,
