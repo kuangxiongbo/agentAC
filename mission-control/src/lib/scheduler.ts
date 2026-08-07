@@ -19,6 +19,7 @@ import { runSupervisionMonitor } from './supervision-monitor'
 import { runSupervisionCorrections } from './supervision-corrections'
 import { runSupervisionVerifications } from './supervision-verifier'
 import { enforceSupervisionBudgets } from './supervision-budget'
+import { runSupervisionAutoPlanning } from './supervision-plans'
 import { runStewardMemoryLearning } from './steward-memory-learning'
 import { forgetStewardMemories } from './steward-memory-search'
 
@@ -530,14 +531,15 @@ async function tick() {
         : id === 'supervision_monitor' ? await (async () => {
             const budgets = enforceSupervisionBudgets()
             const forgotten = forgetStewardMemories()
+            const planning = await runSupervisionAutoPlanning()
             const r = await runSupervisionMonitor()
             const corrections = runSupervisionCorrections()
             const verifications = await runSupervisionVerifications()
             const learning = await runStewardMemoryLearning()
-            const errorCount = r.errors.length + corrections.errors.length + verifications.errors.length + learning.errors.length
+            const errorCount = planning.errors.length + r.errors.length + corrections.errors.length + verifications.errors.length + learning.errors.length
             return {
               ok: errorCount === 0,
-              message: `Scanned ${r.goals_scanned} goals, activated ${r.tasks_activated} dependent tasks, blocked ${budgets.blocked} over budget, expired ${forgotten.expired + forgotten.harmful} memories, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}, learned ${learning.candidates} candidates, memory cooldown ${learning.skipped_cooldown}, memory exhausted ${learning.skipped_exhausted}${errorCount ? `, ${errorCount} errors` : ''}`,
+              message: `Auto-planned ${planning.planned}/${planning.processed} goals (offline ${planning.skipped_offline}, cooldown ${planning.skipped_cooldown}, exhausted ${planning.skipped_exhausted}), scanned ${r.goals_scanned} goals, activated ${r.tasks_activated} dependent tasks, blocked ${budgets.blocked} over budget, expired ${forgotten.expired + forgotten.harmful} memories, created ${r.observations_created} observations, applied ${corrections.applied} corrections, escalated ${corrections.escalated}, verified ${verifications.processed}, learned ${learning.candidates} candidates, memory cooldown ${learning.skipped_cooldown}, memory exhausted ${learning.skipped_exhausted}${errorCount ? `, ${errorCount} errors` : ''}`,
             }
           })()
         : await runCleanup()

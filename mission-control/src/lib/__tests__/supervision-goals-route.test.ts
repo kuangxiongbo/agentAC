@@ -82,6 +82,7 @@ describe('supervision goal routes', () => {
         title: 'Release goal',
         objective: 'Complete release verification',
         success_criteria: [{ id: 'sc-1', text: 'Tests pass', evidence_type: 'test' }],
+        requires_plan_approval: true,
       }),
     }))
     expect(createResponse.status).toBe(201)

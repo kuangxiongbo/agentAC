@@ -93,6 +93,7 @@ const navItemTranslationKeys: Record<string, string> = {
   overview: 'overview',
   agents: 'agents',
   tasks: 'tasks',
+  supervision: 'supervision',
   chat: 'chat',
   channels: 'channels',
   skills: 'skills',

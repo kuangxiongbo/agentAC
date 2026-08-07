@@ -36,7 +36,7 @@ export const createSupervisionGoalSchema = z.object({
     max_runtime_seconds: 86400,
     max_model_calls: 100,
   }),
-  requires_plan_approval: z.boolean().default(true),
+  requires_plan_approval: z.boolean().default(false),
 })
 
 export const updateSupervisionGoalSchema = z.object({

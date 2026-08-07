@@ -243,7 +243,7 @@ export function createSupervisionGoal(
       JSON.stringify(input.allowedWorkerIds ?? []),
       input.priority ?? 'medium',
       JSON.stringify(input.budget),
-      input.requiresPlanApproval === false ? 0 : 1,
+      input.requiresPlanApproval === true ? 1 : 0,
       input.deadlineAt ?? null,
       input.createdBy,
       now,
