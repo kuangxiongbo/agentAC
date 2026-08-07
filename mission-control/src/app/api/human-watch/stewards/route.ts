@@ -9,7 +9,7 @@ import {
 } from '@/lib/bridge-server'
 import { createHumanWatchBinding } from '@/lib/human-watch-bindings'
 import { requireHumanWatchEntitlement } from '@/lib/human-watch-policy'
-import { getBridgeAgentIndexById, getBridgeAgentIndexByLocalId } from '@/lib/sync-agent-index'
+import { getBridgeAgentIndexById, getBridgeAgentIndexByLocalId, listBridgeAgentIndex } from '@/lib/sync-agent-index'
 import {
   deleteHumanWatchStewardOnEdge,
   resolveBridgeStewardHumanWatch,
@@ -19,10 +19,34 @@ import {
 export const dynamic = 'force-dynamic'
 
 /**
+ * GET /api/human-watch/stewards — list synchronized steward agents
  * POST /api/human-watch/stewards — create on edge
  * PATCH /api/human-watch/stewards — update name / soul / config on edge
  * DELETE /api/human-watch/stewards — delete steward on edge + center bindings
  */
+export async function GET(request: NextRequest) {
+  const auth = requireRole(request, 'viewer')
+  if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+
+  const clientId = request.nextUrl.searchParams.get('client_id')?.trim() || undefined
+  const stewards = listBridgeAgentIndex(clientId)
+    .filter((agent) => agent.role === 'human-watch')
+    .map((agent) => ({
+      sync_index_id: agent.id,
+      client_id: agent.client_id,
+      client_name: agent.client_name,
+      local_agent_id: agent.local_agent_id,
+      name: agent.original_name,
+      framework: agent.framework,
+      session_key: agent.session_key,
+      status: agent.status,
+      client_online: isBridgeClientOnline(agent.client_id),
+      updated_at: agent.updated_at,
+    }))
+
+  return NextResponse.json({ stewards, count: stewards.length })
+}
+
 export async function PATCH(request: NextRequest) {
   const auth = requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })

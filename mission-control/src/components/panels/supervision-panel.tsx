@@ -63,12 +63,14 @@ interface GoalEvent {
   created_at: number
 }
 
-interface Binding {
-  id: number
+interface StewardAgent {
+  sync_index_id: number
   client_id: string
-  steward_local_agent_id: number | null
-  steward_name: string | null
-  enabled: boolean
+  client_name: string
+  local_agent_id: number
+  name: string
+  framework: string | null
+  client_online: boolean
 }
 
 interface Memory {
@@ -361,8 +363,8 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function CreateGoalDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => Promise<void> }) {
-  const [bindings, setBindings] = useState<Binding[]>([])
-  const [bindingId, setBindingId] = useState('')
+  const [stewards, setStewards] = useState<StewardAgent[]>([])
+  const [stewardKey, setStewardKey] = useState('')
   const [title, setTitle] = useState('')
   const [objective, setObjective] = useState('')
   const [criteria, setCriteria] = useState('')
@@ -372,21 +374,22 @@ function CreateGoalDialog({ onClose, onCreated }: { onClose: () => void; onCreat
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    void api('/api/human-watch/bindings').then((data) => {
-      const rows = (Array.isArray(data.bindings) ? data.bindings : []).filter((binding: Binding) => binding.enabled && binding.steward_local_agent_id)
-      setBindings(rows); setBindingId(rows[0] ? String(rows[0].id) : '')
+    void api('/api/human-watch/stewards').then((data) => {
+      const rows = Array.isArray(data.stewards) ? data.stewards as StewardAgent[] : []
+      setStewards(rows)
+      setStewardKey(rows[0] ? `${rows[0].client_id}:${rows[0].local_agent_id}` : '')
     }).catch((err) => setError(err.message))
   }, [])
-  const selected = bindings.find((binding) => String(binding.id) === bindingId)
+  const selected = stewards.find((steward) => `${steward.client_id}:${steward.local_agent_id}` === stewardKey)
   const submit = async () => {
-    if (!selected) return setError('请选择值守绑定')
+    if (!selected) return setError('请选择值守 Agent')
     const successCriteria = criteria.split('\n').map((text) => text.trim()).filter(Boolean).map((text, index) => ({ id: `criterion-${index + 1}`, text, evidence_type: 'review' }))
     if (!title.trim() || !objective.trim() || successCriteria.length === 0) return setError('请填写标题、目标描述和成功标准')
     setSaving(true); setError(null)
     try {
       await api('/api/supervision/goals', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
         client_id: selected.client_id,
-        steward_local_agent_id: selected.steward_local_agent_id,
+        steward_local_agent_id: selected.local_agent_id,
         title: title.trim(), objective: objective.trim(), success_criteria: successCriteria,
         constraints: constraints.split('\n').map((text) => text.trim()).filter(Boolean),
         requires_plan_approval: approval,
@@ -394,7 +397,7 @@ function CreateGoalDialog({ onClose, onCreated }: { onClose: () => void; onCreat
       await onCreated()
     } catch (err) { setError(err instanceof Error ? err.message : '创建失败') } finally { setSaving(false) }
   }
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose() }}><div className="w-full max-w-xl rounded-lg border border-border bg-background shadow-2xl"><div className="flex h-12 items-center justify-between border-b border-border px-4"><h2 className="text-sm font-semibold">新建目标</h2><button className="h-8 w-8 text-xl text-muted-foreground hover:text-foreground" onClick={onClose} aria-label="关闭">×</button></div><div className="space-y-4 p-4"><Field label="值守 Agent"><select value={bindingId} onChange={(event) => setBindingId(event.target.value)} className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"><option value="">选择绑定</option>{bindings.map((binding) => <option key={binding.id} value={binding.id}>{binding.steward_name || binding.steward_local_agent_id} · {binding.client_id}</option>)}</select></Field><Field label="标题"><input value={title} onChange={(event) => setTitle(event.target.value)} className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm" /></Field><Field label="目标描述"><textarea value={objective} onChange={(event) => setObjective(event.target.value)} rows={4} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" /></Field><Field label="成功标准（每行一条）"><textarea value={criteria} onChange={(event) => setCriteria(event.target.value)} rows={3} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" /></Field><Field label="约束（每行一条）"><textarea value={constraints} onChange={(event) => setConstraints(event.target.value)} rows={2} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" /></Field><label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={approval} onChange={(event) => setApproval(event.target.checked)} />计划生成后需人工批准</label>{error ? <p className="text-xs text-rose-400">{error}</p> : null}</div><div className="flex justify-end gap-2 border-t border-border px-4 py-3"><Button variant="ghost" size="sm" onClick={onClose}>取消</Button><Button size="sm" disabled={saving} onClick={() => void submit()}>{saving ? '创建中' : '创建'}</Button></div></div></div>
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose() }}><div className="w-full max-w-xl rounded-lg border border-border bg-background shadow-2xl"><div className="flex h-12 items-center justify-between border-b border-border px-4"><h2 className="text-sm font-semibold">新建目标</h2><button className="h-8 w-8 text-xl text-muted-foreground hover:text-foreground" onClick={onClose} aria-label="关闭">×</button></div><div className="space-y-4 p-4"><Field label="值守 Agent"><select value={stewardKey} onChange={(event) => setStewardKey(event.target.value)} className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"><option value="">选择值守 Agent</option>{stewards.map((steward) => <option key={steward.sync_index_id} value={`${steward.client_id}:${steward.local_agent_id}`}>{steward.name} · {steward.client_name || steward.client_id}{steward.client_online ? '' : '（设备离线）'}</option>)}</select></Field><Field label="标题"><input value={title} onChange={(event) => setTitle(event.target.value)} className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm" /></Field><Field label="目标描述"><textarea value={objective} onChange={(event) => setObjective(event.target.value)} rows={4} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" /></Field><Field label="成功标准（每行一条）"><textarea value={criteria} onChange={(event) => setCriteria(event.target.value)} rows={3} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" /></Field><Field label="约束（每行一条）"><textarea value={constraints} onChange={(event) => setConstraints(event.target.value)} rows={2} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" /></Field><label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={approval} onChange={(event) => setApproval(event.target.checked)} />计划生成后需人工批准</label>{error ? <p className="text-xs text-rose-400">{error}</p> : null}</div><div className="flex justify-end gap-2 border-t border-border px-4 py-3"><Button variant="ghost" size="sm" onClick={onClose}>取消</Button><Button size="sm" disabled={saving} onClick={() => void submit()}>{saving ? '创建中' : '创建'}</Button></div></div></div>
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
